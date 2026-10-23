@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
-import { loadConfig, loadDotEnv } from '../src/config.ts';
+import { loadConfig, loadDotEnv, parseTrustProxy } from '../src/config.ts';
 
 const testEnv = { NODE_ENV: 'test', BUSINESS_TIMEZONE: 'Asia/Shanghai' } as NodeJS.ProcessEnv;
 
@@ -136,5 +136,27 @@ describe('[P2] .env 真的会被加载', () => {
       () => loadConfig({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'mock', MOCK_WEBHOOK_TOKEN: 'x' } as NodeJS.ProcessEnv),
       /只允许在 NODE_ENV=test 或 demo/,
     );
+  });
+});
+
+describe('[部署] 转发头只信任显式代理地址', () => {
+  test('默认不信任任何转发头', () => {
+    assert.equal(parseTrustProxy(undefined), false);
+    assert.equal(parseTrustProxy(''), false);
+    assert.equal(parseTrustProxy('false'), false);
+  });
+
+  test('回环或网段列表按字符串透传给 Fastify', () => {
+    assert.equal(parseTrustProxy('127.0.0.1'), '127.0.0.1');
+    assert.equal(parseTrustProxy('127.0.0.1,10.0.0.0/8'), '127.0.0.1,10.0.0.0/8');
+  });
+
+  test('显式 true 才全量信任（部署时不应使用）', () => {
+    assert.equal(parseTrustProxy('true'), true);
+  });
+
+  test('loadConfig 默认 trustProxy=false，配置成 IP 后生效', () => {
+    assert.equal(loadConfig({} as NodeJS.ProcessEnv).trustProxy, false);
+    assert.equal(loadConfig({ TRUST_PROXY: '127.0.0.1' } as NodeJS.ProcessEnv).trustProxy, '127.0.0.1');
   });
 });

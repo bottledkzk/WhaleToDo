@@ -11,8 +11,11 @@ export interface ServerConfig {
   mockWebhookToken: string | null;
   /** 客户端 API 基址（仅用于返回给客户端的自描述信息，不参与鉴权） */
   publicBaseUrl: string;
-  /** 是否信任反向代理头（部署在 Nginx 后置 true） */
-  trustProxy: boolean;
+  /**
+   * 信任的反向代理：false 表示不信任；字符串为 IP/网段列表（如 127.0.0.1）。
+   * 部署时**只应信任回环或实际代理地址**，不能对任意来源盲信 X-Forwarded-*。
+   */
+  trustProxy: boolean | string;
 }
 
 const ALLOWED_ENVS = ['development', 'test', 'demo', 'production'] as const;
@@ -24,6 +27,19 @@ function requireTimezone(tz: string): string {
   } catch {
     throw new Error(`BUSINESS_TIMEZONE 不是合法的 IANA 时区：${tz}`);
   }
+}
+
+/**
+ * 解析 TRUST_PROXY：
+ *   false / 未设置 → 不信任任何转发头
+ *   true          → 信任（仅限本机全部代理，谨慎使用）
+ *   其他字符串    → 作为 IP/网段列表传给 Fastify（例如 127.0.0.1 或 127.0.0.1,10.0.0.0/8）
+ */
+export function parseTrustProxy(raw: string | undefined): boolean | string {
+  const value = (raw ?? '').trim();
+  if (!value || value === 'false') return false;
+  if (value === 'true') return true;
+  return value;   // Fastify 接受逗号分隔的 IP/CIDR 列表
 }
 
 function parseIntEnv(raw: string | undefined, fallback: number, name: string): number {
@@ -66,7 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     paymentProvider,
     mockWebhookToken,
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? 'http://127.0.0.1:8080/api/v1').replace(/\/$/, ''),
-    trustProxy: (env.TRUST_PROXY ?? 'false').trim() === 'true',
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
   };
 }
 
