@@ -1,0 +1,11 @@
+{
+  "name": "WhaleToDo_API36",
+  "apiLevel": 36,
+  "image": "system-images;android-36;google_apis;x86_64",
+  "profile": "pixel_7",
+  "memoryMb": 4096,
+  "cores": 4,
+  "consolePort": 5580,
+  "hardwareAcceleration": "WHPX",
+  "snapshotsForValidation": false
+}
