@@ -1,8 +1,6 @@
-# Weiding（邓淇阳）团队汇报区
+# Weiding 团队汇报区
 
-> **称呼统一说明**：`Weiding`（网名"未定"的拼音）与 `dqy`（姓名邓淇阳的首字母）是同一个人，GitHub 账号为 `weiding20060813`。
-> 为避免文档与提交记录出现两个名字，**本仓库统一使用 `Weiding`**；需要写全名时写"邓淇阳（Weiding）"。
-> 目录名、分支前缀（`feat/weiding-*`）和 git 作者名保持不变，不再另建 `doc/dqy` 或新分支前缀。
+> 称呼说明：本仓库统一使用 `Weiding`（GitHub 账号 `weiding20060813`），目录名与分支前缀 `feat/weiding-*` 保持不变。
 
 本目录供Weiding提交本人已核对的团队汇报。当前README由项目初始化与方案修订整理，不代表Weiding已经交付功能。
 
