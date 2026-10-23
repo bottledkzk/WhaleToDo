@@ -1,0 +1,15 @@
+{
+  "jdkRuntime": 21,
+  "javaBytecode": 17,
+  "gradle": "8.13",
+  "androidGradlePlugin": "8.13.2",
+  "kotlin": "2.2.21",
+  "ksp": "2.2.21-2.0.5",
+  "composeBom": "2025.10.01",
+  "room": "2.8.3",
+  "compileSdk": 36,
+  "targetSdk": 36,
+  "minSdk": 26,
+  "buildTools": "35.0.0",
+  "emulatorImage": "system-images;android-36;google_apis;x86_64"
+}
