@@ -27,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.whaletodo.app.data.*
 import io.whaletodo.app.ui.*
+import io.whaletodo.core.Window
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -47,7 +48,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            val dark = isSystemInDarkTheme()
+            val prefs = remember { getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
+            var theme by remember { mutableStateOf(prefs.getString("theme", "system")) }
+            DisposableEffect(prefs) {
+                val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                    if (key == "theme") theme = prefs.getString("theme", "system")
+                }
+                prefs.registerOnSharedPreferenceChangeListener(listener)
+                onDispose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+            }
+            val dark = when (theme) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
             MaterialTheme(
                 colorScheme =
                     if (dark)
@@ -94,6 +104,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     var edit by remember { mutableStateOf<TaskRow?>(null) }
     var rating by remember { mutableStateOf<TaskRow?>(null) }
     var settings by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf("") }
+    LaunchedEffect(capture, edit?.id) { saveError = "" }
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
     LaunchedEffect(message) {
@@ -106,7 +118,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                listOf("今天" to "◉", "计划" to "▦", "待办" to "✓").forEachIndexed { i, (title, icon) ->
+                listOf("今天" to "◉", "待办" to "✓", "预览" to "▦", "助手" to "✦", "我的" to "○").forEachIndexed { i, (title, icon) ->
                     NavigationBarItem(
                         selected = tab == i,
                         onClick = { tab = i },
@@ -117,7 +129,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
+            if (tab < 3) FloatingActionButton(
                 onClick = { capture = true },
                 containerColor = Teal,
                 contentColor = Color.White,
@@ -166,30 +178,15 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                         onEdit = { edit = it },
                         onComplete = { rating = it },
                     )
-                1 -> PlanPage(state, onPlan = { vm.arrange() }, onEdit = { edit = it })
-                else ->
-                    TasksPage(
-                        state,
-                        onEdit = { edit = it },
-                        onComplete = { if (it.done) vm.reopen(it) else rating = it },
-                        onShare = { task ->
-                            val text = buildString {
-                                append("${if(task.done) "✓" else "○"} ${task.title}")
-                                if (task.deadline > 0)
-                                    append("\n截止 ${local(task.deadline).format(dateTime)}")
-                                append("\n来自 WhaleToDo")
-                            }
-                            context.startActivity(
-                                Intent.createChooser(
-                                    Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, text)
-                                    },
-                                    "分享事项",
-                                )
-                            )
-                        },
-                    )
+                1 -> AgendaPage(state, onPlan = { vm.arrange() }, onEdit = { edit = it },
+                    onComplete = { if (it.done) vm.reopen(it) else rating = it },
+                    onShare = { text -> shareText(context, text) })
+                2 -> CalendarPage(state, onEdit = { edit = it },
+                    onComplete = { if (it.done) vm.reopen(it) else rating = it },
+                    onShare = { text -> shareText(context, text) })
+                3 -> AssistantPage(onAccount = { tab = 4 })
+                4 -> MyPage(state)
+
             }
         }
     }
@@ -200,19 +197,20 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 vm.capture(it)
                 capture = false
             },
-            onDetailedSave = {
-                vm.save(it)
-                capture = false
+            onDetailedSave = { task, manual ->
+                vm.saveScheduled(task, manual, onRejected = { saveError = it }) { capture = false }
             },
+            saveError = saveError,
         )
     edit?.let { task ->
         EditDialog(
             task,
             onDismiss = { edit = null },
-            onSave = {
-                vm.save(it)
-                edit = null
+            onSave = { updated, manual ->
+                vm.saveScheduled(updated, manual, onRejected = { saveError = it }) { edit = null }
             },
+            externalError = saveError,
+            manual = state.blocks.firstOrNull { it.taskId == task.id && it.locked && !it.done && it.start > state.now },
         )
     }
     rating?.let { task ->
@@ -382,38 +380,7 @@ private fun EmptyCard(title: String, subtitle: String) {
 }
 
 @Composable
-private fun PlanPage(s: DeskState, onPlan: () -> Unit, onEdit: (TaskRow) -> Unit) {
-    var day by remember { mutableStateOf(LocalDate.now()) }
-    val blocks = s.blocks.filter { local(it.start).toLocalDate() == day }
-    Column {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = { day = day.minusDays(1) }) { Text("‹ 前一天") }
-            Text(day.format(DateTimeFormatter.ofPattern("M月d日 E")), fontWeight = FontWeight.Bold)
-            TextButton(onClick = { day = day.plusDays(1) }) { Text("后一天 ›") }
-        }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { day = LocalDate.now() }) { Text("今天") }
-            Spacer(Modifier.weight(1f))
-            FilledTonalButton(onClick = onPlan) { Text("重新安排") }
-        }
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(top = 14.dp, bottom = 90.dp),
-        ) {
-            if (blocks.isEmpty()) item { EmptyCard("留白也是一种节奏", "这一天暂无已安排的事项。") }
-            items(blocks, key = { it.id }) { b ->
-                TimeCard(b, s.tasks.find { it.id == b.taskId }, onEdit)
-            }
-        }
-    }
-}
-
-@Composable
-private fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
+internal fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 88.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -443,7 +410,7 @@ private fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
                 Column(Modifier.weight(1f)) {
                     Text(t?.title ?: "事项", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(
-                        "${(b.end-b.start)/60000}分钟${if(b.done) " · 已完成" else ""}",
+                        "${(b.end-b.start)/60000}分钟${if(b.done) " · 已完成" else if(b.locked) " · 手动" else " · 自动"}",
                         fontSize = 12.sp,
                         modifier = Modifier.padding(top = 6.dp),
                     )
@@ -458,63 +425,7 @@ private fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
 }
 
 @Composable
-private fun TasksPage(
-    s: DeskState,
-    onEdit: (TaskRow) -> Unit,
-    onComplete: (TaskRow) -> Unit,
-    onShare: (TaskRow) -> Unit,
-) {
-    var query by remember { mutableStateOf("") }
-    var showDone by remember { mutableStateOf(false) }
-    Column {
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = { Text("搜索待办") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-        )
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("显示已完成", fontSize = 13.sp)
-            Switch(
-                checked = showDone,
-                onCheckedChange = { showDone = it },
-                modifier = Modifier.semantics { contentDescription = "显示已完成事项" },
-            )
-            Spacer(Modifier.weight(1f))
-            Text("${s.tasks.count { !it.done }} 项待办", fontSize = 12.sp)
-        }
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(bottom = 90.dp),
-        ) {
-            val filtered =
-                s.tasks.filter {
-                    (showDone || !it.done) &&
-                        (it.title.contains(query, true) || it.note.contains(query, true))
-                }
-            if (filtered.isEmpty()) item { EmptyCard("这里还很安静", "点击 ＋ 记下一件想做的事。") }
-            items(filtered, key = { it.id }) { task ->
-                Column {
-                    TaskCard(task, onEdit, onComplete)
-                    TextButton(
-                        onClick = { onShare(task) },
-                        modifier = Modifier.align(Alignment.End),
-                    ) {
-                        Text("分享", fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRow) -> Unit) {
+internal fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRow) -> Unit) {
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp),
@@ -562,7 +473,8 @@ private fun todayRange(state: DeskState): Pair<Int, Int> {
 private fun CaptureDialog(
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
-    onDetailedSave: (TaskRow) -> Unit,
+    onDetailedSave: (TaskRow, Window?) -> Unit,
+    saveError: String = "",
 ) {
     var title by remember { mutableStateOf("") }
     var detailed by remember { mutableStateOf(false) }
@@ -573,6 +485,7 @@ private fun CaptureDialog(
             onDismiss = { detailed = false },
             onSave = onDetailedSave,
             isNew = true,
+            externalError = saveError,
         )
     } else {
         AlertDialog(
@@ -604,21 +517,31 @@ private fun CaptureDialog(
 private fun EditDialog(
     t: TaskRow,
     onDismiss: () -> Unit,
-    onSave: (TaskRow) -> Unit,
+    onSave: (TaskRow, Window?) -> Unit,
     isNew: Boolean = false,
+    manual: BlockRow? = null,
+    externalError: String = "",
 ) {
     var title by remember(t.id) { mutableStateOf(t.title) }
     var effort by remember(t.id) { mutableStateOf(if (t.minutes > 0) t.minutes.toString() else "") }
     var unit by remember { mutableIntStateOf(0) }
     var due by remember(t.id) { mutableLongStateOf(t.deadline) }
     var choosingDeadline by remember { mutableStateOf(false) }
+    var manualEnabled by remember(t.id) { mutableStateOf(manual != null) }
+    var manualStart by remember(t.id) { mutableLongStateOf(manual?.start ?: 0L) }
+    var manualEnd by remember(t.id) { mutableLongStateOf(manual?.end ?: 0L) }
+    var choosingManual by remember { mutableIntStateOf(0) }
     var importance by remember { mutableIntStateOf(t.importance) }
     var note by remember { mutableStateOf(t.note) }
     var split by remember { mutableStateOf(t.splittable) }
     var error by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isNew) "记下一件事" else "整理待办") },
+        title = { Column {
+            Text(if (isNew) "记下一件事" else "整理待办")
+            if (externalError.isNotEmpty()) Text(externalError, color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall)
+        } },
         text = {
             Column(
                 Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
@@ -653,6 +576,24 @@ private fun EditDialog(
                     }
                 }
                 if (due > 0) TextButton(onClick = { due = 0 }) { Text("清除截止时间", fontSize = 12.sp) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("手动安排", Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                    Switch(checked = manualEnabled, onCheckedChange = { manualEnabled = it },
+                        modifier = Modifier.semantics { contentDescription = "手动安排开关" })
+                }
+                if (manualEnabled) {
+                    listOf("安排开始" to manualStart, "安排结束" to manualEnd).forEachIndexed { index, (label, value) ->
+                        OutlinedCard(onClick = { choosingManual = index + 1 }, Modifier.fillMaxWidth()
+                            .semantics { contentDescription = label }) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(label, style = MaterialTheme.typography.labelMedium)
+                                Text(if (value > 0) local(value).format(dateTime) else "选择日期与时间")
+                            }
+                        }
+                    }
+                    Text("自动安排会保留此时段", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = effort,
@@ -699,8 +640,8 @@ private fun EditDialog(
                     label = { Text("备注") },
                     maxLines = 3,
                 )
-                if (error.isNotEmpty())
-                    Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                if (error.isNotEmpty() || externalError.isNotEmpty())
+                    Text(error.ifEmpty { externalError }, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
             }
         },
         confirmButton = {
@@ -713,6 +654,12 @@ private fun EditDialog(
                         val minutes = raw * listOf(1, 60, 1440)[unit]
                         require(minutes <= 525600 && (raw == 0.0 || minutes >= 1)) { "工作量需为1分钟至1年" }
                         val deadline = due
+                        val reservation = if (manualEnabled) {
+                            require(manualStart > System.currentTimeMillis()) { "安排开始时间需晚于现在" }
+                            require(manualEnd - manualStart >= 60000) { "安排结束需至少晚于开始1分钟" }
+                            require(deadline == 0L || manualEnd <= deadline) { "安排结束不能晚于截止时间" }
+                            Window(Instant.ofEpochMilli(manualStart), Instant.ofEpochMilli(manualEnd))
+                        } else null
                         onSave(
                             t.copy(
                                 title = title,
@@ -721,7 +668,7 @@ private fun EditDialog(
                                 importance = importance,
                                 note = note,
                                 splittable = split,
-                            )
+                            ), reservation
                         )
                     } catch (e: Exception) {
                         error = e.message ?: "请检查输入"
@@ -733,6 +680,17 @@ private fun EditDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+    if (choosingManual > 0) key(choosingManual) {
+        DeadlinePickerDialog(
+            if (choosingManual == 1) manualStart else manualEnd.takeIf { it > 0 } ?: (manualStart + 3600000).takeIf { manualStart > 0 } ?: 0,
+            onDismiss = { choosingManual = 0 },
+            onSave = { value ->
+                if (choosingManual == 1) manualStart = value else manualEnd = value
+                choosingManual = 0
+            },
+            label = if (choosingManual == 1) "安排开始" else "安排结束",
+        )
+    }
     if (choosingDeadline)
         DeadlinePickerDialog(
             due,

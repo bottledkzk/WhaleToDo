@@ -98,8 +98,9 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         message.value = "已保存"
     }
 
-    fun saveScheduled(task: TaskRow, manual: Window?, onSaved: () -> Unit = {}) = run {
-        repository.saveScheduled(task, manual)
+    fun saveScheduled(task: TaskRow, manual: Window?, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
+        try { repository.saveScheduled(task, manual) }
+        catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
         message.value = "已保存安排"
         onSaved()
     }

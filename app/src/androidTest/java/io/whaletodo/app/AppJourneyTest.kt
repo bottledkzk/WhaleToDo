@@ -49,10 +49,11 @@ class AppJourneyTest {
         click("自动安排")
         text("确认新计划")
         click("采用计划")
-        click("计划")
+        click("待办")
+        click("日程")
         text(title)
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-plan.png")
-        click("待办")
+        click("清单")
         val check =
             device.wait(Until.findObject(By.desc("完成状态 $title")), 5000)
                 ?: error("Missing completion control")
