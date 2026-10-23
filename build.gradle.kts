@@ -6,3 +6,4 @@ plugins {
     id("com.google.devtools.ksp") version "2.2.21-2.0.5" apply false
 }
 subprojects { layout.buildDirectory.set(rootProject.layout.projectDirectory.dir("build/output/${project.name}")) }
+layout.buildDirectory.set(layout.projectDirectory.dir("build/output/root"))
