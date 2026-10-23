@@ -27,3 +27,4 @@ local.properties
 *.aab
 *.zip
 !gradle/wrapper/gradle-wrapper.jar
+/build/reports/
