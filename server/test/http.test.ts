@@ -23,7 +23,9 @@ beforeEach(async () => {
   app = buildApp({ config: loadConfig(testEnv), repo });
 });
 
-const inject = (opts: Parameters<FastifyInstance['inject']>[0]) => app.inject(opts);
+// fastify 的 inject 有重载，Parameters<...>[0] 会选中零参数重载；直接用 light-my-request 类型
+type InjectOptions = import('light-my-request').InjectOptions;
+const inject = (opts: InjectOptions) => app.inject(opts);
 
 async function register(username = 'alice', password = 'S3cret-passw0rd') {
   return inject({

@@ -58,6 +58,7 @@ export function verifyPassword(password: string, stored: string): boolean {
   try {
     const [scheme, n, r, p, saltB64, keyB64] = String(stored).split('$');
     if (scheme !== 'scrypt') return false;
+    if (!n || !r || !p || !saltB64 || !keyB64) return false;   // 字段缺失按验证失败处理
     const salt = Buffer.from(saltB64, 'base64url');
     const expected = Buffer.from(keyB64, 'base64url');
     const actual = scryptSync(String(password).normalize('NFKC'), salt, expected.length, {

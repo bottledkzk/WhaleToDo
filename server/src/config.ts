@@ -77,3 +77,16 @@ export function businessDate(now: Date, timeZone: string): string {
   });
   return fmt.format(now);   // en-CA 输出即为 YYYY-MM-DD
 }
+
+/**
+ * 加载 .env 文件（Node 20.12+ 的 process.loadEnvFile）。
+ * 找不到文件返回 false，不抛错；已存在的环境变量优先（loadEnvFile 不覆盖）。
+ */
+export function loadDotEnv(fileUrl: URL | string): boolean {
+  try {
+    process.loadEnvFile(fileUrl as string);
+    return true;
+  } catch {
+    return false;
+  }
+}

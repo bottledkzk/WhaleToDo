@@ -14,24 +14,30 @@
 | **账户接口**：`register / login / refresh / logout` | ✅ 已实现 + 测试（含刷新重放整串撤销） |
 | **个人资料**：`/me`、`/me/entitlements` | ✅ 已实现 + 测试 |
 | 健康检查 `/health/live`、`/health/ready`、`/meta` | ✅ 已实现 + 测试 |
-| 内存仓储（本地开发/测试）；Prisma 仓储 | ✅ 内存仓储已完成 / ⏳ Prisma 下一步 |
-| Prisma schema 与迁移建议 | ⏳ 下一步（schema 归属 Bottledkzk） |
-| PostgreSQL 集成测试 | ⏳ 本机无 Postgres/Docker |
-| 签到 `/rewards`、`/wallet`、`/orders`、`/sync` | ⏳ 下一阶段 |
+| 内存仓储（本地开发/测试）；Prisma 仓储 | ✅ 内存仓储已完成 / ⏳ Prisma 下一步（迁移归属见下） |
+| Prisma schema 建议稿 | ⏳ 在后续 PR 提交（schema/迁移由 Bottledkzk 统一维护） |
+| PostgreSQL 集成测试 | ⏳ 服务器仅回环 5432，PG 16 + 受限账号就绪后补 |
+| 签到 `/rewards`、`/wallet`、`/orders`、`/sync` | ⏳ 后续 PR（不在本 PR 范围） |
 
-**测试现状：47 项全通过**（security 12 + ledger 14 + http 21）。
+**测试现状：56 项全通过**（security 12 + ledger 14 + http 21 + review-fixes 9），
+另 `npm run typecheck`（`tsc --noEmit`）零诊断；`npm test` 与 `npm run typecheck` 都已在
+`.github/workflows/server.yml` 的后端 CI 中执行。
 
 ## 本地启动（3 条命令）
 
 ```bash
 cd server
 cp .env.example .env       # 无真实秘密，可直接用默认值
-npm install                # 当前仅需 fastify（约 85 秒）
-node src/main.ts           # 默认 http://127.0.0.1:8080/api/v1
+npm ci                     # 锁定依赖（fastify / typescript / @types/node）
+npm start                  # = node --env-file-if-exists=.env src/main.ts
 ```
 
-启动日志会打印实际的 `api / business_timezone / payment_provider / storage`。
-内存仓储用于本地联调，**重启即清空**；接 Prisma 后换成数据库。
+- **`.env` 会被真正加载**：`npm start` 用 Node 的 `--env-file-if-exists`，
+  同时 `src/main.ts` 也会调用 `process.loadEnvFile` 作为兜底（已存在的环境变量优先）。
+  启动日志里的 `dotenv_loaded` 会告诉你是否读到了文件。
+- 运行时要求 **Node 24 LTS**（直接执行 TypeScript 依赖 Node 23+ 的类型剥离能力，`engines` 已写死 `>=24`）。
+- 其他命令：`npm test`（56 项）、`npm run typecheck`（`tsc --noEmit`，必须零诊断）、`npm run dev`（watch）。
+- 内存仓储用于本地联调，**重启即清空**；接 Prisma 后换成数据库。
 
 ## 接口样例（本地实跑，2026-10-23）
 
@@ -70,7 +76,7 @@ Node 24 原生支持**直接运行 TypeScript**（类型剥离），且 `node --
 
 ```bash
 cd server
-node --test test/*.test.ts      # 26 项，全过
+npm test                       # 56 项，全过；npm run typecheck 零诊断
 ```
 
 需要第三方依赖（fastify / prisma / argon2）的部分，要等网络可用后：

@@ -1,7 +1,7 @@
 // Fastify 应用：统一响应包、请求 ID、错误映射、幂等键与账户路由。
 // 端点全部挂在 /api/v1 下（与 Nginx 约定的 api.whaletodo.top:8443/api/v1 一致）。
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { MemoryRepository } from '../repo/memory.ts';
 import type { ServerConfig } from '../config.ts';
@@ -26,8 +26,15 @@ function ok(requestId: string, data: unknown) {
   return { request_id: requestId, data };
 }
 
+/**
+ * 幂等指纹：HMAC-SHA256（进程内随机密钥）。
+ * 只存摘要，**不存原始请求体**——否则注册密码会以明文留在幂等缓存里。
+ */
+const IDEMPOTENCY_FINGERPRINT_KEY = randomBytes(32);
 function fingerprintOf(body: unknown): string {
-  return JSON.stringify(body ?? null);
+  return createHmac('sha256', IDEMPOTENCY_FINGERPRINT_KEY)
+    .update(JSON.stringify(body ?? null))
+    .digest('hex');
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -51,7 +58,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
     const status = (err as { statusCode?: number }).statusCode ?? 500;
     if (status === 400) {
-      return reply.code(400).send(new ApiError('VALIDATION_ERROR', err.message).toBody(req.requestId));
+      return reply.code(400).send(new ApiError('VALIDATION_ERROR', err instanceof Error ? err.message : '请求无效').toBody(req.requestId));
     }
     req.log.error({ err }, 'unhandled');
     return reply.code(500).send(new ApiError('INTERNAL', '服务器内部错误').toBody(req.requestId));
@@ -99,7 +106,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (scopeKey) {
       const hit = repo.getIdempotent(scopeKey);
       if (hit) {
-        if (hit.fingerprint !== fingerprintOf({ username, password })) {
+        if (hit.fingerprint !== fingerprintOf({ username, password, display_name: body.display_name ?? null })) {
           throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
         }
         return reply.code(201).send(hit.response);
@@ -113,7 +120,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
-    if (scopeKey) repo.saveIdempotent(scopeKey, fingerprintOf({ username, password }), response);
+    if (scopeKey) repo.saveIdempotent(scopeKey, fingerprintOf({ username, password, display_name: body.display_name ?? null }), response);
     return reply.code(201).send(response);
   });
 
@@ -181,7 +188,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const user = repo.findUserById(req.userId!);
     if (!user) throw new ApiError('UNAUTHENTICATED', '账号不存在');
     return ok(req.requestId, {
-      user: { id: user.id, username: user.username, display_name: user.displayName, created_at: user.createdAt },
+      user: { id: user.id, username: user.username, display_name: user.displayName, created_at: new Date(user.createdAt).toISOString() },
     });
   });
 
