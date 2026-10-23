@@ -28,3 +28,5 @@ dependencies {
     ksp("androidx.room:room-compiler:2.8.3")
     testImplementation("junit:junit:4.13.2")
 }
+
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
