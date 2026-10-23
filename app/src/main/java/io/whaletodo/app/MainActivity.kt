@@ -17,17 +17,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.whaletodo.app.data.*
+import io.whaletodo.app.ui.*
 import java.time.*
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 
 private val Teal = Color(0xFF176B74)
 private val Coral = Color(0xFFCC704F)
@@ -54,6 +56,9 @@ class MainActivity : ComponentActivity() {
                             secondary = Color(0xFFFFBA9C),
                             primaryContainer = Color(0xFF204C50),
                             secondaryContainer = Color(0xFF264C48),
+                            onPrimaryContainer = Color(0xFFC0E6DC),
+                            surfaceContainerHigh = Color(0xFF213638),
+                            surfaceContainerHighest = Color(0xFF2B4243),
                         )
                     else
                         lightColorScheme(
@@ -66,6 +71,9 @@ class MainActivity : ComponentActivity() {
                             primaryContainer = Color(0xFFDDECE5),
                             secondaryContainer = Color(0xFFDDECE5),
                             onSecondaryContainer = Ink,
+                            onPrimaryContainer = Ink,
+                            surfaceContainerHigh = Color(0xFFF1F4ED),
+                            surfaceContainerHighest = Color(0xFFE4EADF),
                         )
             ) {
                 DeskApp()
@@ -126,18 +134,26 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 Column(Modifier.weight(1f)) {
                     Text("WhaleToDo", fontWeight = FontWeight.Bold, fontSize = 25.sp)
                     Text(
-                        LocalDate.now()
-                            .format(
-                                DateTimeFormatter.ofPattern(
-                                    "M月d日 EEEE",
-                                    java.util.Locale.SIMPLIFIED_CHINESE,
-                                )
-                            ),
+                        state.today.format(
+                            DateTimeFormatter.ofPattern(
+                                "M月d日 EEEE",
+                                java.util.Locale.SIMPLIFIED_CHINESE,
+                            )
+                        ),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                TextButton(onClick = { settings = true }) { Text("空闲") }
+                TextButton(onClick = { settings = true }) {
+                    val time = todayRange(state)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("WorkTime", fontSize = 12.sp)
+                        Text(
+                            "${minuteLabel(time.first)}–${minuteLabel(time.second)}",
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
                 Text("🐋", fontSize = 29.sp)
             }
             if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -184,6 +200,10 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 vm.capture(it)
                 capture = false
             },
+            onDetailedSave = {
+                vm.save(it)
+                capture = false
+            },
         )
     edit?.let { task ->
         EditDialog(
@@ -205,15 +225,19 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             },
         )
     }
-    if (settings)
-        SettingsDialog(
-            state.settings,
+    if (settings) {
+        val date = remember { state.today }
+        val range = remember { todayRange(state) }
+        WorkTimeDialog(
+            range.first,
+            range.second,
             onDismiss = { settings = false },
-            onSave = { a, b ->
-                vm.settings(a, b)
+            onSave = { start, end ->
+                vm.todayWorkTime(start, end, date)
                 settings = false
             },
         )
+    }
     preview?.let { proposal ->
         AlertDialog(
             onDismissRequest = { vm.preview.value = null },
@@ -258,7 +282,7 @@ private fun TodayPage(
     onComplete: (TaskRow) -> Unit,
 ) {
     val done = s.tasks.count { it.done }
-    val today = LocalDate.now()
+    val today = s.today
     val blocks = s.blocks.filter { local(it.start).toLocalDate() == today }
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -456,7 +480,11 @@ private fun TasksPage(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("显示已完成", fontSize = 13.sp)
-            Switch(checked = showDone, onCheckedChange = { showDone = it }, modifier = Modifier.semantics { contentDescription = "显示已完成事项" })
+            Switch(
+                checked = showDone,
+                onCheckedChange = { showDone = it },
+                modifier = Modifier.semantics { contentDescription = "显示已完成事项" },
+            )
             Spacer(Modifier.weight(1f))
             Text("${s.tasks.count { !it.done }} 项待办", fontSize = 12.sp)
         }
@@ -493,7 +521,11 @@ private fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRow
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = t.done, onCheckedChange = { onComplete(t) }, modifier = Modifier.semantics { contentDescription = "完成状态 ${t.title}" })
+            Checkbox(
+                checked = t.done,
+                onCheckedChange = { onComplete(t) },
+                modifier = Modifier.semantics { contentDescription = "完成状态 ${t.title}" },
+            )
             Column(Modifier.weight(1f).clickable { onEdit(t) }.padding(start = 4.dp)) {
                 Text(t.title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Text(
@@ -520,44 +552,73 @@ private fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRow
     }
 }
 
-@Composable
-private fun CaptureDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var title by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("记下一件事") },
-        text = {
-            OutlinedTextField(
-                value = title,
-                onValueChange = { if (it.length <= 120) title = it },
-                placeholder = { Text("想做什么？") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(title) }, enabled = title.isNotBlank()) { Text("记下") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
+private fun todayRange(state: DeskState): Pair<Int, Int> {
+    val today = state.workTimes.find { it.date == state.today.toString() }
+    return if (today != null) today.startMinute to today.endMinute
+    else (state.settings.startHour * 60) to (state.settings.endHour * 60).coerceAtMost(1439)
 }
 
 @Composable
-private fun EditDialog(t: TaskRow, onDismiss: () -> Unit, onSave: (TaskRow) -> Unit) {
+private fun CaptureDialog(
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onDetailedSave: (TaskRow) -> Unit,
+) {
+    var title by remember { mutableStateOf("") }
+    var detailed by remember { mutableStateOf(false) }
+    val draft = remember { TaskRow(UUID.randomUUID().toString(), "") }
+    if (detailed) {
+        EditDialog(
+            draft.copy(title = title),
+            onDismiss = { detailed = false },
+            onSave = onDetailedSave,
+            isNew = true,
+        )
+    } else {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("记下一件事") },
+            text = {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { if (it.length <= 120) title = it },
+                    placeholder = { Text("想做什么？") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onSave(title) }, enabled = title.isNotBlank()) { Text("记下") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = { detailed = true }) { Text("详细") }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun EditDialog(
+    t: TaskRow,
+    onDismiss: () -> Unit,
+    onSave: (TaskRow) -> Unit,
+    isNew: Boolean = false,
+) {
     var title by remember(t.id) { mutableStateOf(t.title) }
     var effort by remember(t.id) { mutableStateOf(if (t.minutes > 0) t.minutes.toString() else "") }
     var unit by remember { mutableIntStateOf(0) }
-    var due by
-        remember(t.id) {
-            mutableStateOf(if (t.deadline > 0) local(t.deadline).format(dateTime) else "")
-        }
+    var due by remember(t.id) { mutableLongStateOf(t.deadline) }
+    var choosingDeadline by remember { mutableStateOf(false) }
     var importance by remember { mutableIntStateOf(t.importance) }
     var note by remember { mutableStateOf(t.note) }
     var split by remember { mutableStateOf(t.splittable) }
     var error by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("整理待办") },
+        title = { Text(if (isNew) "记下一件事" else "整理待办") },
         text = {
             Column(
                 Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
@@ -569,13 +630,29 @@ private fun EditDialog(t: TaskRow, onDismiss: () -> Unit, onSave: (TaskRow) -> U
                     label = { Text("标题") },
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = due,
-                    onValueChange = { due = it },
-                    label = { Text("截止时间") },
-                    placeholder = { Text("YYYY-MM-DD HH:mm") },
-                    singleLine = true,
-                )
+                OutlinedCard(
+                    onClick = { choosingDeadline = true },
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "选择截止时间" },
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "截止时间",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                if (due > 0) local(due).format(dateTime) else "选择日期与时间",
+                                modifier = Modifier.padding(top = 5.dp),
+                            )
+                        }
+                        Text("◷", fontSize = 22.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                if (due > 0) TextButton(onClick = { due = 0 }) { Text("清除截止时间", fontSize = 12.sp) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = effort,
@@ -635,13 +712,7 @@ private fun EditDialog(t: TaskRow, onDismiss: () -> Unit, onSave: (TaskRow) -> U
                         require(raw.isFinite() && raw >= 0) { "请填写有效工作量" }
                         val minutes = raw * listOf(1, 60, 1440)[unit]
                         require(minutes <= 525600 && (raw == 0.0 || minutes >= 1)) { "工作量需为1分钟至1年" }
-                        val deadline =
-                            if (due.isBlank()) 0L
-                            else
-                                LocalDateTime.parse(due, dateTime)
-                                    .atZone(ZoneId.systemDefault())
-                                    .toInstant()
-                                    .toEpochMilli()
+                        val deadline = due
                         onSave(
                             t.copy(
                                 title = title,
@@ -653,18 +724,24 @@ private fun EditDialog(t: TaskRow, onDismiss: () -> Unit, onSave: (TaskRow) -> U
                             )
                         )
                     } catch (e: Exception) {
-                        error =
-                            if (e is java.time.format.DateTimeParseException)
-                                "时间格式：YYYY-MM-DD HH:mm"
-                            else e.message ?: "请检查输入"
+                        error = e.message ?: "请检查输入"
                     }
                 }
             ) {
-                Text("保存")
+                Text(if (isNew) "记下" else "保存")
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
+    if (choosingDeadline)
+        DeadlinePickerDialog(
+            due,
+            onDismiss = { choosingDeadline = false },
+            onSave = {
+                due = it
+                choosingDeadline = false
+            },
+        )
 }
 
 @Composable
@@ -689,46 +766,5 @@ private fun RatingDialog(t: TaskRow, onDismiss: () -> Unit, onRate: (Int) -> Uni
         },
         confirmButton = { TextButton(onClick = { onRate(rate) }) { Text("完成打卡") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("返回") } },
-    )
-}
-
-@Composable
-private fun SettingsDialog(s: SettingRow, onDismiss: () -> Unit, onSave: (Int, Int) -> Unit) {
-    var start by remember { mutableStateOf(s.startHour.toString()) }
-    var end by remember { mutableStateOf(s.endHour.toString()) }
-    var error by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("每天可安排时段") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    start,
-                    { start = it },
-                    label = { Text("开始小时 0–23") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
-                OutlinedTextField(
-                    end,
-                    { end = it },
-                    label = { Text("结束小时 1–24") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                )
-                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val a = start.toIntOrNull()
-                    val b = end.toIntOrNull()
-                    if (a != null && b != null && a in 0..23 && b in 1..24 && a < b) onSave(a, b)
-                    else error = "请填写有效的起止小时"
-                }
-            ) {
-                Text("保存")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

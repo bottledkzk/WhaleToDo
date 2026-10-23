@@ -7,5 +7,7 @@
   "cores": 4,
   "consolePort": 5580,
   "hardwareAcceleration": "WHPX",
-  "snapshotsForValidation": false
+  "snapshotsForValidation": false,
+  "gpuMode": "swiftshader",
+  "vulkanEnabled": false
 }

@@ -10,6 +10,8 @@ data class DeskSnapshot(
     val tasks: List<TaskRow>,
     val blocks: List<BlockRow>,
     val settings: SettingRow,
+    val workTimes: List<DailyWorkTimeRow>,
+    val date: LocalDate,
 )
 
 data class PlanPreview(val source: DeskSnapshot, val result: ScheduleResult)
@@ -61,8 +63,20 @@ class DeskRepository(private val db: DeskDatabase) {
         dao.save(SettingRow(startHour = start, endHour = end))
     }
 
+    suspend fun todayWorkTime(start: Int, end: Int, date: LocalDate) {
+        require(date == LocalDate.now()) { "日期已变化，请重新选择今日时段" }
+        require(start in 0..1439 && end in start..1439) { "请选择有效起止时刻" }
+        dao.save(DailyWorkTimeRow(date.toString(), start, end))
+    }
+
     private suspend fun snapshot() =
-        DeskSnapshot(dao.tasks(), dao.blocks(), dao.settings() ?: SettingRow())
+        DeskSnapshot(
+            dao.tasks(),
+            dao.blocks(),
+            dao.settings() ?: SettingRow(),
+            dao.workTimes(),
+            LocalDate.now(),
+        )
 
     suspend fun preview(): PlanPreview = db.withTransaction {
         val source = snapshot()
@@ -70,15 +84,15 @@ class DeskRepository(private val db: DeskDatabase) {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val windows =
-            (0L..6L).map { day ->
-                val date = today.plusDays(day)
-                Window(
-                    date.atTime(source.settings.startHour, 0).atZone(zone).toInstant(),
-                    (if (source.settings.endHour == 24) date.plusDays(1).atStartOfDay(zone)
-                        else date.atTime(source.settings.endHour, 0).atZone(zone))
-                        .toInstant(),
-                )
-            }
+            DailyWindows.build(
+                today,
+                7,
+                zone,
+                MinuteRange(source.settings.startHour * 60, source.settings.endHour * 60),
+                source.workTimes.associate {
+                    LocalDate.parse(it.date) to MinuteRange(it.startMinute, it.endMinute)
+                },
+            )
         val tasks =
             source.tasks
                 .filter { !it.done && it.minutes > 0 && it.deadline > 0 }

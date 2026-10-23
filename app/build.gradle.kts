@@ -7,8 +7,18 @@ plugins {
 android {
     namespace = "io.whaletodo.app"
     compileSdk = 36
-    defaultConfig { applicationId = "io.whaletodo.app"; minSdk = 26; targetSdk = 36; versionCode = 1; versionName = "0.1.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
-    buildTypes { release { isMinifyEnabled = false } }
+    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 2; versionName = "0.2.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    buildTypes {
+        release { isMinifyEnabled = false }
+        create("verification") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".verification"
+            manifestPlaceholders["appLabel"] = "WhaleToDo 验证"
+            matchingFallbacks += listOf("debug")
+        }
+    }
+    testBuildType = "verification"
+    sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
@@ -27,6 +37,9 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.3")
     ksp("androidx.room:room-compiler:2.8.3")
     testImplementation("junit:junit:4.13.2")
+    // Room's migration test bundles need matching core/json on the target and test classpaths.
+    add("verificationImplementation", "org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    androidTestImplementation("androidx.room:room-testing:2.8.3")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")

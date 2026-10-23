@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.whaletodo.app.data.*
+import java.time.LocalDate
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -12,19 +14,34 @@ data class DeskState(
     val blocks: List<BlockRow> = emptyList(),
     val checkIns: List<CheckInRow> = emptyList(),
     val settings: SettingRow = SettingRow(),
+    val workTimes: List<DailyWorkTimeRow> = emptyList(),
+    val today: LocalDate = LocalDate.now(),
 )
 
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     private val repository = DeskRepository(DeskDatabase.open(app))
+    private val today = MutableStateFlow(LocalDate.now())
+
+    init {
+        viewModelScope.launch {
+            while (true) {
+                delay(30_000)
+                today.value = LocalDate.now()
+            }
+        }
+    }
+
     val state =
         combine(
                 repository.dao.observeTasks(),
                 repository.dao.observeBlocks(),
                 repository.dao.observeCheckIns(),
                 repository.dao.observeSettings(),
-            ) { tasks, blocks, checks, settings ->
-                DeskState(tasks, blocks, checks, settings ?: SettingRow())
+                repository.dao.observeWorkTimes(),
+            ) { tasks, blocks, checks, settings, workTimes ->
+                DeskState(tasks, blocks, checks, settings ?: SettingRow(), workTimes)
             }
+            .combine(today) { state, date -> state.copy(today = date) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DeskState())
     var preview = MutableStateFlow<PlanPreview?>(null)
         private set
@@ -73,8 +90,8 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun settings(start: Int, end: Int) = run {
-        repository.settings(start, end)
-        message.value = "空闲时间已更新"
+    fun todayWorkTime(start: Int, end: Int, date: LocalDate) = run {
+        repository.todayWorkTime(start, end, date)
+        message.value = "今日 WorkTime 已更新"
     }
 }

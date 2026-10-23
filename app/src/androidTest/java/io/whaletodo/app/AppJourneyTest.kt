@@ -4,7 +4,6 @@ import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.*
-import java.io.File
 import java.time.LocalDate
 import org.junit.Assert.*
 import org.junit.Test
@@ -42,10 +41,10 @@ class AppJourneyTest {
         click("记下")
         text(title)
         click(title)
+        UiSteps(device).deadline(LocalDate.now().plusDays(2))
         val fields = device.findObjects(By.clazz("android.widget.EditText"))
-        assertTrue(fields.size >= 3)
-        fields[1].text = LocalDate.now().plusDays(2).toString() + " 20:00"
-        fields[2].text = "90"
+        assertTrue(fields.size >= 2)
+        fields[1].text = "90"
         click("保存")
         click("自动安排")
         text("确认新计划")
@@ -54,7 +53,9 @@ class AppJourneyTest {
         text(title)
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-plan.png")
         click("待办")
-        val check = device.wait(Until.findObject(By.desc("完成状态 $title")), 5000) ?: error("Missing completion control")
+        val check =
+            device.wait(Until.findObject(By.desc("完成状态 $title")), 5000)
+                ?: error("Missing completion control")
         check.click()
         device.waitForIdle()
         click("不错")
@@ -63,11 +64,12 @@ class AppJourneyTest {
         start()
         click("待办")
         // Include completed records after recreating the activity.
-        val toggle = device.wait(Until.findObject(By.desc("显示已完成事项")), 5000) ?: error("Missing completed filter")
+        val toggle =
+            device.wait(Until.findObject(By.desc("显示已完成事项")), 5000)
+                ?: error("Missing completed filter")
         toggle.click()
         device.waitForIdle()
         assertNotNull(device.wait(Until.findObject(By.text(title)), 5000))
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-persisted.png")
     }
 }
-
