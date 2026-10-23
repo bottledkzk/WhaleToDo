@@ -12,6 +12,7 @@ data class DeskSnapshot(
     val settings: SettingRow,
     val workTimes: List<DailyWorkTimeRow>,
     val date: LocalDate,
+    val zoneId: String,
 )
 
 data class PlanPreview(val source: DeskSnapshot, val result: ScheduleResult)
@@ -30,6 +31,34 @@ class DeskRepository(private val db: DeskDatabase) {
         require(task.importance in 1..5)
         require(task.deadline >= 0)
         dao.save(task.copy(title = task.title.trim()))
+    }
+
+    /** Future manual reservations are edited atomically with their task. Past work is immutable. */
+    suspend fun saveScheduled(task: TaskRow, manual: Window?) = db.withTransaction {
+        val now = System.currentTimeMillis()
+        val old = dao.blocks()
+        val editable = old.filter { it.taskId == task.id && it.start > now && !it.done }
+        if (manual != null) {
+            require(!task.done) { "已完成事项请先恢复为待办" }
+            require(manual.start.toEpochMilli() > now) { "安排开始时间需晚于现在" }
+            require(java.time.Duration.between(manual.start, manual.end).toMinutes() >= 1) { "时段至少1分钟" }
+            require(task.deadline == 0L || manual.end.toEpochMilli() <= task.deadline) { "安排结束不能晚于截止时间" }
+            val reserved = old.filter { it !in editable && (it.locked || it.done || it.start <= now) }
+            require(reserved.none { it.start < manual.end.toEpochMilli() && it.end > manual.start.toEpochMilli() }) {
+                "与已固定或已开始的安排重叠，请选择其他时段"
+            }
+        }
+        save(task)
+        // Remove replaceable work for this task; a manual reservation also displaces overlapping auto work.
+        val retained = old.filterNot { b ->
+            b in editable && (b.locked || manual != null) ||
+                manual != null && !b.locked && !b.done && b.start > now &&
+                b.start < manual.end.toEpochMilli() && b.end > manual.start.toEpochMilli()
+        }
+        dao.clearBlocks()
+        dao.insertBlocks(retained + listOfNotNull(manual?.let {
+            BlockRow(UUID.randomUUID().toString(), task.id, it.start.toEpochMilli(), it.end.toEpochMilli(), locked = true)
+        }))
     }
 
     suspend fun complete(task: TaskRow, rating: Int) {
@@ -76,6 +105,7 @@ class DeskRepository(private val db: DeskDatabase) {
             dao.settings() ?: SettingRow(),
             dao.workTimes(),
             LocalDate.now(),
+            ZoneId.systemDefault().id,
         )
 
     suspend fun preview(): PlanPreview = db.withTransaction {
@@ -140,7 +170,10 @@ class DeskRepository(private val db: DeskDatabase) {
             dao.insertBlocks(
                 preview.result.blocks.map {
                     BlockRow(
-                        UUID.randomUUID().toString(),
+                        preview.source.blocks.find { old ->
+                            old.taskId == it.taskId && old.start == it.window.start.toEpochMilli() &&
+                                old.end == it.window.end.toEpochMilli() && old.locked == it.locked && old.done == it.done
+                        }?.id ?: UUID.randomUUID().toString(),
                         it.taskId,
                         it.window.start.toEpochMilli(),
                         it.window.end.toEpochMilli(),

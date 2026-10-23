@@ -1,6 +1,13 @@
 package io.whaletodo.app
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import io.whaletodo.core.Window
+import java.time.ZoneId
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.whaletodo.app.data.*
@@ -16,17 +23,35 @@ data class DeskState(
     val settings: SettingRow = SettingRow(),
     val workTimes: List<DailyWorkTimeRow> = emptyList(),
     val today: LocalDate = LocalDate.now(),
+    val zoneId: String = ZoneId.systemDefault().id,
+    val now: Long = System.currentTimeMillis(),
 )
 
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     private val repository = DeskRepository(DeskDatabase.open(app))
-    private val today = MutableStateFlow(LocalDate.now())
+    private data class ClockState(val date: LocalDate, val zone: String, val now: Long)
+    private fun clockState(): ClockState {
+        val zone = ZoneId.systemDefault()
+        return ClockState(LocalDate.now(zone), zone.id, System.currentTimeMillis())
+    }
+    private val clock = MutableStateFlow(clockState())
+    private val clockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { refreshClock() }
+    }
+    fun refreshClock() { clock.value = clockState() }
 
     init {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(clockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else app.registerReceiver(clockReceiver, filter)
         viewModelScope.launch {
             while (true) {
                 delay(30_000)
-                today.value = LocalDate.now()
+                refreshClock()
             }
         }
     }
@@ -41,7 +66,7 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
             ) { tasks, blocks, checks, settings, workTimes ->
                 DeskState(tasks, blocks, checks, settings ?: SettingRow(), workTimes)
             }
-            .combine(today) { state, date -> state.copy(today = date) }
+            .combine(clock) { state, time -> state.copy(today = time.date, zoneId = time.zone, now = time.now) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DeskState())
     var preview = MutableStateFlow<PlanPreview?>(null)
         private set
@@ -71,6 +96,17 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
     fun save(task: TaskRow) = run {
         repository.save(task)
         message.value = "已保存"
+    }
+
+    fun saveScheduled(task: TaskRow, manual: Window?, onSaved: () -> Unit = {}) = run {
+        repository.saveScheduled(task, manual)
+        message.value = "已保存安排"
+        onSaved()
+    }
+
+    override fun onCleared() {
+        getApplication<Application>().unregisterReceiver(clockReceiver)
+        super.onCleared()
     }
 
     fun complete(task: TaskRow, rating: Int) = run {

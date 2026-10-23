@@ -25,6 +25,7 @@ private fun ClockDialog(
     onDismiss: () -> Unit,
     onPrevious: (() -> Unit)? = null,
     onPick: (Int) -> Unit,
+    validation: (Int) -> String? = { null },
 ) {
     val state =
         rememberTimePickerState(
@@ -33,6 +34,7 @@ private fun ClockDialog(
             is24Hour = true,
         )
     val minutes = state.hour * 60 + state.minute
+    val error = validation(minutes)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -80,7 +82,7 @@ private fun ClockDialog(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Text(
-                        if (minutes < minimum) "结束时间不能早于开始时间" else " ",
+                        if (minutes < minimum) "结束时间不能早于开始时间" else error ?: " ",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -88,7 +90,7 @@ private fun ClockDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onPick(minutes) }, enabled = minutes >= minimum) {
+            TextButton(onClick = { onPick(minutes) }, enabled = minutes >= minimum && error == null) {
                 Text(confirm)
             }
         },
@@ -137,7 +139,8 @@ fun WorkTimeDialog(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DeadlinePickerDialog(initial: Long, onDismiss: () -> Unit, onSave: (Long) -> Unit) {
+fun DeadlinePickerDialog(initial: Long, onDismiss: () -> Unit, onSave: (Long) -> Unit,
+    label: String = "截止时间") {
     val zone = ZoneId.systemDefault()
     val existing = remember {
         if (initial > 0) Instant.ofEpochMilli(initial).atZone(zone)
@@ -161,7 +164,7 @@ fun DeadlinePickerDialog(initial: Long, onDismiss: () -> Unit, onSave: (Long) ->
         ) {
             DatePicker(
                 state = dateState,
-                title = { Text("截止日期", Modifier.padding(start = 24.dp, top = 18.dp)) },
+                title = { Text(if (label == "截止时间") "截止日期" else "${label}日期", Modifier.padding(start = 24.dp, top = 18.dp)) },
                 showModeToggle = false,
             )
         }
@@ -171,12 +174,16 @@ fun DeadlinePickerDialog(initial: Long, onDismiss: () -> Unit, onSave: (Long) ->
                 .atZone(ZoneOffset.UTC)
                 .toLocalDate()
         ClockDialog(
-            "截止时间 · ${date.format(DateTimeFormatter.ofPattern("M月d日"))}",
+            "$label · ${date.format(DateTimeFormatter.ofPattern("M月d日"))}",
             existing.hour * 60 + existing.minute,
             onDismiss = onDismiss,
             onPrevious = { step = 0 },
+            validation = { minute ->
+                runCatching { io.whaletodo.core.WallTime.resolve(date.atTime(minute / 60, minute % 60), zone) }
+                    .exceptionOrNull()?.message
+            },
             onPick = {
-                onSave(date.atTime(it / 60, it % 60).atZone(zone).toInstant().toEpochMilli())
+                onSave(io.whaletodo.core.WallTime.resolve(date.atTime(it / 60, it % 60), zone).toEpochMilli())
             },
         )
     }
