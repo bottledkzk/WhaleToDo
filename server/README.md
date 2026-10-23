@@ -10,10 +10,58 @@
 | 统一错误码（9 个） | ✅ 已实现 + 测试 |
 | 密码哈希（scrypt，Argon2id 待替换） | ✅ 已实现 + 测试 |
 | 不透明令牌（只存 SHA-256 摘要、15min/30d） | ✅ 已实现 + 测试 |
-| 积分账本（award/reserve/settle/release/adjust + 幂等） | ✅ 已实现 + 测试（26 项） |
-| Fastify 路由（`/auth/*`、`/me`） | ⏳ 下一步 |
-| Prisma schema 与迁移建议 | ⏳ 下一步（等 schema 归属确认后提交建议） |
-| PostgreSQL 集成测试 | ⏳ 本机无 Postgres/Docker，需先装或连服务器 |
+| 积分账本（award/reserve/settle/release/adjust + 幂等） | ✅ 已实现 + 测试（14 项） |
+| **账户接口**：`register / login / refresh / logout` | ✅ 已实现 + 测试（含刷新重放整串撤销） |
+| **个人资料**：`/me`、`/me/entitlements` | ✅ 已实现 + 测试 |
+| 健康检查 `/health/live`、`/health/ready`、`/meta` | ✅ 已实现 + 测试 |
+| 内存仓储（本地开发/测试）；Prisma 仓储 | ✅ 内存仓储已完成 / ⏳ Prisma 下一步 |
+| Prisma schema 与迁移建议 | ⏳ 下一步（schema 归属 Bottledkzk） |
+| PostgreSQL 集成测试 | ⏳ 本机无 Postgres/Docker |
+| 签到 `/rewards`、`/wallet`、`/orders`、`/sync` | ⏳ 下一阶段 |
+
+**测试现状：47 项全通过**（security 12 + ledger 14 + http 21）。
+
+## 本地启动（3 条命令）
+
+```bash
+cd server
+cp .env.example .env       # 无真实秘密，可直接用默认值
+npm install                # 当前仅需 fastify（约 85 秒）
+node src/main.ts           # 默认 http://127.0.0.1:8080/api/v1
+```
+
+启动日志会打印实际的 `api / business_timezone / payment_provider / storage`。
+内存仓储用于本地联调，**重启即清空**；接 Prisma 后换成数据库。
+
+## 接口样例（本地实跑，2026-10-23）
+
+| # | 请求 | 状态 | 响应要点 |
+| --- | --- | --- | --- |
+| 1 | `GET /health/live` | 200 | `{"request_id":"…","data":{"status":"ok"}}` |
+| 2 | `POST /auth/register` `{"username":"demo_43046","password":"…"}` | 201 | `data.user{id,username,display_name}` |
+| 3 | `POST /auth/login` 同上 | 200 | `access_token`、`refresh_token`、`token_type:"Bearer"`、`expires_in:899`、`refresh_expires_in:2591999` |
+| 4 | `GET /me` + `Authorization: Bearer` | 200 | `data.user{id,username,display_name,created_at}` |
+| 5 | `GET /me/entitlements` | 200 | `vip{active:false,expires_at:null}`、`balance{available,reserved}` |
+| 6 | `POST /auth/refresh` | 200 | 新 `access_token` + 轮换后的 `refresh_token` |
+| 7 | 用**旧** refresh 再请求 | 401 | `UNAUTHENTICATED / 刷新令牌已失效，请重新登录`（整串撤销） |
+| 8 | 撤销后用新 access 访问 `/me` | 401 | `UNAUTHENTICATED / 访问令牌无效、已撤销或已过期` |
+| 9 | 无令牌访问 `/me` | 401 | `UNAUTHENTICATED / 缺少访问令牌` |
+
+约定：所有响应含 `request_id`；错误体为 `{request_id, error:{code,message,details?}}`；
+注册支持 `Idempotency-Key`（同键同体返回原结果、同键异体返回 `CONFLICT`）。
+
+## 客户端基址（可配置）
+
+公网 `api.whaletodo.top:8443` 目前由 Nginx 返回 503（后端未部署），因此本阶段客户端基址**必须可配置**：
+
+| 场景 | 基址 |
+| --- | --- |
+| 本机联调（模拟器访问宿主机） | `http://10.0.2.2:8080/api/v1` |
+| 本机联调（真机同局域网） | `http://<本机内网IP>:8080/api/v1` |
+| 部署后（待公网 TLS 验证） | `https://api.whaletodo.top:8443/api/v1` |
+
+发布构建**不允许**跳过证书校验，也不允许把访问令牌发往 `http://`（见部署说明第 3 条）。
+
 
 ## 为什么现在就能跑测试
 
