@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model User {
+  id                String          @id @db.Uuid
+  demo_slot         Int             @unique @default(dbgenerated("next_demo_slot()"))
+  username          String          @db.VarChar(32)
+  email             String?         @db.VarChar(254)
+  email_verified_at DateTime?       @db.Timestamptz(3)
+  password_hash     String          @db.VarChar(512)
+  display_name      String          @db.VarChar(64)
+  role              String          @default("user") @db.VarChar(16)
+  status            String          @default("active") @db.VarChar(16)
+  created_at        DateTime        @default(now()) @db.Timestamptz(3)
+  updated_at        DateTime        @default(now()) @db.Timestamptz(3)
+  ai_requests       ai_requests[]
+  auth_sessions     auth_sessions[]
+  availability      availability[]
+  checkins          checkins[]
+  daily_claims      daily_claims[]
+  entitlements      entitlements[]
+  plan_blocks       plan_blocks[]
+  point_ledger      point_ledger[]
+  point_wallets     point_wallets?
+  sync_batches      sync_batches[]
+  sync_changes      sync_changes[]
+  tasks             tasks[]
+  user_settings     user_settings?
+
+  @@map("users")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model ai_requests {
+  id                String   @id @db.Uuid
+  user_id           String   @db.Uuid
+  client_request_id String   @db.Uuid
+  fingerprint       String   @db.Char(64)
+  mode              String   @db.VarChar(24)
+  model_code        String   @db.VarChar(64)
+  status            String   @db.VarChar(16)
+  points            Int
+  budget_tokens     Int
+  usage_tokens      Int?
+  response_text     String?
+  error_code        String?  @db.VarChar(32)
+  created_at        DateTime @default(now()) @db.Timestamptz(3)
+  updated_at        DateTime @default(now()) @db.Timestamptz(3)
+  users             User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, client_request_id])
+  @@index([created_at, user_id], map: "ai_requests_day")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model auth_sessions {
+  id                 String    @id @db.Uuid
+  user_id            String    @db.Uuid
+  access_hash        String    @unique @db.Char(64)
+  refresh_hash       String    @unique @db.Char(64)
+  family_id          String    @db.Uuid
+  access_expires_at  DateTime  @db.Timestamptz(3)
+  refresh_expires_at DateTime  @db.Timestamptz(3)
+  revoked_at         DateTime? @db.Timestamptz(3)
+  device_id          String?   @db.VarChar(128)
+  created_at         DateTime  @default(now()) @db.Timestamptz(3)
+  users              User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([family_id], map: "auth_sessions_family")
+  @@index([user_id], map: "auth_sessions_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model availability {
+  id           String    @id @db.Uuid
+  user_id      String    @db.Uuid
+  local_date   DateTime? @db.Date
+  weekday      Int?
+  start_minute Int
+  end_minute   Int
+  timezone     String    @db.VarChar(64)
+  version      Int       @default(1)
+  deleted_at   DateTime? @db.Timestamptz(3)
+  updated_at   DateTime  @default(now()) @db.Timestamptz(3)
+  users        User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model checkins {
+  id             String    @id @db.Uuid
+  user_id        String    @db.Uuid
+  task_id        String?   @db.Uuid
+  completed_at   DateTime  @db.Timestamptz(3)
+  actual_minutes Int?
+  rating         Int?
+  reflection     String    @default("") @db.VarChar(4096)
+  version        Int       @default(1)
+  deleted_at     DateTime? @db.Timestamptz(3)
+  updated_at     DateTime  @default(now()) @db.Timestamptz(3)
+  users          User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tasks          tasks?    @relation(fields: [user_id, task_id], references: [user_id, id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model daily_claims {
+  id            String   @id @db.Uuid
+  user_id       String   @db.Uuid
+  business_date DateTime @db.Date
+  reward_type   String   @db.VarChar(24)
+  points        Int
+  created_at    DateTime @default(now()) @db.Timestamptz(3)
+  users         User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, business_date, reward_type])
+}
+
+model entitlements {
+  id              String   @id @db.Uuid
+  user_id         String   @db.Uuid
+  kind            String   @db.VarChar(32)
+  expires_at      DateTime @db.Timestamptz(3)
+  source_order_id String?  @db.Uuid
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
+  users           User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model idempotency_receipts {
+  scope       String   @db.VarChar(80)
+  key         String   @db.VarChar(128)
+  fingerprint String   @db.Char(64)
+  response    Json
+  expires_at  DateTime @db.Timestamptz(3)
+
+  @@id([scope, key])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model plan_blocks {
+  id         String    @id @db.Uuid
+  user_id    String    @db.Uuid
+  task_id    String    @db.Uuid
+  starts_at  DateTime  @db.Timestamptz(3)
+  ends_at    DateTime  @db.Timestamptz(3)
+  locked     Boolean   @default(false)
+  completed  Boolean   @default(false)
+  version    Int       @default(1)
+  deleted_at DateTime? @db.Timestamptz(3)
+  updated_at DateTime  @default(now()) @db.Timestamptz(3)
+  users      User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tasks      tasks     @relation(fields: [user_id, task_id], references: [user_id, id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, id])
+  @@index([user_id, starts_at], map: "plan_blocks_owner_start")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model point_ledger {
+  id              String   @id @db.Uuid
+  user_id         String   @db.Uuid
+  event_id        String   @db.VarChar(160)
+  request_id      String?  @db.Uuid
+  type            String   @db.VarChar(16)
+  available_delta Int
+  reserved_delta  Int
+  balance_after   Int
+  reserved_after  Int
+  reason          String   @db.VarChar(160)
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
+  users           User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, event_id])
+  @@index([request_id], map: "point_ledger_request")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model point_wallets {
+  user_id    String   @id @db.Uuid
+  available  Int      @default(0)
+  reserved   Int      @default(0)
+  updated_at DateTime @default(now()) @db.Timestamptz(3)
+  users      User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model sync_batches {
+  id             String           @id @db.Uuid
+  user_id        String           @db.Uuid
+  batch_id       String           @db.Uuid
+  device_id      String           @db.VarChar(128)
+  fingerprint    String           @db.Char(64)
+  status         String           @db.VarChar(16)
+  response       Json?
+  created_at     DateTime         @default(now()) @db.Timestamptz(3)
+  users          User             @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sync_mutations sync_mutations[]
+
+  @@unique([user_id, batch_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model sync_changes {
+  seq         BigInt   @id @default(autoincrement())
+  user_id     String   @db.Uuid
+  object_type String   @db.VarChar(24)
+  object_id   String   @db.Uuid
+  version     Int
+  deleted     Boolean  @default(false)
+  payload     Json
+  created_at  DateTime @default(now()) @db.Timestamptz(3)
+  users       User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, seq], map: "sync_changes_owner_seq")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model sync_mutations {
+  id             String       @id @db.Uuid
+  batch_id       String       @db.Uuid
+  mutation_id    String       @db.Uuid
+  object_type    String       @db.VarChar(24)
+  object_id      String       @db.Uuid
+  op             String       @db.VarChar(8)
+  result         String       @db.VarChar(16)
+  server_version Int?
+  sync_batches   sync_batches @relation(fields: [batch_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([batch_id, mutation_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tasks {
+  id               String        @id @db.Uuid
+  user_id          String        @db.Uuid
+  title            String        @db.VarChar(160)
+  note             String        @default("") @db.VarChar(4096)
+  deadline         DateTime?     @db.Timestamptz(3)
+  earliest_start   DateTime?     @db.Timestamptz(3)
+  estimate_minutes Int?
+  importance       Decimal?      @db.Decimal(2, 1)
+  status           String        @default("inbox") @db.VarChar(16)
+  version          Int           @default(1)
+  deleted_at       DateTime?     @db.Timestamptz(3)
+  created_at       DateTime      @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime      @default(now()) @db.Timestamptz(3)
+  checkins         checkins[]
+  plan_blocks      plan_blocks[]
+  users            User          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, id])
+  @@index([user_id, updated_at, id], map: "tasks_owner_updated")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model user_settings {
+  user_id    String   @id @db.Uuid
+  settings   Json     @default("{}")
+  version    Int      @default(1)
+  updated_at DateTime @default(now()) @db.Timestamptz(3)
+  users      User     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}

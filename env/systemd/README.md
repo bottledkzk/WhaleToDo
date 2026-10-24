@@ -1,0 +1,11 @@
+# AI服务和备份
+
+AI服务使用独立系统用户、回环8081、160MiB内存上限。运行时固定Node24.15.0，下载应核对官方SHASUMS。
+
+`LoadCredential` 读取root专属文件：DeepSeek Key与AI数据库URL；密钥不作为命令行参数、仓库内容或普通.env。`ai-limits.env.example`只有非秘密限额。不要在日志中输出凭据、Authorization、原始请求/上游响应。
+
+先完成数据库迁移/权限和后端验证，再设置 `/opt/whaletodo/current` 指向经过验证的release。运行目录不可由服务用户写入。Nginx的AI snippet仅用于TLS虚拟主机，不要在HTTP上代理令牌请求。
+
+`whaletodo-backup.timer` 每日03:15 UTC（随机延后至10分钟）运行；备份文件只在服务器0700目录，单文件0600。备份不是异地容灾，课程期间应定期由管理员保存加密异地副本；不要把数据库转存到公共仓库。脚本必须LF换行。
+
+回滚网关：停止新增whaletodo-ai服务并将API虚拟主机恢复为原503占位，nginx -t后reload；不要占用或重启原443服务。数据库已写入后不随代码回滚删表；使用审过的前向迁移和备份恢复流程。
