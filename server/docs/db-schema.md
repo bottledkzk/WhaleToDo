@@ -10,7 +10,7 @@
 
 | 表 | 用途 | 关键约束 |
 | --- | --- | --- |
-| `users` | 账户主体（最少资料） | `username` 唯一；`password_hash` 只存哈希 |
+| `users` | 账户主体（最少资料） | `username` 唯一；**`email` 可空、有值时唯一**；`password_hash` 只存哈希 |
 | `auth_sessions` | 会话与令牌摘要 | 令牌只存 `char(64)` 的 SHA-256；`family_id` 支持整串撤销 |
 | `daily_claims` | 签到记录 | **唯一 `(user_id, business_date, reward_type)`**，防并发重复领取 |
 | `point_wallets` | 余额（可用／预占） | `CHECK (available >= 0)`、`CHECK (reserved >= 0)` |
@@ -18,10 +18,20 @@
 | `products` | 套餐（服务端定价） | 金额为最小货币单位整数 |
 | `orders` | 订单 | **唯一 `(user_id, idempotency_key)`**；`status`/`environment` 有 CHECK |
 | `payment_events` | 支付回调 | **唯一 `(provider, event_id)`**，重复回调不重复发放 |
+| `idempotency_receipts` | 幂等回执（替代内存缓存） | **唯一 `(scope, key)`**；只存 HMAC 指纹与响应快照，带过期时间 |
 | `entitlements` | VIP 权益 | 目前只有 `kind=vip` + 到期时间，权限码待定 |
 | `sync_batches` | 同步批次回执 | **唯一 `(user_id, batch_id)`** |
 | `sync_mutations` | 批次内逐项结果 | 外键指向 `sync_batches`；结果限 `applied/conflict/rejected` |
 | `sync_cursors` | 每设备拉取游标 | 主键 `(user_id, device_id)`，`last_seq` 单调 |
+
+## 1.1 与评审口径的对齐（2026-10-24 批准后调整）
+
+- **`users.email` 改为可空**（评审要求"邮箱可空、哈希密码"）；用部分唯一索引 `WHERE email IS NOT NULL`，
+  既允许不填邮箱，又保证填了就唯一。
+- **新增 `idempotency_receipts`**：评审要求"先把 users、auth_sessions 和幂等回执的字段与约束一起对齐"。
+  唯一键 `(scope, key)`，只存 HMAC 指纹 + 响应快照 + 状态码 + 过期时间，**不存请求体**（避免密码落库）。
+  现在的内存幂等缓存届时换成这张表，接口契约不变。
+- **账号角色分离**：迁移用独立 DDL 账号，运行时账号只有 DML（评审已明确，本稿不涉及角色创建）。
 
 ## 2. 按评审结论落实的四个点
 

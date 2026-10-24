@@ -17,6 +17,8 @@ datasource db {
 model User {
   id           String   @id @db.Uuid
   username     String   @unique @db.VarChar(32)
+  /// 邮箱可空（评审要求：邮箱可空、哈希密码）；有值时全局唯一
+  email        String?  @unique @db.VarChar(254)
   passwordHash String   @map("password_hash") @db.VarChar(255)
   displayName  String   @map("display_name") @db.VarChar(32)
   status       String   @default("active") @db.VarChar(16)
@@ -55,6 +57,26 @@ model AuthSession {
   @@index([refreshHash])
   @@index([familyId])
   @@map("auth_sessions")
+}
+
+/// 幂等回执：把「同一个 Idempotency-Key 的首次结果」落库，替代内存缓存。
+/// 唯一键 (scope, key)：scope 区分业务域（register / claim / order / sync）；
+/// 已登录场景把 user_id 拼进 scope 或 key，避免跨用户碰撞。
+/// 只存请求指纹（HMAC 摘要）与响应快照，**不存明文密码或令牌**。
+model IdempotencyReceipt {
+  id           String   @id @db.Uuid
+  scope        String   @db.VarChar(32)
+  key          String   @db.VarChar(64)
+  userId       String?  @map("user_id") @db.Uuid
+  fingerprint  String   @db.Char(64)
+  statusCode   Int      @map("status_code")
+  responseBody String   @map("response_body") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_receipts")
 }
 
 /* ==================== 签到与积分账本 ==================== */

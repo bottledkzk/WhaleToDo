@@ -9,6 +9,7 @@ BEGIN;
 CREATE TABLE users (
     id            uuid         PRIMARY KEY,
     username      varchar(32)  NOT NULL,
+    email         varchar(254),
     password_hash varchar(255) NOT NULL,
     display_name  varchar(32)  NOT NULL,
     status        varchar(16)  NOT NULL DEFAULT 'active',
@@ -18,6 +19,8 @@ CREATE TABLE users (
     CONSTRAINT users_username_len CHECK (char_length(username) BETWEEN 3 AND 32),
     CONSTRAINT users_status_chk   CHECK (status IN ('active', 'disabled'))
 );
+
+CREATE UNIQUE INDEX users_email_key ON users (email) WHERE email IS NOT NULL;
 
 CREATE TABLE auth_sessions (
     id                 uuid        PRIMARY KEY,
@@ -36,6 +39,21 @@ CREATE INDEX auth_sessions_user_revoked_idx ON auth_sessions (user_id, revoked_a
 CREATE INDEX auth_sessions_access_hash_idx  ON auth_sessions (access_hash);
 CREATE INDEX auth_sessions_refresh_hash_idx ON auth_sessions (refresh_hash);
 CREATE INDEX auth_sessions_family_idx       ON auth_sessions (family_id);
+
+CREATE TABLE idempotency_receipts (
+    id            uuid         PRIMARY KEY,
+    scope         varchar(32)  NOT NULL,
+    key           varchar(64)  NOT NULL,
+    user_id       uuid,
+    fingerprint   char(64)     NOT NULL,
+    status_code   int          NOT NULL,
+    response_body text         NOT NULL,
+    created_at    timestamptz(3) NOT NULL DEFAULT now(),
+    expires_at    timestamptz(3) NOT NULL,
+    -- 同一业务域内同一个幂等键只允许一条回执
+    CONSTRAINT idempotency_receipts_scope_key UNIQUE (scope, key)
+);
+CREATE INDEX idempotency_receipts_expires_idx ON idempotency_receipts (expires_at);
 
 -- ==================== 签到与积分账本 ====================
 CREATE TABLE daily_claims (

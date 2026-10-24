@@ -24,11 +24,11 @@ describe('schema.prisma 与迁移 SQL 对齐', () => {
     assert.deepEqual([...fromPrisma].sort(), [...fromSql].sort());
   });
 
-  test('覆盖契约要求的 12 张表', () => {
+  test('覆盖契约要求的 13 张表', () => {
     const expected = [
       'users', 'auth_sessions', 'daily_claims', 'point_wallets', 'point_ledger',
       'products', 'orders', 'payment_events', 'entitlements',
-      'sync_batches', 'sync_mutations', 'sync_cursors',
+      'idempotency_receipts', 'sync_batches', 'sync_mutations', 'sync_cursors',
     ];
     const fromSql = new Set(sqlTables(sql));
     for (const t of expected) assert.ok(fromSql.has(t), `缺少表 ${t}`);
@@ -115,5 +115,22 @@ describe('安全相关', () => {
       if (name === 'last_seq') { assert.equal(type, 'bigint', `${name} 应为 bigint`); continue; }
       assert.match(type!, /^timestamptz\(3\)$/, `${name} 应为 timestamptz(3)，实际 ${type}`);
     }
+  });
+});
+describe('评审对齐：邮箱可空与幂等回执', () => {
+  test('users.email 可空，且有部分唯一索引', () => {
+    assert.match(sql, /^\s+email\s+varchar\(254\),/m, 'email 必须允许为空');
+    assert.match(sql, /CREATE UNIQUE INDEX users_email_key ON users \(email\) WHERE email IS NOT NULL/);
+    assert.match(schema, /email\s+String\?\s+@unique/, 'Prisma 侧应为可空唯一');
+  });
+
+  test('幂等回执唯一键 (scope, key)，且不存明文请求体', () => {
+    assert.match(sql, /CONSTRAINT idempotency_receipts_scope_key UNIQUE \(scope, key\)/);
+    assert.match(sql, /fingerprint\s+char\(64\)\s+NOT NULL/, '只存 HMAC 指纹');
+    assert.match(sql, /expires_at\s+timestamptz\(3\) NOT NULL/, '回执需有过期时间');
+    // 回执表只存响应快照与指纹，不接受 password/token 列
+    const receiptBlock = sql.slice(sql.indexOf('CREATE TABLE idempotency_receipts'));
+    const body = receiptBlock.slice(0, receiptBlock.indexOf(');'));
+    assert.ok(!/\b(password|token)\b/i.test(body), '回执表不得出现密码/令牌列');
   });
 });
