@@ -122,3 +122,10 @@ server/
 3. `prisma/schema.prisma`（建议稿）：`users`、`auth_sessions`、`daily_claims`、`point_wallets`、`point_ledger`，
    其中账本唯一键为 `(user_id, event_id)`。
 4. 集成测试：需要 PostgreSQL（本机待装或用服务器），覆盖错误密码、令牌过期、刷新重放、撤销、A/B 越权。
+
+
+## Bottledkzk：数据库与独立AI网关（2026-10-23）
+
+账户业务主责不变；本地 `npm start` 仍是Weiding的内存账户联调入口，**不是公网部署入口**。新增独立 `npm run ai:start` 需systemd凭据和PG；PG迁移/权限、API契约和部署验证见 `../doc/Bottledkzk/2026-10-23-数据库与AI网关交接.md`。模型Key只在服务器。
+
+本分支 `npm test` 65项，`npm run typecheck`；`npm run test:database`只允许独立 `whaletodo_verify` 数据库和三种VERIFY_*_URL，11项集成测试会清空该验证库的合成用户，禁止指向正式库。`npm run db:validate`校验映射，`npm run db:deploy`只供受控迁移角色。共享CHECK/策略/索引/函数以SQL迁移为准。

@@ -1,0 +1,32 @@
+[Unit]
+Description=WhaleToDo bounded AI gateway
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+Requires=postgresql@16-main.service
+[Service]
+Type=simple
+User=whaletodo-ai
+Group=whaletodo-ai
+WorkingDirectory=/opt/whaletodo/current/server
+ExecStart=/opt/whaletodo-runtime/node-v24.15.0-linux-x64/bin/node --max-old-space-size=96 src/ai/main.ts
+EnvironmentFile=/etc/whaletodo/ai-limits.env
+LoadCredential=deepseek.key:/etc/whaletodo/deepseek.key
+LoadCredential=database.url:/etc/whaletodo/whaletodo_ai.url
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=55
+MemoryMax=160M
+TasksMax=48
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+[Install]
+WantedBy=multi-user.target
