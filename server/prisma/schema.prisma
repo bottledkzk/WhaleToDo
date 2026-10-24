@@ -1,0 +1,250 @@
+// WhaleToDo 数据库 schema 建议稿（PostgreSQL）
+// 归属：schema 与迁移由 Bottledkzk 统一维护，本文件是**建议稿**，供评审后合并。
+// 依据：doc/All/接口与数据契约草案.md 第 3 节 + 2026-10-23 评审结论。
+// 约定：所有时间为 timestamptz(3)（UTC）；id 为 uuid（v4）；金额用最小货币单位整数。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ==================== 账户 ==================== */
+
+model User {
+  id           String   @id @db.Uuid
+  username     String   @unique @db.VarChar(32)
+  /// 邮箱可空（评审要求：邮箱可空、哈希密码）；有值时全局唯一
+  email        String?  @unique @db.VarChar(254)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  displayName  String   @map("display_name") @db.VarChar(32)
+  status       String   @default("active") @db.VarChar(16)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions     AuthSession[]
+  wallet       PointWallet?
+  ledger       PointLedger[]
+  dailyClaims  DailyClaim[]
+  orders       Order[]
+  entitlements Entitlement[]
+  syncBatches  SyncBatch[]
+  syncCursors  SyncCursor[]
+
+  @@map("users")
+}
+
+/// 会话：令牌只存 SHA-256 摘要；同一登录链共享 family_id，重放时整串撤销
+model AuthSession {
+  id               String    @id @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  accessHash       String    @map("access_hash") @db.Char(64)
+  refreshHash      String    @map("refresh_hash") @db.Char(64)
+  familyId         String    @map("family_id") @db.Uuid
+  accessExpiresAt  DateTime  @map("access_expires_at") @db.Timestamptz(3)
+  refreshExpiresAt DateTime  @map("refresh_expires_at") @db.Timestamptz(3)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(3)
+  deviceId         String?   @map("device_id") @db.VarChar(64)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([accessHash])
+  @@index([refreshHash])
+  @@index([familyId])
+  @@map("auth_sessions")
+}
+
+/// 幂等回执：把「同一个 Idempotency-Key 的首次结果」落库，替代内存缓存。
+/// 唯一键 (scope, key)：scope 区分业务域（register / claim / order / sync）；
+/// 已登录场景把 user_id 拼进 scope 或 key，避免跨用户碰撞。
+/// 只存请求指纹（HMAC 摘要）与响应快照，**不存明文密码或令牌**。
+model IdempotencyReceipt {
+  id           String   @id @db.Uuid
+  scope        String   @db.VarChar(32)
+  key          String   @db.VarChar(64)
+  userId       String?  @map("user_id") @db.Uuid
+  fingerprint  String   @db.Char(64)
+  statusCode   Int      @map("status_code")
+  responseBody String   @map("response_body") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz(3)
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+  @@map("idempotency_receipts")
+}
+
+/* ==================== 签到与积分账本 ==================== */
+
+/// 签到：唯一键保证"每用户每业务日每奖励类型"只能领一次
+model DailyClaim {
+  id           String   @id @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  businessDate DateTime @map("business_date") @db.Date
+  rewardType   String   @map("reward_type") @db.VarChar(24)
+  points       Int
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, businessDate, rewardType])
+  @@map("daily_claims")
+}
+
+/// 钱包：available 与 reserved 分开，均不得为负（迁移 SQL 内有 CHECK 约束）
+model PointWallet {
+  userId    String   @id @map("user_id") @db.Uuid
+  available Int      @default(0)
+  reserved  Int      @default(0)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("point_wallets")
+}
+
+/// 流水：event_id 是幂等键（唯一）；request_id 只做关联，**不唯一**
+model PointLedger {
+  id            String   @id @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  eventId       String   @map("event_id") @db.VarChar(64)
+  type          String   @db.VarChar(16)
+  delta         Int
+  balanceAfter  Int      @map("balance_after")
+  reservedAfter Int      @map("reserved_after")
+  requestId     String?  @map("request_id") @db.VarChar(64)
+  reason        String?  @db.VarChar(120)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId])
+  @@index([userId, createdAt])
+  @@index([requestId])
+  @@map("point_ledger")
+}
+
+/* ==================== 商品、订单与支付 ==================== */
+
+model Product {
+  id         String  @id @map("product_id") @db.VarChar(32)
+  title      String  @db.VarChar(64)
+  priceMinor Int     @map("price_minor")
+  currency   String  @db.Char(3)
+  vipDays    Int     @map("vip_days")
+  points     Int
+  active     Boolean @default(true)
+
+  orders Order[]
+
+  @@map("products")
+}
+
+/// 订单：金额与币种以服务端商品快照为准，客户端不能决定
+model Order {
+  id             String    @id @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  productId      String    @map("product_id") @db.VarChar(32)
+  amountMinor    Int       @map("amount_minor")
+  currency       String    @db.Char(3)
+  status         String    @db.VarChar(16)
+  idempotencyKey String    @map("idempotency_key") @db.VarChar(64)
+  environment    String    @db.VarChar(16)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  paidAt         DateTime? @map("paid_at") @db.Timestamptz(3)
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+  paymentEvents PaymentEvent[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@map("orders")
+}
+
+/// 支付事件：唯一键 (provider, event_id) 保证重复回调不重复发放
+model PaymentEvent {
+  id          String   @id @db.Uuid
+  provider    String   @db.VarChar(16)
+  eventId     String   @map("event_id") @db.VarChar(64)
+  orderId     String   @map("order_id") @db.Uuid
+  status      String   @db.VarChar(16)
+  amountMinor Int      @map("amount_minor")
+  payloadHash String   @map("payload_hash") @db.Char(64)
+  receivedAt  DateTime @default(now()) @map("received_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, eventId])
+  @@index([orderId])
+  @@map("payment_events")
+}
+
+/// 权益：目前只有 kind=vip + 到期时间，具体权限码待定（不默认无限调用）
+model Entitlement {
+  id            String    @id @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  kind          String    @db.VarChar(16)
+  expiresAt     DateTime  @map("expires_at") @db.Timestamptz(3)
+  sourceOrderId String?   @map("source_order_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind, expiresAt])
+  @@map("entitlements")
+}
+
+/* ==================== 同步 ==================== */
+
+/// 批次回执：只记录"这一批有没有被处理"，与逐项明细分开
+model SyncBatch {
+  id        String   @id @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  batchId   String   @map("batch_id") @db.VarChar(64)
+  deviceId  String   @map("device_id") @db.VarChar(64)
+  status    String   @db.VarChar(16)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mutations SyncMutation[]
+
+  @@unique([userId, batchId])
+  @@map("sync_batches")
+}
+
+/// 逐项明细：每项的结果（applied/conflict/rejected）与回滚依据
+model SyncMutation {
+  id            String   @id @db.Uuid
+  batchId       String   @map("batch_id") @db.Uuid
+  objectType    String   @map("object_type") @db.VarChar(24)
+  objectId      String   @map("object_id") @db.VarChar(64)
+  op            String   @db.VarChar(8)
+  serverVersion Int      @map("server_version")
+  result        String   @db.VarChar(16)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  batch SyncBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([objectType, objectId])
+  @@map("sync_mutations")
+}
+
+/// 拉取游标：按设备记录已同步到的变更序号（不按手机时间判断新旧）
+model SyncCursor {
+  userId    String   @map("user_id") @db.Uuid
+  deviceId  String   @map("device_id") @db.VarChar(64)
+  lastSeq   BigInt   @map("last_seq")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, deviceId])
+  @@map("sync_cursors")
+}
