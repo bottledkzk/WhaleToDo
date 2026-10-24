@@ -15,7 +15,7 @@
 | **个人资料**：`/me`、`/me/entitlements` | ✅ 已实现 + 测试 |
 | 健康检查 `/health/live`、`/health/ready`、`/meta` | ✅ 已实现 + 测试 |
 | 内存仓储（本地开发/测试）；Prisma 仓储 | ✅ 内存仓储已完成 / ⏳ Prisma 下一步（迁移归属见下） |
-| Prisma schema 建议稿 | ⏳ 在后续 PR 提交（schema/迁移由 Bottledkzk 统一维护） |
+| Prisma schema 建议稿 + 初始迁移 SQL | ✅ 已提交（`prisma/schema.prisma` + `migrations/20261023000000_init`，14 项结构断言） |
 | PostgreSQL 集成测试 | ⏳ 服务器仅回环 5432，PG 16 + 受限账号就绪后补 |
 | 签到 `/rewards`、`/wallet`、`/orders`、`/sync` | ⏳ 后续 PR（不在本 PR 范围） |
 
