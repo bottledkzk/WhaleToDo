@@ -19,6 +19,7 @@ data class PlanPreview(val source: DeskSnapshot, val result: ScheduleResult)
 
 class DeskRepository(private val db: DeskDatabase) {
     val dao = db.dao()
+    fun close() = db.close()
 
     suspend fun capture(title: String) {
         require(title.isNotBlank())
@@ -30,6 +31,7 @@ class DeskRepository(private val db: DeskDatabase) {
         require(task.minutes in 0..525600)
         require(task.importance in 1..5)
         require(task.deadline >= 0)
+        require(TaskCategory.entries.any { it.code == task.category })
         dao.save(task.copy(title = task.title.trim()))
     }
 
@@ -59,6 +61,29 @@ class DeskRepository(private val db: DeskDatabase) {
         dao.insertBlocks(retained + listOfNotNull(manual?.let {
             BlockRow(UUID.randomUUID().toString(), task.id, it.start.toEpochMilli(), it.end.toEpochMilli(), locked = true)
         }))
+    }
+
+
+    /** Same preview/transaction boundary as manual planning; a receipt prevents repeated application. */
+    suspend fun applyAgent(id: String, owner: String, source: DeskSnapshot, changes: List<AgentChange>) = db.withTransaction {
+        check(dao.receiptCount(id, owner) == 0) { "此提案已采用" }
+        check(snapshot() == source) { "日程已变化，请重新生成提案" }
+        val zone = ZoneId.of(source.zoneId)
+        val windows = DailyWindows.build(source.date, 14, zone,
+            MinuteRange(source.settings.startHour*60, source.settings.endHour*60),
+            source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) })
+        AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline) },
+            source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
+        val updated = source.tasks.associateBy { it.id }.toMutableMap()
+        val blocks = source.blocks.associateBy { it.id }.toMutableMap()
+        changes.forEach { c -> when(c) {
+            is AgentChange.RenameTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(title=c.title.trim())
+            is AgentChange.CategorizeTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(category=c.category)
+            is AgentChange.MoveBlock -> blocks[c.blockId] = blocks.getValue(c.blockId).copy(start=c.start,end=c.end)
+        } }
+        updated.values.forEach { dao.save(it) }
+        dao.clearBlocks();dao.insertBlocks(blocks.values.toList())
+        dao.addReceipt(AgentReceiptRow(id,owner,System.currentTimeMillis()))
     }
 
     suspend fun complete(task: TaskRow, rating: Int) {
@@ -98,7 +123,7 @@ class DeskRepository(private val db: DeskDatabase) {
         dao.save(DailyWorkTimeRow(date.toString(), start, end))
     }
 
-    private suspend fun snapshot() =
+    suspend fun snapshot() =
         DeskSnapshot(
             dao.tasks(),
             dao.blocks(),

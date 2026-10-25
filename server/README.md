@@ -129,3 +129,8 @@ server/
 账户业务主责不变；本地 `npm start` 仍是Weiding的内存账户联调入口，**不是公网部署入口**。新增独立 `npm run ai:start` 需systemd凭据和PG；PG迁移/权限、API契约和部署验证见 `../doc/Bottledkzk/2026-10-23-数据库与AI网关交接.md`。模型Key只在服务器。
 
 本分支 `npm test` 65项，`npm run typecheck`；`npm run test:database`只允许独立 `whaletodo_verify` 数据库和三种VERIFY_*_URL，11项集成测试会清空该验证库的合成用户，禁止指向正式库。`npm run db:validate`校验映射，`npm run db:deploy`只供受控迁移角色。共享CHECK/策略/索引/函数以SQL迁移为准。
+
+
+## 0.4 Agent与计量候选（2026-10-24）
+
+新增edit模型门禁、模式提示词、分享风格、软整理、usage/k与实际Token积分结算；75项单元/接口、14项独立PG集成通过。第五个迁移目前仅在验证库应用，正式部署需交叉评审。默认AI_EDIT_ENABLED=false；账户/VIP/签到与网络仍由Weiding接入。契约、权限矩阵、未知请求查询、模板组件及图片导出边界见 `../doc/Bottledkzk/2026-10-24-AI助手设计与接入.md`。

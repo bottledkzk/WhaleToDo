@@ -233,60 +233,22 @@ internal fun CalendarPage(s: DeskState, onEdit: (TaskRow) -> Unit, onComplete: (
 }
 
 @Composable
-internal fun AssistantPage(onAccount: () -> Unit) {
-    var mode by rememberSaveable { mutableStateOf("对话") }
-    var menu by remember { mutableStateOf(false) }
-    var draft by rememberSaveable { mutableStateOf("") }
-    var login by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().imePadding()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("助手", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            Box {
-                TextButton(onClick = { menu = true }) { Text("$mode ▾") }
-                DropdownMenu(menu, { menu = false }) {
-                    listOf("对话", "安排计划", "日记复盘", "分享配文").forEach { title ->
-                        DropdownMenuItem(text = { Text(title) }, onClick = { mode = title; menu = false })
-                    }
-                }
-            }
-        }
-        Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("✦", fontSize = 48.sp, color = MaterialTheme.colorScheme.primary)
-            Text("把想法，变成下一步", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 15.dp))
-            Text("登录后使用 AI 助手", color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp))
-            TextButton(onClick = onAccount) { Text("前往账户") }
-        }
-        OutlinedTextField(draft, { if (it.length <= 4000) draft = it },
-            placeholder = { Text(when (mode) { "安排计划" -> "想怎样安排？"; "日记复盘" -> "今天有什么值得记下？"; "分享配文" -> "想分享什么？"; else -> "说说你的想法…" }) },
-            maxLines = 5, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp))
-        Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("未登录", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-            FilledTonalButton(onClick = { login = true }, enabled = draft.isNotBlank()) { Text("发送") }
-        }
-    }
-    if (login) AlertDialog(onDismissRequest = { login = false }, title = { Text("登录后继续") },
-        text = { Text("AI 助手需要登录，登录后可使用账户积分。") },
-        confirmButton = { TextButton(onClick = { login = false; onAccount() }) { Text("前往账户") } },
-        dismissButton = { TextButton(onClick = { login = false }) { Text("返回") } })
-}
-
-@Composable
-internal fun MyPage(s: DeskState) {
+internal fun MyPage(s: DeskState, initialPanel: String = "") {
     var panel by remember { mutableStateOf("") }
+    LaunchedEffect(initialPanel) { if(initialPanel.isNotEmpty()) panel=initialPanel }
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("appearance", Context.MODE_PRIVATE) }
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("我的", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Column(Modifier.padding(20.dp)) {
+                io.whaletodo.app.agent.WhaleAvatar()
                 Text("🐋  本机访客", style = MaterialTheme.typography.titleLarge)
                 Text("${s.tasks.count { it.done }} 件已完成 · ${s.tasks.count { !it.done }} 件待办", Modifier.padding(top = 8.dp))
                 TextButton(onClick = { panel = "账户" }) { Text("登录 / 注册") }
             }
         }
-        listOf("签到" to "每日积分", "账户" to "身份与会员", "设置" to "外观与时间", "关于" to "WhaleToDo 0.3.0").forEach { (title, subtitle) ->
+        listOf("签到" to "每日积分", "账户" to "身份与会员", "设置" to "外观与时间", "关于" to "WhaleToDo 0.4.0").forEach { (title, subtitle) ->
             OutlinedCard(onClick = { panel = title }, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(title, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
@@ -311,7 +273,7 @@ internal fun MyPage(s: DeskState) {
                 Text("日期与时间自动跟随系统", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
             }
-            "关于" -> Text("WhaleToDo 0.3.0\n记录、安排与复盘每一天。\n\n事项保存在此设备。")
+            "关于" -> Text("WhaleToDo 0.4.0\n记录、安排与复盘每一天。\n\n事项保存在此设备。")
             "签到" -> Text("登录后可领取每日积分。账户服务尚未开放。")
             else -> Text("账户服务尚未开放。你可以继续使用本机记录与安排。")
         }

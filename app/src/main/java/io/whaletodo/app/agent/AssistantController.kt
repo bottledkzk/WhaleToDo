@@ -1,0 +1,155 @@
+package io.whaletodo.app.agent
+
+import android.os.SystemClock
+import io.whaletodo.app.data.*
+import io.whaletodo.core.*
+import java.time.*
+import java.util.UUID
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+data class EditPreview(val id: String, val owner: String, val source: DeskSnapshot, val changes: List<AgentChange>)
+data class AssistantState(val owner: String = "guest", val access: AgentAccess = AgentAccess(),
+    val sessionId: String = UUID.randomUUID().toString(), val title: String = "新对话",
+    val mode: AgentMode = AgentMode.CHAT, val model: AgentModel = AgentModel("deepseek-default","DeepSeek"),
+    val models: List<AgentModel> = emptyList(), val shareStyle: String = "minimal", val includeAgenda: Boolean = true, val editConsent: Boolean = false,
+    val messages: List<AgentMessageRow> = emptyList(), val sessions: List<AgentSessionRow> = emptyList(),
+    val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null)
+
+class AssistantController(private val repo: DeskRepository, private val scope: CoroutineScope,
+    private val bridge: AgentBridge = AgentBridgeHub.bridge) {
+    private val mutable = MutableStateFlow(AssistantState(models=bridge.models))
+    val state: StateFlow<AssistantState> = mutable.asStateFlow()
+    init { scope.launch { bridge.access.collect { access ->
+        val owner = access.userId ?: "guest"
+        if(owner != mutable.value.owner) mutable.value=AssistantState(owner=owner,access=access,models=bridge.models)
+        else mutable.update { it.copy(access=access,models=bridge.models) }
+        refreshHistory()
+    } } }
+    private suspend fun refreshHistory() {
+        val owner=mutable.value.owner;val rows=repo.dao.sessions(owner)
+        mutable.update { if(it.owner==owner) it.copy(sessions=rows) else it }
+    }
+    fun newSession() { if(mutable.value.busySince!=null)return
+        mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda) }
+    }
+    fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,editConsent=false,preview=null) } }
+    fun model(model: AgentModel) { if(mutable.value.busySince==null) mutable.update { it.copy(model=model,editConsent=false,preview=null) } }
+    fun style(style: String) { if(ShareStyle.entries.any{it.code==style}) mutable.update {it.copy(shareStyle=style)} }
+    fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null) } }
+    fun consent(enabled:Boolean) { mutable.update { it.copy(editConsent=enabled,preview=null) } }
+    fun dismissGate(){ mutable.update { it.copy(gate=null) } }
+    fun dismissPreview(){mutable.update { it.copy(preview=null) }}
+    fun refresh(){scope.launch { refreshHistory() }}
+    fun openSession(row: AgentSessionRow) { scope.launch {
+        if(mutable.value.busySince!=null||row.ownerId!=mutable.value.owner)return@launch
+        val messages=repo.dao.messages(row.id,row.ownerId)
+        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,editConsent=false,
+            pendingId=messages.lastOrNull{m->m.role=="user"&&m.status=="pending"}?.id,
+            mode=AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode,
+            model=bridge.models.find{m->m.code==messages.lastOrNull{it.role=="user"}?.modelCode}?:it.model) else it }
+    } }
+    fun archive(row:AgentSessionRow) { scope.launch {
+        if(mutable.value.busySince!=null)return@launch
+        repo.dao.archiveSession(row.id,mutable.value.owner);if(row.id==mutable.value.sessionId)newSession();refreshHistory()
+    } }
+    private suspend fun saveMessage(row: AgentMessageRow, title:String) {
+        val prior=repo.dao.sessions(row.ownerId).find { it.id==row.sessionId }
+        repo.dao.save(AgentSessionRow(row.sessionId,row.ownerId,prior?.title?:title.take(28),prior?.created?:row.created,row.created))
+        repo.dao.addMessage(row)
+    }
+
+    private fun hash(snapshot:DeskSnapshot):String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(snapshot.toString().toByteArray()).joinToString(""){"%02x".format(it)}
+    private suspend fun receive(sent:AgentMessageRow,source:DeskSnapshot?,reply:AssistantReply) {
+        if(mutable.value.owner!=sent.ownerId||mutable.value.sessionId!=sent.sessionId)return
+        require(reply.text.isNotBlank()) { "助手暂未返回可用内容" }
+        val answer=AgentMessageRow(sent.id+":answer",sent.sessionId,sent.ownerId,"assistant",sent.mode,reply.text,
+            System.currentTimeMillis(),reply.totalTokens,reply.inputTokens,reply.outputTokens,reply.chargedPoints)
+        if(repo.dao.messages(sent.sessionId,sent.ownerId).none{it.id==answer.id})saveMessage(answer,sent.text)
+        repo.dao.requestStatus(sent.id,sent.ownerId,"complete")
+        val model=bridge.models.find{it.code==sent.modelCode}?:mutable.value.model
+        val canPreview=reply.changes.isNotEmpty()&&sent.mode==AgentMode.EDIT.code&&sent.editGranted&&source!=null&&
+            sent.snapshotHash==hash(source)&&AgentPolicy.gate(mutable.value.access,AgentMode.EDIT,model,true)==null
+        val rows=repo.dao.messages(sent.sessionId,sent.ownerId)
+        mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(messages=rows,pendingId=null,
+            preview=if(canPreview)EditPreview(sent.id,sent.ownerId,source!!,reply.changes)else null,
+            editConsent=false,model=model,
+            notice=if(reply.changes.isNotEmpty()&&!canPreview)"原提案已失效，可重新生成" else if(reply.continuation)"本次内容较长，可缩小范围后继续" else "")}
+        refreshHistory()
+    }
+    private suspend fun failed(sent:AgentMessageRow,error:Exception,querying:Boolean=false) {
+        if(mutable.value.owner!=sent.ownerId||mutable.value.sessionId!=sent.sessionId)return
+        val definite=(!querying&&error is AgentGateException) || error is AgentServiceException&&error.definitelyRejected
+        if(definite)repo.dao.requestStatus(sent.id,sent.ownerId,"failed")
+        mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(pendingId=if(definite)null else sent.id,
+            gate=(error as? AgentGateException)?.reason,
+            notice=if(definite)"本次未完成，可调整后再试" else "请求状态待确认，请查询结果；不会自动重复调用")}
+    }
+    fun send(draft:String) {
+        val source=mutable.value
+        if(source.busySince!=null||source.pendingId!=null||draft.isBlank())return
+        if(source.mode.edits&&!source.includeAgenda){mutable.update{it.copy(notice="请开启日程读取后生成提案")};return}
+        val gate=AgentPolicy.gate(source.access,source.mode,source.model,source.editConsent)
+        if(gate!=null){mutable.update{it.copy(gate=gate)};return}
+        scope.launch {
+            mutable.update{it.copy(busySince=SystemClock.elapsedRealtime(),notice="",preview=null)}
+            var sent:AgentMessageRow?=null
+            try {
+                val snapshot=repo.snapshot()
+                val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,draft.trim(),
+                    if(source.includeAgenda)agendaText(snapshot)else "",source.editConsent,source.shareStyle,
+                    source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner)
+                sent=AgentMessageRow(request.id,source.sessionId,source.owner,"user",source.mode.code,draft.trim(),
+                    System.currentTimeMillis(),status="pending",snapshotHash=hash(snapshot),modelCode=source.model.code,editGranted=source.editConsent)
+                saveMessage(sent,draft)
+                if(mutable.value.owner!=source.owner)return@launch
+                mutable.update{it.copy(messages=it.messages+sent,title=if(it.title=="新对话")draft.take(28)else it.title)}
+                check(bridge.access.value.userId==source.access.userId) { "账户已切换" }
+                val reply=withTimeout(60_000){bridge.reply(request)}
+                receive(sent,if(source.includeAgenda)snapshot else null,reply)
+            }catch(e:CancellationException){if(e is TimeoutCancellationException)sent?.let{failed(it,e)} else throw e}
+            catch(e:Exception){sent?.let{failed(it,e)}?:mutable.update{it.copy(notice="暂时无法读取日程")}}
+            finally {mutable.update{if(it.owner==source.owner&&it.sessionId==source.sessionId)it.copy(busySince=null)else it}}
+        }
+    }
+    fun queryPending() {
+        val source=mutable.value;val id=source.pendingId?:return
+        if(source.busySince!=null)return
+        if(source.access.userId==null){mutable.update{it.copy(gate=GateReason.LOGIN)};return}
+        mutable.update{it.copy(busySince=SystemClock.elapsedRealtime())}
+        scope.launch {
+            val sent=repo.dao.messages(source.sessionId,source.owner).find{it.id==id}
+            if(sent==null){mutable.update{it.copy(busySince=null,pendingId=null)};return@launch}
+            if(mutable.value.owner!=source.owner||mutable.value.sessionId!=source.sessionId)return@launch
+            mutable.update{it.copy(busySince=SystemClock.elapsedRealtime())}
+            try{val reply=withTimeout(60_000){bridge.query(id)};receive(sent,repo.snapshot(),reply)}
+            catch(e:CancellationException){if(e is TimeoutCancellationException)failed(sent,e,true)else throw e}
+            catch(e:Exception){failed(sent,e,true)}
+            finally{mutable.update{if(it.owner==source.owner&&it.sessionId==source.sessionId)it.copy(busySince=null)else it}}
+        }
+    }
+    fun applyPreview() {
+        val preview=mutable.value.preview?:return
+        val current=mutable.value
+        val gate=AgentPolicy.gate(current.access,AgentMode.EDIT,current.model,true)
+        if(gate!=null){mutable.update{it.copy(gate=gate)};return}
+        if(current.owner!=preview.owner)return
+        scope.launch {try {
+            repo.applyAgent(preview.id,preview.owner,preview.source,preview.changes)
+            mutable.update {it.copy(preview=null,notice="已应用提案")}
+        }catch(e:Exception){mutable.update {it.copy(preview=null,notice=e.message?:"提案已失效")}} }
+    }
+}
+
+/** All modes consume the same read-only copy; notes, credentials and account data are excluded. */
+internal fun agendaText(s:DeskSnapshot):String=buildString {
+    append("时区=${s.zoneId}; 日期=${s.date}; 默认可用=${s.settings.startHour}:00-${s.settings.endHour}:00\n")
+    val ordered=s.tasks.sortedWith(compareBy<TaskRow>{it.done}.thenBy{if(it.deadline>0)it.deadline else Long.MAX_VALUE})
+    ordered.take(100).forEach {t->
+        append("task id=${t.id} 标题=${t.title.replace('\n',' ')} 类型=${t.category} 工时=${t.minutes}min 截止=${if(t.deadline>0)Instant.ofEpochMilli(t.deadline)else "无"} 完成=${t.done}\n")
+    }
+    s.blocks.sortedBy{it.start}.take(100).forEach {b->append("block id=${b.id} task=${b.taskId} 开始=${Instant.ofEpochMilli(b.start)} 结束=${Instant.ofEpochMilli(b.end)} 固定=${b.locked} 完成=${b.done}\n")}
+    s.workTimes.take(14).forEach {append("空闲 ${it.date} ${it.startMinute}-${it.endMinute}min\n")}
+    if(ordered.size>100||s.blocks.size>100)append("其余条目未附带；请先缩小范围。\n")
+}

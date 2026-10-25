@@ -10,7 +10,7 @@ test('fixed HTTPS provider, no thinking, bounded tokens and supported messages',
  assert.equal(init?.redirect,'error');const b=JSON.parse(String(init?.body));assert.equal(b.thinking.type,'disabled');assert.equal(b.max_tokens,100);
  assert.equal(b.model,'deepseek-flash');assert.ok(!JSON.stringify(b).includes(config.apiKey));
  return new Response(JSON.stringify({choices:[{message:{content:'先完成一件小事'},finish_reason:'stop'}],usage:{total_tokens:12}}));};
- assert.deepEqual(await callDeepSeek(config,input,fetcher as typeof fetch),{text:'先完成一件小事',tokens:12});assert.equal(calls,1);
+ const result=await callDeepSeek(config,input,fetcher as typeof fetch);assert.equal(result.text,'先完成一件小事');assert.equal(result.tokens,12);assert.equal(result.continuation,false);assert.equal(calls,1);
 });
 test('HTTP auth/quota rejection is definite without exposing upstream body',async()=>{
  await assert.rejects(callDeepSeek(config,input,reply({detail:'sensitive-upstream'},401) as typeof fetch),(e:unknown)=>e instanceof ProviderFailure&&e.definite&&!e.message.includes('sensitive'));
@@ -19,8 +19,8 @@ test('timeout/server errors are unknown, never silently retried',async()=>{
  let calls=0;await assert.rejects(callDeepSeek(config,input,(async()=>{calls++;throw new Error('private-network-detail');}) as typeof fetch),(e:unknown)=>e instanceof ProviderFailure&&!e.definite&&!e.message.includes('private'));assert.equal(calls,1);
  await assert.rejects(callDeepSeek(config,input,reply({},500) as typeof fetch),(e:unknown)=>e instanceof ProviderFailure&&!e.definite);
 });
-test('empty, truncated and oversized output are unusable rather than successful',async()=>{
- for(const [text,reason] of [['','stop'],['half','length'],['x'.repeat(70000),'stop']]){
+test('empty and oversized output are unusable rather than successful',async()=>{
+ for(const [text,reason] of [['','stop'],['x'.repeat(70000),'stop']]){
  await assert.rejects(callDeepSeek(config,input,reply({choices:[{message:{content:text},finish_reason:reason}],usage:{total_tokens:5}}) as typeof fetch),ProviderFailure);}
 });
 test('token reservation is conservative across Chinese text and output budget',()=>{

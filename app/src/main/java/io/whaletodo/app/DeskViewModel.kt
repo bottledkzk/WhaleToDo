@@ -28,7 +28,8 @@ data class DeskState(
 )
 
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
-    private val repository = DeskRepository(DeskDatabase.open(app))
+    internal val repository = DeskRepository(DeskDatabase.open(app))
+    val assistant by lazy { io.whaletodo.app.agent.AssistantController(repository, viewModelScope) }
     private data class ClockState(val date: LocalDate, val zone: String, val now: Long)
     private fun clockState(): ClockState {
         val zone = ZoneId.systemDefault()
@@ -107,6 +108,7 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         getApplication<Application>().unregisterReceiver(clockReceiver)
+        repository.close()
         super.onCleared()
     }
 

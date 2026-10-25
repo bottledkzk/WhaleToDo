@@ -27,7 +27,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.whaletodo.app.data.*
 import io.whaletodo.app.ui.*
-import io.whaletodo.core.Window
+import io.whaletodo.core.*
+import io.whaletodo.app.agent.*
+import kotlinx.coroutines.launch
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -107,6 +109,13 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     var saveError by remember { mutableStateOf("") }
     LaunchedEffect(capture, edit?.id) { saveError = "" }
     val snackbar = remember { SnackbarHostState() }
+    val assistant by vm.assistant.state.collectAsStateWithLifecycle()
+    var shareDraft by remember { mutableStateOf<String?>(null) }
+    var shareGate by remember { mutableStateOf<GateReason?>(null) }
+    var trialStyle by remember { mutableStateOf(ShareStyle.MINIMAL) }
+    var accountPanel by remember { mutableStateOf("") }
+    LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null }
+    val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
     LaunchedEffect(message) {
         if (message.isNotEmpty()) {
@@ -139,7 +148,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
-            Row(
+            if (tab != 3) Row(
                 Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -180,16 +189,30 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                     )
                 1 -> AgendaPage(state, onPlan = { vm.arrange() }, onEdit = { edit = it },
                     onComplete = { if (it.done) vm.reopen(it) else rating = it },
-                    onShare = { text -> shareText(context, text) })
+                    onShare = { text -> shareDraft = text })
                 2 -> CalendarPage(state, onEdit = { edit = it },
                     onComplete = { if (it.done) vm.reopen(it) else rating = it },
-                    onShare = { text -> shareText(context, text) })
-                3 -> AssistantPage(onAccount = { tab = 4 })
-                4 -> MyPage(state)
+                    onShare = { text -> shareDraft = text })
+                3 -> AssistantPanel(vm.assistant, onAccount = { accountPanel="账户";tab=4 }, onVip = { accountPanel="会员";tab=4 }, onPoints = { accountPanel="积分";tab=4 })
+                4 -> MyPage(state, accountPanel)
 
             }
         }
     }
+    shareDraft?.let { text -> ShareStyleSheet(text, assistant.access, dismiss={shareDraft=null},
+        onExport={shareText(context,text);shareDraft=null},onGate={reason,style->shareGate=reason;trialStyle=style}) }
+    shareGate?.let { reason -> AccessDialog(reason,dismiss={shareGate=null},
+        onAccount={shareDraft=null;accountPanel="账户";tab=4},onVip={shareDraft=null;accountPanel="会员";tab=4},
+        onPoints={shareDraft=null;accountPanel="积分";tab=4},onTrial={uiScope.launch {
+            if(assistant.access.availablePoints<=0)shareGate=GateReason.POINTS
+            else {
+                val owner=vm.assistant.state.value.owner
+                val approved=AgentBridgeHub.bridge.authorizeTemplateTrial(trialStyle.code)
+                if(vm.assistant.state.value.owner==owner) {
+                    if(approved){shareDraft?.let {shareText(context,it)};shareDraft=null} else shareGate=GateReason.CONNECTION
+                }
+            }
+        }}) }
     if (capture)
         CaptureDialog(
             onDismiss = { capture = false },
@@ -439,6 +462,8 @@ internal fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRo
             )
             Column(Modifier.weight(1f).clickable { onEdit(t) }.padding(start = 4.dp)) {
                 Text(t.title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                if(t.category!="none") Text("${TaskCategory.from(t.category).symbol} ${TaskCategory.from(t.category).label}",
+                    color=Color(TaskCategory.from(t.category).color),fontSize=11.sp,modifier=Modifier.padding(top=4.dp))
                 Text(
                     buildString {
                         if (t.deadline > 0)
@@ -522,6 +547,8 @@ private fun EditDialog(
     manual: BlockRow? = null,
     externalError: String = "",
 ) {
+    var category by remember(t.id) { mutableStateOf(TaskCategory.from(t.category)) }
+    var categoryMenu by remember { mutableStateOf(false) }
     var title by remember(t.id) { mutableStateOf(t.title) }
     var effort by remember(t.id) { mutableStateOf(if (t.minutes > 0) t.minutes.toString() else "") }
     var unit by remember { mutableIntStateOf(0) }
@@ -553,6 +580,14 @@ private fun EditDialog(
                     label = { Text("标题") },
                     singleLine = true,
                 )
+                Box {
+                    OutlinedButton(onClick={categoryMenu=true},modifier=Modifier.fillMaxWidth().semantics{contentDescription="事务类型"}) {
+                        Text("${category.symbol} 类型 · ${category.label} ▾",color=Color(category.color))
+                    }
+                    DropdownMenu(categoryMenu,{categoryMenu=false}) { TaskCategory.entries.forEach { c ->
+                        DropdownMenuItem(text={Text("${c.symbol} ${c.label}")},onClick={category=c;categoryMenu=false})
+                    } }
+                }
                 OutlinedCard(
                     onClick = { choosingDeadline = true },
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "选择截止时间" },
@@ -668,6 +703,7 @@ private fun EditDialog(
                                 importance = importance,
                                 note = note,
                                 splittable = split,
+                                category = category.code,
                             ), reservation
                         )
                     } catch (e: Exception) {
