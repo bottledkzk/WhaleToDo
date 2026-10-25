@@ -310,6 +310,14 @@ export class PrismaRepository implements AccountRepository {
    *  3) 写 point_ledger（award，含 available_delta 与 balance_after）
    * 已领过则返回 claimed=false，不发奖也不写流水。
    */
+  async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<{ one: number }[]>`
+      SELECT 1 AS one FROM daily_claims
+       WHERE user_id = ${userId}::uuid AND business_date = ${businessDate}::date AND reward_type = ${rewardType}
+       LIMIT 1`;
+    return rows.length > 0;
+  }
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;

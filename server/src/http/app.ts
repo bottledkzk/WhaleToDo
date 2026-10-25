@@ -3,6 +3,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
+import { businessDate } from '../config.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -308,6 +309,58 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       balance: { available: wallet.available, reserved: wallet.reserved },
       daily_quota: { claimed_today: false, points: 0, reward_points: 0 },
     });
+  });
+
+  /* ---------- 签到与积分（发奖走真实 daily_claims + point_ledger） ---------- */
+  const DAILY_REWARD_POINTS = 30;
+
+  app.get('/api/v1/rewards/daily', async (req) => {
+    await requireAuth(req);
+    const date = businessDate(new Date(), config.businessTimezone);
+    const wallet = await repo.walletOf(req.userId!);
+    const claimed = repo.hasClaimedDaily
+      ? await repo.hasClaimedDaily(req.userId!, date, 'sign_in')
+      : false;
+    return ok(req.requestId, {
+      business_date: date,
+      claimed,
+      reward: { reward_type: 'sign_in', points: DAILY_REWARD_POINTS },
+      balance: { available: wallet.available, reserved: wallet.reserved },
+    });
+  });
+
+  app.post('/api/v1/rewards/daily/claim', async (req, reply) => {
+    await requireAuth(req);
+    const date = businessDate(new Date(), config.businessTimezone);
+    const eventId = `${req.userId}:${date}:sign_in`;
+
+    if (repo.claimDailyReward) {
+      const result = await repo.claimDailyReward({
+        userId: req.userId!,
+        businessDate: date,
+        rewardType: 'sign_in',
+        points: DAILY_REWARD_POINTS,
+        eventId,
+        reason: `sign-in:${date}`,
+      });
+      if (!result.claimed) {
+        throw new ApiError('CONFLICT', '今日已领取签到奖励', { business_date: date });
+      }
+      return reply.code(201).send(ok(req.requestId, {
+        business_date: date,
+        points_awarded: DAILY_REWARD_POINTS,
+        wallet: { available: result.available, reserved: result.reserved },
+      }));
+    }
+
+    // 没提供原子实现的仓储（理论上不该出现）：明确报错，避免静默不发奖
+    throw new ApiError('INTERNAL', '当前仓储未实现签到发奖');
+  });
+
+  app.get('/api/v1/wallet', async (req) => {
+    await requireAuth(req);
+    const w = await repo.walletOf(req.userId!);
+    return ok(req.requestId, { available: w.available, reserved: w.reserved, total: w.available + w.reserved });
   });
 
   app.get('/api/v1/meta', async (req) => ok(req.requestId, {

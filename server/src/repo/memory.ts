@@ -177,6 +177,10 @@ export class MemoryRepository {
   }
 
   /** 签到发奖：内存实现（唯一键语义用 Map 模拟，供本地联调与单元测试） */
+  async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
+    return this.store.claims.has(`${userId}:${businessDate}:${rewardType}`);
+  }
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;

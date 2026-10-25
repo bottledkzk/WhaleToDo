@@ -83,6 +83,8 @@ export interface AccountRepository {
    * 签到发奖（单事务）：插 daily_claims（唯一键兜并发）→ 加钱包余额 → 写 point_ledger。
    * 返回 claimed=false 表示今天已领过（不重复发奖、不写流水）。
    */
+  /** 查询某业务日是否已领取（供 GET /rewards/daily 展示用） */
+  hasClaimedDaily?(userId: string, businessDate: string, rewardType: string): Promise<boolean>;
   claimDailyReward?(input: {
     userId: string;
     businessDate: string;
