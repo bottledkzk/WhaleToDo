@@ -79,6 +79,18 @@ export interface AccountRepository {
   revokeFamily(familyId: string): Promise<number>;
 
   walletOf(userId: string): Promise<Wallet>;
+  /**
+   * 签到发奖（单事务）：插 daily_claims（唯一键兜并发）→ 加钱包余额 → 写 point_ledger。
+   * 返回 claimed=false 表示今天已领过（不重复发奖、不写流水）。
+   */
+  claimDailyReward?(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+    points: number;
+    eventId: string;
+    reason: string;
+  }): Promise<{ claimed: boolean; available: number; reserved: number }>;
   setWallet(userId: string, wallet: Wallet): Promise<void>;
 
   getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined>;

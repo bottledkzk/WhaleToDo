@@ -303,6 +303,51 @@ export class PrismaRepository implements AccountRepository {
     });
   }
 
+  /**
+   * 签到发奖：同一事务内
+   *  1) INSERT daily_claims ... ON CONFLICT DO NOTHING —— 唯一键 (user_id, business_date, reward_type) 兜住并发
+   *  2) 钱包 available += points（UPDATE ... RETURNING 拿到余额快照）
+   *  3) 写 point_ledger（award，含 available_delta 与 balance_after）
+   * 已领过则返回 claimed=false，不发奖也不写流水。
+   */
+  async claimDailyReward(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+    points: number;
+    eventId: string;
+    reason: string;
+  }): Promise<{ claimed: boolean; available: number; reserved: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const inserted = await tx.$executeRaw`
+        INSERT INTO daily_claims (id, user_id, business_date, reward_type, points)
+        VALUES (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.businessDate}::date, ${input.rewardType}, ${input.points})
+        ON CONFLICT (user_id, business_date, reward_type) DO NOTHING`;
+
+      if (inserted === 0) {
+        const w = await tx.point_wallets.findUnique({ where: { user_id: input.userId } });
+        return { claimed: false, available: w?.available ?? 0, reserved: w?.reserved ?? 0 };
+      }
+
+      const updated = await tx.$queryRaw<{ available: number; reserved: number }[]>`
+        UPDATE point_wallets
+           SET available = available + ${input.points}, updated_at = now()
+         WHERE user_id = ${input.userId}::uuid
+        RETURNING available, reserved`;
+      const wallet = updated[0];
+      if (!wallet) throw new Error('签到发奖时找不到钱包');
+
+      await tx.$executeRaw`
+        INSERT INTO point_ledger
+          (id, user_id, event_id, type, available_delta, reserved_delta, balance_after, reserved_after, reason)
+        VALUES
+          (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.eventId}, 'award',
+           ${input.points}, 0, ${wallet.available}, ${wallet.reserved}, ${input.reason})`;
+
+      return { claimed: true, available: wallet.available, reserved: wallet.reserved };
+    });
+  }
+
   /* ---------------- 幂等回执 ---------------- */
 
   async getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined> {

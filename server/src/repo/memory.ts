@@ -33,6 +33,13 @@ export interface MemoryStore {
   wallets: Map<string, Wallet>;
   /** 幂等键 -> { 请求指纹, 响应体 } */
   idempotency: Map<string, { fingerprint: string; response: unknown }>;
+  /** 签到记录：`${userId}:${businessDate}:${rewardType}` -> 发放积分 */
+  claims: Map<string, number>;
+  /** 账本流水（内存实现，接 Prisma 后由 point_ledger 承担） */
+  ledger: Array<{
+    id: string; userId: string; eventId: string; type: string; delta: number;
+    balanceAfter: number; reservedAfter: number; requestId: string | null; createdAt: number;
+  }>;
 }
 
 export function createMemoryStore(): MemoryStore {
@@ -42,6 +49,8 @@ export function createMemoryStore(): MemoryStore {
     sessions: new Map(),
     wallets: new Map(),
     idempotency: new Map(),
+    claims: new Map(),
+    ledger: [],
   };
 }
 
@@ -165,6 +174,37 @@ export class MemoryRepository {
     const repoUser = { id: user.id, username: user.username, displayName: user.displayName, createdAt: user.createdAt };
     this.saveIdempotent(input.scope, input.key, input.fingerprint, input.buildResponse(repoUser));
     return user;
+  }
+
+  /** 签到发奖：内存实现（唯一键语义用 Map 模拟，供本地联调与单元测试） */
+  async claimDailyReward(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+    points: number;
+    eventId: string;
+    reason: string;
+  }): Promise<{ claimed: boolean; available: number; reserved: number }> {
+    const key = `${input.userId}:${input.businessDate}:${input.rewardType}`;
+    const wallet = this.walletOf(input.userId);
+    if (this.store.claims.has(key)) {
+      return { claimed: false, available: wallet.available, reserved: wallet.reserved };
+    }
+    this.store.claims.set(key, input.points);
+    const next = { available: wallet.available + input.points, reserved: wallet.reserved };
+    this.setWallet(input.userId, next);
+    this.store.ledger.unshift({
+      id: randomUUID(),
+      userId: input.userId,
+      eventId: input.eventId,
+      type: 'award',
+      delta: input.points,
+      balanceAfter: next.available,
+      reservedAfter: next.reserved,
+      requestId: null,
+      createdAt: this.now(),
+    } as never);
+    return { claimed: true, available: next.available, reserved: next.reserved };
   }
 
   get userCount(): number { return this.store.users.size; }
