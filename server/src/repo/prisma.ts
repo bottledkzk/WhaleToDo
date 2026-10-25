@@ -9,6 +9,8 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
+import { decideMutation, batchStatus } from '../domain/sync.ts';
+import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
@@ -359,6 +361,115 @@ export class PrismaRepository implements AccountRepository {
       })),
       nextCursor: rows.length > size && last ? { createdAt: last.created_at.getTime(), id: last.id } : null,
     };
+  }
+
+  async pushSyncBatch(input: {
+    userId: string;
+    batchId: string;
+    deviceId: string;
+    fingerprint: string;
+    mutations: SyncMutationInput[];
+  }): Promise<{ replayed: boolean; status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      // 内容表与批次表都受 RLS 保护：本事务内设置认证用户
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
+
+      // 批次幂等：UNIQUE(user_id, batch_id)
+      const batchRowId = randomUUID();
+      const inserted = await tx.$executeRaw`
+        INSERT INTO sync_batches (id, user_id, batch_id, device_id, fingerprint, status)
+        VALUES (${batchRowId}::uuid, ${input.userId}::uuid, ${input.batchId}::uuid, ${input.deviceId}, ${input.fingerprint}, 'processing')
+        ON CONFLICT (user_id, batch_id) DO NOTHING`;
+
+      if (inserted === 0) {
+        const existing = await tx.$queryRaw<{ status: string; response: unknown }[]>`
+          SELECT status, response FROM sync_batches
+           WHERE user_id = ${input.userId}::uuid AND batch_id = ${input.batchId}::uuid`;
+        const row = existing[0];
+        if (row?.response) {
+          const saved = row.response as { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] };
+          return { replayed: true, status: saved.status, items: saved.items };
+        }
+        throw new Error('SYNC_BATCH_PENDING');
+      }
+
+      const items: SyncMutationResult[] = [];
+      for (const m of input.mutations) {
+        // 当前对象版本：取该对象最新一条变更
+        const currentRows = await tx.$queryRaw<{ version: number; deleted: boolean }[]>`
+          SELECT version, deleted FROM sync_changes
+           WHERE user_id = ${input.userId}::uuid
+             AND object_type = ${m.objectType}
+             AND object_id = ${m.objectId}::uuid
+           ORDER BY seq DESC LIMIT 1`;
+        const current = currentRows[0] ? { version: currentRows[0].version, deleted: currentRows[0].deleted } : null;
+
+        const decided = decideMutation(current, m);
+        let serverVersion = decided.serverVersion;
+
+        if (decided.result === 'applied') {
+          serverVersion = decided.serverVersion ?? 1;
+          await tx.$executeRaw`
+            INSERT INTO sync_changes (user_id, object_type, object_id, version, deleted, payload)
+            VALUES (${input.userId}::uuid, ${m.objectType}, ${m.objectId}::uuid, ${serverVersion}, ${m.op === 'delete'}, ${JSON.stringify(m.payload ?? null)}::jsonb)`;
+        }
+
+        await tx.$executeRaw`
+          INSERT INTO sync_mutations
+            (id, batch_id, mutation_id, object_type, object_id, op, result, server_version)
+          VALUES (${randomUUID()}::uuid, ${batchRowId}::uuid, ${randomUUID()}::uuid,
+                  ${m.objectType}, ${m.objectId}::uuid, ${m.op}, ${decided.result}, ${serverVersion})`;
+
+        items.push({
+          object_type: m.objectType,
+          object_id: m.objectId,
+          op: m.op,
+          result: decided.result,
+          server_version: serverVersion,
+          ...(decided.reason ? { reason: decided.reason } : {}),
+        });
+      }
+
+      const status = batchStatus(items);
+      await tx.$executeRaw`
+        UPDATE sync_batches SET status = ${status}, response = ${JSON.stringify({ status, items })}::jsonb
+         WHERE id = ${batchRowId}::uuid`;
+
+      return { replayed: false, status, items };
+    });
+  }
+
+  async pullSyncChanges(userId: string, cursor: number, limit: number): Promise<{
+    changes: Array<{ seq: number; objectType: string; objectId: string; version: number; deleted: boolean; payload: unknown }>;
+    nextCursor: number;
+    hasMore: boolean;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 200);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
+      const rows = await tx.$queryRaw<Array<{
+        seq: bigint; object_type: string; object_id: string; version: number; deleted: boolean; payload: unknown;
+      }>>`
+        SELECT seq, object_type, object_id, version, deleted, payload
+          FROM sync_changes
+         WHERE user_id = ${userId}::uuid AND seq > ${cursor}
+         ORDER BY seq ASC
+         LIMIT ${size + 1}`;
+      const page = rows.slice(0, size);
+      const last = page[page.length - 1];
+      return {
+        changes: page.map((r) => ({
+          seq: Number(r.seq),
+          objectType: r.object_type,
+          objectId: r.object_id,
+          version: r.version,
+          deleted: r.deleted,
+          payload: r.payload,
+        })),
+        nextCursor: last ? Number(last.seq) : cursor,
+        hasMore: rows.length > size,
+      };
+    });
   }
 
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {

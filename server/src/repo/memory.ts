@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoUser } from './types.ts';
+import { decideMutation, batchStatus } from '../domain/sync.ts';
+import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 
 export interface User {
   id: string;
@@ -35,6 +37,14 @@ export interface MemoryStore {
   idempotency: Map<string, { fingerprint: string; response: unknown }>;
   /** 签到记录：`${userId}:${businessDate}:${rewardType}` -> 发放积分 */
   claims: Map<string, number>;
+  /** 同步：对象当前状态 key=`${userId}:${type}:${id}` */
+  syncObjects: Map<string, { version: number; deleted: boolean; payload: unknown; seq: number }>;
+  /** 同步：变更序列（全局单调递增，按用户过滤） */
+  syncChanges: Array<{ seq: number; userId: string; objectType: string; objectId: string; version: number; deleted: boolean; payload: unknown }>;
+  /** 同步：批次回执 key=`${userId}:${batchId}` */
+  syncBatches: Map<string, { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }>;
+  /** 同步：序列计数器 */
+  syncSeq: number;
   /** 账本流水（内存实现，接 Prisma 后由 point_ledger 承担） */
   ledger: Array<{
     id: string; userId: string; eventId: string; type: string; delta: number;
@@ -51,6 +61,10 @@ export function createMemoryStore(): MemoryStore {
     idempotency: new Map(),
     claims: new Map(),
     ledger: [],
+    syncObjects: new Map(),
+    syncChanges: [],
+    syncBatches: new Map(),
+    syncSeq: 0,
   };
 }
 
@@ -214,6 +228,76 @@ export class MemoryRepository {
         createdAt: r.createdAt,
       })),
       nextCursor: sorted.length > size && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
+  }
+
+  async pushSyncBatch(input: {
+    userId: string;
+    batchId: string;
+    deviceId: string;
+    fingerprint: string;
+    mutations: SyncMutationInput[];
+  }): Promise<{ replayed: boolean; status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }> {
+    const batchKey = `${input.userId}:${input.batchId}`;
+    const cached = this.store.syncBatches.get(batchKey);
+    if (cached) return { replayed: true, ...cached };
+
+    const items: SyncMutationResult[] = [];
+    for (const m of input.mutations) {
+      const key = `${input.userId}:${m.objectType}:${m.objectId}`;
+      const current = this.store.syncObjects.get(key) ?? null;
+      const decided = decideMutation(current ? { version: current.version, deleted: current.deleted } : null, m);
+      let serverVersion = decided.serverVersion;
+      if (decided.result === 'applied') {
+        serverVersion = decided.serverVersion ?? 1;
+        this.store.syncSeq += 1;
+        this.store.syncObjects.set(key, {
+          version: serverVersion,
+          deleted: m.op === 'delete',
+          payload: m.op === 'delete' ? null : m.payload,
+          seq: this.store.syncSeq,
+        });
+        this.store.syncChanges.push({
+          seq: this.store.syncSeq,
+          userId: input.userId,
+          objectType: m.objectType,
+          objectId: m.objectId,
+          version: serverVersion,
+          deleted: m.op === 'delete',
+          payload: m.op === 'delete' ? null : m.payload,
+        });
+      }
+      items.push({
+        object_type: m.objectType,
+        object_id: m.objectId,
+        op: m.op,
+        result: decided.result,
+        server_version: serverVersion,
+        ...(decided.reason ? { reason: decided.reason } : {}),
+      });
+    }
+    const status = batchStatus(items);
+    this.store.syncBatches.set(batchKey, { status, items });
+    return { replayed: false, status, items };
+  }
+
+  async pullSyncChanges(userId: string, cursor: number, limit: number): Promise<{
+    changes: Array<{ seq: number; objectType: string; objectId: string; version: number; deleted: boolean; payload: unknown }>;
+    nextCursor: number;
+    hasMore: boolean;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 200);
+    const mine = this.store.syncChanges
+      .filter((c) => c.userId === userId && c.seq > cursor)
+      .sort((a, b) => a.seq - b.seq);
+    const page = mine.slice(0, size);
+    return {
+      changes: page.map((c) => ({
+        seq: c.seq, objectType: c.objectType, objectId: c.objectId,
+        version: c.version, deleted: c.deleted, payload: c.payload,
+      })),
+      nextCursor: page.length ? page[page.length - 1]!.seq : cursor,
+      hasMore: mine.length > page.length,
     };
   }
 

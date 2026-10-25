@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { businessDate } from '../config.ts';
+import { parsePushBody } from '../domain/sync.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -407,6 +408,49 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         created_at: new Date(r.createdAt).toISOString(),
       })),
       next_cursor: page.nextCursor ? `${page.nextCursor.createdAt}:${page.nextCursor.id}` : null,
+    });
+  });
+
+  /* ---------- 同步（五种对象类型，批次幂等 + 版本冲突） ---------- */
+  app.post('/api/v1/sync/push', async (req) => {
+    await requireAuth(req);
+    if (!repo.pushSyncBatch) throw new ApiError('INTERNAL', '当前仓储未实现同步');
+    const { batchId, deviceId, mutations } = parsePushBody(req.body);
+    const fingerprint = fingerprintOf(config.idempotencySecret, mutations);
+    const result = await repo.pushSyncBatch({
+      userId: req.userId!, batchId, deviceId, fingerprint, mutations,
+    });
+    return ok(req.requestId, {
+      batch_id: batchId,
+      status: result.status,
+      replayed: result.replayed,
+      items: result.items,
+    });
+  });
+
+  app.get('/api/v1/sync/pull', async (req) => {
+    await requireAuth(req);
+    if (!repo.pullSyncChanges) throw new ApiError('INTERNAL', '当前仓储未实现同步');
+    const q = (req.query ?? {}) as { cursor?: string; limit?: string };
+    if (q.cursor !== undefined && !/^\d{1,16}$/.test(q.cursor)) {
+      throw new ApiError('VALIDATION_ERROR', 'cursor 非法');
+    }
+    if (q.limit !== undefined && !/^\d{1,3}$/.test(q.limit)) {
+      throw new ApiError('VALIDATION_ERROR', 'limit 非法');
+    }
+    const cursor = q.cursor === undefined ? 0 : Number(q.cursor);
+    const limit = q.limit === undefined ? 100 : Number(q.limit);
+    const page = await repo.pullSyncChanges(req.userId!, cursor, limit);
+    return ok(req.requestId, {
+      changes: page.changes.map((c) => ({
+        object_type: c.objectType,
+        object_id: c.objectId,
+        version: c.version,
+        deleted: c.deleted,
+        payload: c.payload,
+      })),
+      next_cursor: page.nextCursor,
+      has_more: page.hasMore,
     });
   });
 
