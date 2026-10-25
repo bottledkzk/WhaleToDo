@@ -354,8 +354,16 @@ function splitScopeKey(raw: string): { scope: string; k: string } {
   return { scope: raw.slice(0, idx).slice(0, 80), k: raw.slice(idx + 1).slice(0, 128) };
 }
 
-/** Prisma 唯一约束冲突（P2002）：只在这种情况下按"已存在"处理 */
+/**
+ * 唯一约束冲突识别：
+ *  - Prisma 模型层：P2002
+ *  - 原生 $executeRaw：P2010，且 meta.code === '23505'（PostgreSQL unique_violation）
+ * 只认这两类；其他 P2010（权限、语法、连接）必须继续传播，不能被吞。
+ */
 function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: string; meta?: { code?: string } };
+  if (e.code === 'P2002') return true;
+  return e.code === 'P2010' && e.meta?.code === '23505';
 }
 
