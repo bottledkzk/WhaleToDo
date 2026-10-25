@@ -6,6 +6,7 @@ import { ApiError } from '../lib/security.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
+import { RegisterConflict } from '../repo/types.ts';
 import type { ServerConfig } from '../config.ts';
 
 declare module 'fastify' {
@@ -133,19 +134,41 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       throw new ApiError('CONFLICT', '用户名已被占用');
     }
     // 有组合方法时用它：用户创建与回执写入在同一事务，避免"建了用户但没写回执"导致重试 409
-    const user = repo.createUserWithReceipt && scopeKey
-      ? await repo.createUserWithReceipt({
+    const requestFingerprint = fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null });
+    let user;
+    if (repo.createUserWithReceipt && scopeKey) {
+      try {
+        user = await repo.createUserWithReceipt({
           username,
           password,
           displayName: body.display_name,
           scope: scopeKey,
           key: idemKey,
-          fingerprint: fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }),
+          fingerprint: requestFingerprint,
           buildResponse: (u) => ok(req.requestId, {
             user: { id: u.id, username: u.username, display_name: u.displayName },
           }),
-        })
-      : await repo.createUser(username, password, body.display_name);
+        });
+      } catch (err) {
+        // 并发/重放：重读回执，同指纹返回首次结果，异体 409（评审 P2）
+        if (err instanceof RegisterConflict && (err.kind === 'IDEMPOTENT_REPLAY' || err.kind === 'IDEMPOTENCY_RACE')) {
+          const existing = await repo.getIdempotent(scopeKey, idemKey);
+          if (existing) {
+            if (existing.fingerprint !== requestFingerprint) {
+              throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
+            }
+            return reply.code(201).send(existing.response);
+          }
+          throw new ApiError('CONFLICT', '同一注册请求正在处理，请稍后重试');
+        }
+        if (err instanceof RegisterConflict && err.kind === 'USERNAME_TAKEN') {
+          throw new ApiError('CONFLICT', '用户名已被占用');
+        }
+        throw err;
+      }
+    } else {
+      user = await repo.createUser(username, password, body.display_name);
+    }
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });

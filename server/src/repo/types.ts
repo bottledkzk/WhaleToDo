@@ -84,3 +84,13 @@ export interface AccountRepository {
   getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined>;
   saveIdempotent(scope: string, key: string, fingerprint: string, response: unknown): Promise<void>;
 }
+
+/** 注册事务中的可识别冲突：由路由映射成 201(重放) / 409，不变成 500 */
+export class RegisterConflict extends Error {
+  readonly kind: 'IDEMPOTENT_REPLAY' | 'IDEMPOTENCY_RACE' | 'USERNAME_TAKEN';
+  constructor(kind: 'IDEMPOTENT_REPLAY' | 'IDEMPOTENCY_RACE' | 'USERNAME_TAKEN') {
+    super(kind);
+    this.name = 'RegisterConflict';
+    this.kind = kind;
+  }
+}

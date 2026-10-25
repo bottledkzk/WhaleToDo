@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
+import { RegisterConflict } from './types.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
@@ -213,6 +214,13 @@ export class PrismaRepository implements AccountRepository {
    * 注册 + 回执同一事务：任一步失败则整体回滚，不会留下"有用户没回执"的中间态。
    * 回执唯一冲突（并发同 key）会抛 P2002，由路由重新读取回执处理。
    */
+  /**
+   * 注册 + 回执同一事务（评审 P2）：
+   *  - 未过期的既有回执 → 抛 RegisterConflict('IDEMPOTENT_REPLAY')，路由读回执比较指纹
+   *  - 已过期的既有回执 → 条件 UPDATE 抢占（影响 0 行说明别人抢先 → IDEMPOTENCY_RACE）
+   *  - users 唯一冲突 → USERNAME_TAKEN（普通用户名占用）而不是 500
+   *  - 回执插入唯一冲突 → IDEMPOTENCY_RACE
+   */
   async createUserWithReceipt(input: {
     username: string;
     password: string;
@@ -226,10 +234,32 @@ export class PrismaRepository implements AccountRepository {
     const id = randomUUID();
     const expiresAt = new Date(this.now() + IDEMPOTENCY_TTL_MS);
 
-    const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`
-        INSERT INTO users (id, username, password_hash, display_name)
-        VALUES (${id}::uuid, ${input.username}, ${passwordHash}, ${(input.displayName ?? input.username).slice(0, 64)})`;
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.idempotency_receipts.findUnique({
+        where: { scope_key: { scope: input.scope, key: input.key } },
+      });
+      let claimedExpired = false;
+
+      if (existing) {
+        if (existing.expires_at.getTime() > this.now()) throw new RegisterConflict('IDEMPOTENT_REPLAY');
+        // 过期行仍占着主键：本次注册事务内原子替换，避免 create 撞唯一约束
+        const updated = await tx.$executeRaw`
+          UPDATE idempotency_receipts
+             SET fingerprint = ${input.fingerprint}, expires_at = ${expiresAt}
+           WHERE scope = ${input.scope} AND key = ${input.key} AND expires_at <= now()`;
+        if (updated !== 1) throw new RegisterConflict('IDEMPOTENCY_RACE');
+        claimedExpired = true;
+      }
+
+      try {
+        await tx.$executeRaw`
+          INSERT INTO users (id, username, password_hash, display_name)
+          VALUES (${id}::uuid, ${input.username}, ${passwordHash}, ${(input.displayName ?? input.username).slice(0, 64)})`;
+      } catch (err) {
+        if (isUniqueViolation(err)) throw new RegisterConflict('USERNAME_TAKEN');
+        throw err;
+      }
+
       const rows = await tx.$queryRaw<UserRow[]>`
         SELECT id, username, display_name, created_at FROM users WHERE id = ${id}::uuid`;
       const user = rows[0];
@@ -238,18 +268,25 @@ export class PrismaRepository implements AccountRepository {
       await tx.$executeRaw`SELECT set_config('app.user_id', ${user.id}, true)`;
       await tx.user_settings.create({ data: { user_id: user.id } });
       await tx.point_wallets.create({ data: { user_id: user.id } });
-      await tx.idempotency_receipts.create({
-        data: {
-          scope: input.scope,
-          key: input.key,
-          fingerprint: input.fingerprint,
-          response: input.buildResponse(toRepoUser(user)) as object,
-          expires_at: expiresAt,
-        },
-      });
-      return user;
+
+      const responseJson = JSON.stringify(input.buildResponse(toRepoUser(user)));
+      if (claimedExpired) {
+        await tx.$executeRaw`
+          UPDATE idempotency_receipts
+             SET fingerprint = ${input.fingerprint}, response = ${responseJson}::jsonb, expires_at = ${expiresAt}
+           WHERE scope = ${input.scope} AND key = ${input.key}`;
+      } else {
+        try {
+          await tx.$executeRaw`
+            INSERT INTO idempotency_receipts (scope, key, fingerprint, response, expires_at)
+            VALUES (${input.scope}, ${input.key}, ${input.fingerprint}, ${responseJson}::jsonb, ${expiresAt})`;
+        } catch (err) {
+          if (isUniqueViolation(err)) throw new RegisterConflict('IDEMPOTENCY_RACE');
+          throw err;
+        }
+      }
+      return toRepoUser(user);
     });
-    return toRepoUser(created);
   }
 
   /* ---------------- 钱包 ---------------- */
@@ -281,18 +318,23 @@ export class PrismaRepository implements AccountRepository {
    *  - 只有已过期回执允许替换
    *  - 并发插入的唯一冲突（P2002）按"已存在"处理；其他错误（连接、权限、超长等）必须抛出
    */
+  /**
+   * 保存回执（TTL 感知，不覆盖未过期结果）。
+   * 过期替换用**条件 UPDATE**（WHERE expires_at <= now()）抢占：
+   * 两个请求同时读到过期行时，只有一个的 UPDATE 影响 1 行，另一个放弃并尊重赢家。
+   */
   async saveIdempotent(scope: string, key: string, fingerprint: string, response: unknown): Promise<void> {
     const expiresAt = new Date(this.now() + IDEMPOTENCY_TTL_MS);
-    const where = { scope_key: { scope, key } };
-    const existing = await this.prisma.idempotency_receipts.findUnique({ where });
+    const existing = await this.prisma.idempotency_receipts.findUnique({ where: { scope_key: { scope, key } } });
 
     if (existing) {
       if (existing.expires_at.getTime() > this.now()) return;   // 未过期：保留首次结果
-      await this.prisma.idempotency_receipts.update({
-        where,
-        data: { fingerprint, response: response as object, expires_at: expiresAt },
-      });
-      return;
+      // 原子条件替换：只有"当前仍然过期"的行才会被改
+      await this.prisma.$executeRaw`
+        UPDATE idempotency_receipts
+           SET fingerprint = ${fingerprint}, response = ${JSON.stringify(response)}::jsonb, expires_at = ${expiresAt}
+         WHERE scope = ${scope} AND key = ${key} AND expires_at <= now()`;
+      return;   // 影响 0 行说明别人刚替换成未过期回执，放弃覆盖
     }
 
     try {
@@ -300,7 +342,7 @@ export class PrismaRepository implements AccountRepository {
         data: { scope, key, fingerprint, response: response as object, expires_at: expiresAt },
       });
     } catch (err) {
-      if (!isUniqueViolation(err)) throw err;   // 只吞并发唯一冲突，其余传播
+      if (!isUniqueViolation(err)) throw err;   // 只吞并发唯一冲突
     }
   }
 }
@@ -316,3 +358,4 @@ function splitScopeKey(raw: string): { scope: string; k: string } {
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
 }
+
