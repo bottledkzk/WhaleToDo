@@ -24,7 +24,6 @@ import kotlinx.coroutines.delay
     val s by controller.state.collectAsState()
     var draft by rememberSaveable {mutableStateOf("")}
     var modeMenu by remember {mutableStateOf(false)}
-    var modelMenu by remember {mutableStateOf(false)}
     var styleMenu by remember { mutableStateOf(false) }
     var history by remember {mutableStateOf(false)}
     var historySearch by rememberSaveable {mutableStateOf("")}
@@ -43,12 +42,11 @@ import kotlinx.coroutines.delay
         }
         if(s.messages.isEmpty())Column(Modifier.weight(1f).fillMaxWidth(),verticalArrangement=Arrangement.Center,horizontalAlignment=Alignment.CenterHorizontally){
             WhaleAvatar(Modifier.size(72.dp));Spacer(Modifier.height(16.dp));Text("把想法，变成下一步",style=MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp));Text("聊一聊，或从下方选择一种方式",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }else LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=list,verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(vertical=12.dp)){
             items(s.messages,key={it.id}){m->
                 Column(Modifier.fillMaxWidth(),horizontalAlignment=if(m.role=="user")Alignment.End else Alignment.Start){
                     Surface(shape=RoundedCornerShape(18.dp),color=if(m.role=="user")MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh){
-                        SelectionContainerCompat(m.text)
+                        SelectionContainerCompat(if(m.role=="assistant")AssistantIdentity.display(m.text)else m.text)
                     }
                     if(m.totalTokens>0) Row(Modifier.padding(6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         Text("${TokenDisplay.k(m.totalTokens)} tokens",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -67,18 +65,17 @@ import kotlinx.coroutines.delay
             Box {AssistChip(onClick={modeMenu=true},label={Text("${s.mode.label} ▾")},enabled=s.busySince==null)
                 DropdownMenu(modeMenu,{modeMenu=false}){AgentMode.entries.forEach {m->DropdownMenuItem(text={Text(m.label)},onClick={controller.mode(m);modeMenu=false})}}}
             Spacer(Modifier.width(8.dp))
-            Box {TextButton(onClick={modelMenu=true},enabled=s.busySince==null){Text("${s.model.title} ▾",maxLines=1)}
-                DropdownMenu(modelMenu,{modelMenu=false}){s.models.forEach {m->DropdownMenuItem(text={Text(m.title+if(m.canEdit)" · 可提案" else "")},onClick={controller.model(m);modelMenu=false})}}}
+
         }
         if(s.mode==AgentMode.SHARE_COPY)Box {
             TextButton(onClick={styleMenu=true}){Text("风格 · ${ShareStyle.entries.find{it.code==s.shareStyle}?.label?:"极简"} ▾")}
             DropdownMenu(styleMenu,{styleMenu=false}) {ShareStyle.entries.forEach{style->DropdownMenuItem(text={Text(style.label)},onClick={controller.style(style.code);styleMenu=false})}}
         }
         Row(verticalAlignment=Alignment.CenterVertically){
-            Text("日程只读",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
+            Text("日程读取",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
             Switch(s.includeAgenda,controller::agenda,enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="附带日程开关"})
-            if(s.mode.edits){Text("本次授权",style=MaterialTheme.typography.labelMedium);Switch(s.editConsent,controller::consent,enabled=s.busySince==null,
-                modifier=Modifier.semantics{contentDescription="本次编辑授权"})}
+            if(s.mode.edits){Text("日常编辑",style=MaterialTheme.typography.labelMedium);Switch(s.editConsent,controller::consent,enabled=s.busySince==null,
+                modifier=Modifier.semantics{contentDescription="日常编辑开关"})}
         }
         OutlinedTextField(draft,{if(it.length<=16000)draft=it},placeholder={Text(s.mode.hint)},maxLines=4,
             modifier=Modifier.fillMaxWidth().semantics{contentDescription="助手输入"},shape=RoundedCornerShape(20.dp),enabled=s.busySince==null)
@@ -113,21 +110,35 @@ import kotlinx.coroutines.delay
     }
     s.preview?.let { proposal ->
         AlertDialog(
-            onDismissRequest = controller::dismissPreview, title = { Text("检查变更提案") },
+            onDismissRequest = controller::dismissPreview, title = { Text("采纳日程调整？") },
             text = {
                 Column(Modifier.heightIn(max = 340.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("${proposal.changes.size} 项变更", fontWeight = FontWeight.Bold)
-                    proposal.changes.forEach { c ->
-                        Text(when (c) {
-                            is AgentChange.RenameTask -> "修改标题：${c.title}"
-                            is AgentChange.CategorizeTask -> "修改分类：${TaskCategory.from(c.category).label}"
-                            is AgentChange.MoveBlock -> "移动安排：${java.time.Instant.ofEpochMilli(c.start).atZone(java.time.ZoneId.systemDefault())}"
-                        }, style = MaterialTheme.typography.bodyMedium)
-                    }
+                    proposal.lines().forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 }
             },
-            confirmButton = { TextButton(onClick = controller::applyPreview) { Text("确认采用") } },
-            dismissButton = { TextButton(onClick = controller::dismissPreview) { Text("保留原安排") } }
+            confirmButton = { TextButton(onClick = controller::applyPreview, enabled=s.busySince==null) { Text("Accept") } },
+            dismissButton = { Row {
+                TextButton(onClick = controller::requestRevision, enabled=s.busySince==null) { Text("意见") }
+                TextButton(onClick = controller::dismissPreview, enabled=s.busySince==null) { Text("Refuse") }
+            } }
+        )
+    }
+    s.revision?.let { proposal ->
+        var opinion by remember(proposal.id) {mutableStateOf("")}
+        AlertDialog(
+            onDismissRequest=controller::dismissRevision, title={Text("告诉小鲸鱼你的意见")},
+            text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(opinion,{if(it.length<=2000)opinion=it},placeholder={Text("希望怎样调整？")},maxLines=5,
+                    modifier=Modifier.semantics{contentDescription="提案意见"})
+                Text("新提案仍需你确认",style=MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    Text("日常编辑",Modifier.weight(1f))
+                    Switch(s.editConsent,controller::consent,modifier=Modifier.semantics{contentDescription="意见编辑开关"})
+                }
+            }},
+            confirmButton={TextButton(onClick={controller.revisePreview(opinion)},enabled=opinion.isNotBlank()&&s.editConsent){Text("发送意见")}},
+            dismissButton={TextButton(onClick=controller::dismissRevision){Text("取消")}}
         )
     }
 }

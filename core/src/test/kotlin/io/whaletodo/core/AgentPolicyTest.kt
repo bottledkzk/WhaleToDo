@@ -22,6 +22,21 @@ class AgentPolicyTest {
         assertNull(AgentPolicy.shareGate(access.copy(vip=false),true,true))
     }
     @Test fun tokenDisplayAndClockAreStableAtLargeValues(){assertEquals("1.25k",TokenDisplay.k(1250));assertEquals("Working… (02m03s)",TokenDisplay.elapsed(123));assertEquals("none",TaskCategory.from("untrusted").code)}
+    @Test fun routingSelectsOnlyTrustedModeCapabilityAndNeverUpgradesReadOnly() {
+        val read=AgentModel("read","鲸鱼AI")
+        val denied=AgentModel("other","不可用",true)
+        assertEquals(read,AgentPolicy.route(listOf(denied,model,read),access,AgentMode.CHAT))
+        assertEquals(model,AgentPolicy.route(listOf(read,denied,model),access,AgentMode.EDIT))
+        val missing=AgentPolicy.route(listOf(read,denied),access,AgentMode.EDIT)
+        assertEquals(GateReason.MODEL,AgentPolicy.gate(access,AgentMode.EDIT,missing,true))
+        assertEquals(GateReason.MODEL,AgentPolicy.gate(access.copy(editModels=emptySet()),AgentMode.EDIT,model,true))
+    }
+    @Test fun historicalProviderIdentityIsNeverRenderedButUserContentCanRemainUntouched() {
+        for(text in listOf("我是DeepSeek", "I am GPT-5", "我是 deep-seek 模型", "我是Claude")) {
+            assertEquals(AssistantIdentity.introduction,AssistantIdentity.display(text))
+        }
+        assertEquals("今天先完成阅读。",AssistantIdentity.display("今天先完成阅读。"))
+    }
     private val now=Instant.parse("2030-01-01T08:00:00Z").toEpochMilli()
     private val tasks=listOf(AgentTaskFact("t",false,now+10*3600000))
     private val block=AgentBlockFact("b","t",now+3600000,now+7200000,false,false)

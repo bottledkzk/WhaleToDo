@@ -22,6 +22,11 @@ data class AgentAccess(val userId: String? = null, val vip: Boolean = false, val
     val connected: Boolean = false, val editModels: Set<String> = emptySet())
 enum class GateReason { LOGIN, VIP, POINTS, CONSENT, MODEL, CONNECTION }
 object AgentPolicy {
+    /** Routing is internal and limited to capabilities supplied by the authenticated bridge. */
+    fun route(models: List<AgentModel>, access: AgentAccess, mode: AgentMode): AgentModel =
+        (if(mode.edits) models.firstOrNull { it.canEdit && it.code in access.editModels }
+         else models.firstOrNull { !it.canEdit && !it.requiresVip })
+        ?: AgentModel("unavailable", "鲸鱼AI", canEdit=mode.edits)
     fun gate(access: AgentAccess, mode: AgentMode, model: AgentModel, consent: Boolean): GateReason? = when {
         access.userId.isNullOrBlank() -> GateReason.LOGIN
         (mode.edits || model.requiresVip) && !access.vip -> GateReason.VIP
@@ -85,4 +90,11 @@ object AgentChanges {
             require(finalBlocks.withIndex().none { (j,b) -> i != j && a.start < b.end && a.end > b.start }) { "提案与其他安排重叠" }
         } }
     }
+}
+
+/** Display guard also covers old local conversation history; routing codes never render as UI. */
+object AssistantIdentity {
+    const val introduction = "我是WhaleToDo的鲸鱼AI助手。"
+    private val supplier = Regex("deep[\\s_-]*seek|深度求索|\\bgpt[\\w.-]*|chatgpt|claude|anthropic|gemini|google|openai|qwen|通义千问|\\bglm[\\w.-]*|智谱|\\bkimi\\b|moonshot|豆包|doubao", RegexOption.IGNORE_CASE)
+    fun display(text: String): String = if(supplier.containsMatchIn(text)) introduction else text
 }

@@ -68,12 +68,7 @@ class DeskRepository(private val db: DeskDatabase) {
     suspend fun applyAgent(id: String, owner: String, source: DeskSnapshot, changes: List<AgentChange>) = db.withTransaction {
         check(dao.receiptCount(id, owner) == 0) { "此提案已采用" }
         check(snapshot() == source) { "日程已变化，请重新生成提案" }
-        val zone = ZoneId.of(source.zoneId)
-        val windows = DailyWindows.build(source.date, 14, zone,
-            MinuteRange(source.settings.startHour*60, source.settings.endHour*60),
-            source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) })
-        AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline) },
-            source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
+        validateAgentChanges(source, changes)
         val updated = source.tasks.associateBy { it.id }.toMutableMap()
         val blocks = source.blocks.associateBy { it.id }.toMutableMap()
         changes.forEach { c -> when(c) {
@@ -84,6 +79,20 @@ class DeskRepository(private val db: DeskDatabase) {
         updated.values.forEach { dao.save(it) }
         dao.clearBlocks();dao.insertBlocks(blocks.values.toList())
         dao.addReceipt(AgentReceiptRow(id,owner,System.currentTimeMillis()))
+    }
+
+    /** Read-only admission to the confirmation dialog; commit repeats these checks. */
+    suspend fun checkAgentPreview(source: DeskSnapshot, changes: List<AgentChange>) {
+        check(snapshot() == source) { "日程已变化，请重新生成提案" }
+        validateAgentChanges(source, changes)
+    }
+    private fun validateAgentChanges(source: DeskSnapshot, changes: List<AgentChange>) {
+        val zone = ZoneId.of(source.zoneId)
+        val windows = DailyWindows.build(source.date, 14, zone,
+            MinuteRange(source.settings.startHour*60, source.settings.endHour*60),
+            source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) })
+        AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline) },
+            source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
     }
 
     suspend fun complete(task: TaskRow, rating: Int) {

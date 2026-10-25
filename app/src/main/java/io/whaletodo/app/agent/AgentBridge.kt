@@ -24,7 +24,7 @@ object AgentBridgeHub {
     /** Install once from trusted application setup; only test APKs replace this with fixtures. */
     var bridge: AgentBridge = object : AgentBridge {
         override val access = MutableStateFlow(AgentAccess())
-        override val models = listOf(AgentModel("deepseek-default","DeepSeek"), AgentModel("deepseek-planner","DeepSeek · 安排",true))
+        override val models = listOf(AgentModel("deepseek-default","鲸鱼AI"), AgentModel("deepseek-planner","日程编辑",true))
         override suspend fun reply(request: AssistantRequest): AssistantReply = throw AgentGateException(GateReason.CONNECTION)
     }
 }
