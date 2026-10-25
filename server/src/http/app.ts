@@ -367,11 +367,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await requireAuth(req);
     if (!repo.listLedger) throw new ApiError('INTERNAL', '当前仓储未实现流水查询');
     const q = (req.query ?? {}) as { limit?: string; cursor?: string };
-    const limit = Number.parseInt(q.limit ?? '50', 10);
-    const cursor = q.cursor ? Number.parseInt(q.cursor, 10) : undefined;
-    if (Number.isNaN(limit) || (cursor !== undefined && Number.isNaN(cursor))) {
-      throw new ApiError('VALIDATION_ERROR', 'limit / cursor 非法');
+
+    const limit = q.limit === undefined ? 50 : Number.parseInt(q.limit, 10);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ApiError('VALIDATION_ERROR', 'limit 需为 1~100 的整数');
     }
+
+    // 游标格式 "<毫秒时间戳>:<uuid>"，两段都要校验，避免非法值进到 SQL
+    let cursor: { createdAt: number; id: string } | undefined;
+    if (q.cursor) {
+      const [msPart, idPart] = q.cursor.split(':');
+      const ms = Number.parseInt(msPart ?? '', 10);
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!Number.isFinite(ms) || ms < 0 || !idPart || !uuidRe.test(idPart)) {
+        throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      }
+      cursor = { createdAt: ms, id: idPart };
+    }
+
     const page = await repo.listLedger(req.userId!, limit, cursor);
     return ok(req.requestId, {
       items: page.items.map((r) => ({
@@ -383,7 +396,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         reason: r.reason,
         created_at: new Date(r.createdAt).toISOString(),
       })),
-      next_cursor: page.nextCursor,
+      next_cursor: page.nextCursor ? `${page.nextCursor.createdAt}:${page.nextCursor.id}` : null,
     });
   });
 

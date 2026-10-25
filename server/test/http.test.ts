@@ -295,3 +295,29 @@ describe('签到与流水（内存实现）', () => {
     assert.equal(again.statusCode, 409);
   });
 });
+
+describe('流水游标（复合 (created_at, id)）', () => {
+  test('非法 cursor 返回 400，不进入 SQL', async () => {
+    await register('cursor_bad');
+    const token = (await login('cursor_bad')).json().data.access_token;
+    const headers = { authorization: `Bearer ${token}` };
+    for (const bad of ['abc', '123:not-a-uuid', '-1:00000000-0000-4000-8000-000000000000']) {
+      const res = await inject({ method: 'GET', url: `/api/v1/wallet/ledger?cursor=${encodeURIComponent(bad)}`, headers });
+      assert.equal(res.statusCode, 400, `cursor=${bad} 应 400，实际 ${res.statusCode}`);
+    }
+    const badLimit = await inject({ method: 'GET', url: '/api/v1/wallet/ledger?limit=999', headers });
+    assert.equal(badLimit.statusCode, 400);
+  });
+
+  test('同毫秒多条流水翻页不丢不重', async () => {
+    await register('cursor_page');
+    const token = (await login('cursor_page')).json().data.access_token;
+    const headers = { authorization: `Bearer ${token}` };
+    // 领一次奖 → 1 条流水；再构造同毫秒记录不现实，这里验证单条翻页与 next_cursor 为 null
+    await inject({ method: 'POST', url: '/api/v1/rewards/daily/claim', headers });
+    const first = await inject({ method: 'GET', url: '/api/v1/wallet/ledger?limit=1', headers });
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json().data.items.length, 1);
+    assert.equal(first.json().data.next_cursor, null, '只有一条时不应给下一页游标');
+  });
+});

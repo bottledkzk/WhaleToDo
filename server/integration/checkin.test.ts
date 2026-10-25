@@ -110,3 +110,47 @@ test('HTTP 层：首次 201，重复领取 409', async () => {
   assert.equal(status.json().data.claimed, true);
   assert.equal(status.json().data.balance.available, 30);
 });
+
+test('同毫秒 3 条流水，limit=2 翻页不丢不重（真实 PG）', async () => {
+  const user = await repo.createUser('ck_page', PASSWORD);
+  const { tokens } = await repo.createSession(user.id);
+  const headers = { authorization: `Bearer ${tokens.accessToken}` };
+
+  // 用迁移账号插入 3 条 created_at 完全相同的流水，制造同毫秒场景
+  const sameMs = new Date('2026-10-25T10:00:00.000Z');
+  for (let i = 0; i < 3; i += 1) {
+    await owner.query(
+      `INSERT INTO point_ledger
+         (id, user_id, event_id, type, available_delta, reserved_delta, balance_after, reserved_after, reason, created_at)
+       VALUES ($1,$2,$3,'adjust',$4,0,$5,0,$6,$7)`,
+      [randomUUID(), user.id, `page-${i}`, i + 1, i + 1, `page ${i}`, sameMs],
+    );
+  }
+
+  const first = await app.inject({ method: 'GET', url: '/api/v1/wallet/ledger?limit=2', headers });
+  assert.equal(first.statusCode, 200, first.body);
+  const p1 = first.json().data;
+  assert.equal(p1.items.length, 2, '第一页应有 2 条');
+  assert.ok(p1.next_cursor, '还有一条，应给出 next_cursor');
+
+  const second = await app.inject({
+    method: 'GET',
+    url: `/api/v1/wallet/ledger?limit=2&cursor=${encodeURIComponent(p1.next_cursor)}`,
+    headers,
+  });
+  assert.equal(second.statusCode, 200, `第二页不应 500：${second.body}`);
+  const p2 = second.json().data;
+  assert.equal(p2.items.length, 1, '第二页应有剩余 1 条');
+  assert.equal(p2.next_cursor, null);
+
+  const ids = [...p1.items, ...p2.items].map((x: { id: string }) => x.id);
+  assert.equal(new Set(ids).size, 3, '三页合计应无重复');
+});
+
+test('流水按账户隔离：另一个账户看不到', async () => {
+  const a = await repo.createUser('ck_iso_a', PASSWORD);
+  const b = await repo.createUser('ck_iso_b', PASSWORD);
+  await claim(a.id);
+  const bPage = await repo.listLedger!(b.id, 10);
+  assert.equal(bPage.items.length, 0, 'B 不应看到 A 的流水');
+});

@@ -310,41 +310,55 @@ export class PrismaRepository implements AccountRepository {
    *  3) 写 point_ledger（award，含 available_delta 与 balance_after）
    * 已领过则返回 claimed=false，不发奖也不写流水。
    */
-  async listLedger(userId: string, limit: number, beforeCreatedAt?: number): Promise<{
+
+  async listLedger(
+    userId: string,
+    limit: number,
+    cursor?: { createdAt: number; id: string },
+  ): Promise<{
     items: Array<{
-  id: string;
-  type: string;
-  delta: number;
-  balanceAfter: number;
-  reservedAfter: number;
-  reason: string;
-  createdAt: number;
-}>;
-    nextCursor: number | null;
+      id: string; type: string; delta: number; balanceAfter: number; reservedAfter: number;
+      reason: string; createdAt: number;
+    }>;
+    nextCursor: { createdAt: number; id: string } | null;
   }> {
     const size = Math.min(Math.max(limit, 1), 100);
-    const rows = await this.prisma.$queryRaw<Array<{
+    type Row = {
       id: string; type: string; available_delta: number; balance_after: number;
       reserved_after: number; reason: string; created_at: Date;
-    }>>`
-      SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
-        FROM point_ledger
-       WHERE user_id = ${userId}::uuid
-         AND (${beforeCreatedAt ?? null}::timestamptz IS NULL OR created_at < ${beforeCreatedAt ? new Date(beforeCreatedAt) : null})
-       ORDER BY created_at DESC
-       LIMIT ${size}`;
+    };
 
-    const items = rows.map((r) => ({
-      id: r.id,
-      type: r.type,
-      delta: r.available_delta,
-      balanceAfter: r.balance_after,
-      reservedAfter: r.reserved_after,
-      reason: r.reason,
-      createdAt: r.created_at.getTime(),
-    }));
-    const nextCursor = items.length === size ? items[items.length - 1]!.createdAt : null;
-    return { items, nextCursor };
+    // 游标必须是合法的 Date + uuid，且用 (created_at, id) 复合比较，
+    // 否则同毫秒的多条流水会被漏掉（评审 P2）；毫秒 number 不能直接强转 timestamptz。
+    const rows: Row[] = cursor
+      ? await this.prisma.$queryRaw<Row[]>`
+          SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
+            FROM point_ledger
+           WHERE user_id = ${userId}::uuid
+             AND (created_at, id) < (${new Date(cursor.createdAt)}, ${cursor.id}::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT ${size + 1}`
+      : await this.prisma.$queryRaw<Row[]>`
+          SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
+            FROM point_ledger
+           WHERE user_id = ${userId}::uuid
+           ORDER BY created_at DESC, id DESC
+           LIMIT ${size + 1}`;
+
+    const page = rows.slice(0, size);
+    const last = page[page.length - 1];
+    return {
+      items: page.map((r) => ({
+        id: r.id,
+        type: r.type,
+        delta: r.available_delta,
+        balanceAfter: r.balance_after,
+        reservedAfter: r.reserved_after,
+        reason: r.reason,
+        createdAt: r.created_at.getTime(),
+      })),
+      nextCursor: rows.length > size && last ? { createdAt: last.created_at.getTime(), id: last.id } : null,
+    };
   }
 
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {

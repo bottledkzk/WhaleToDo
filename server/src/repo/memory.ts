@@ -177,24 +177,34 @@ export class MemoryRepository {
   }
 
   /** 签到发奖：内存实现（唯一键语义用 Map 模拟，供本地联调与单元测试） */
-  async listLedger(userId: string, limit: number, beforeCreatedAt?: number): Promise<{
+
+  async listLedger(
+    userId: string,
+    limit: number,
+    cursor?: { createdAt: number; id: string },
+  ): Promise<{
     items: Array<{
-  id: string;
-  type: string;
-  delta: number;
-  balanceAfter: number;
-  reservedAfter: number;
-  reason: string;
-  createdAt: number;
-}>;
-    nextCursor: number | null;
+      id: string; type: string; delta: number; balanceAfter: number; reservedAfter: number;
+      reason: string; createdAt: number;
+    }>;
+    nextCursor: { createdAt: number; id: string } | null;
   }> {
     const size = Math.min(Math.max(limit, 1), 100);
-    const rows = this.store.ledger
-      .filter((r) => r.userId === userId && (beforeCreatedAt === undefined || r.createdAt < beforeCreatedAt))
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, size)
-      .map((r) => ({
+    const sorted = this.store.ledger
+      .filter((r) => r.userId === userId)
+      // 与 Prisma 相同的排序：(created_at DESC, id DESC)
+      .sort((a, b) => (b.createdAt - a.createdAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+      .filter((r) => {
+        if (!cursor) return true;
+        // 复合游标：元组严格小于 (createdAt, id)
+        if (r.createdAt !== cursor.createdAt) return r.createdAt < cursor.createdAt;
+        return r.id < cursor.id;
+      });
+
+    const page = sorted.slice(0, size);
+    const last = page[page.length - 1];
+    return {
+      items: page.map((r) => ({
         id: r.id,
         type: r.type,
         delta: r.delta,
@@ -202,9 +212,9 @@ export class MemoryRepository {
         reservedAfter: r.reservedAfter,
         reason: '',
         createdAt: r.createdAt,
-      }));
-    const nextCursor = rows.length === size ? rows[rows.length - 1]!.createdAt : null;
-    return { items: rows, nextCursor };
+      })),
+      nextCursor: sorted.length > size && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
   }
 
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {

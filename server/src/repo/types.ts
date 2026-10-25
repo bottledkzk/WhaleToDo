@@ -85,18 +85,18 @@ export interface AccountRepository {
    */
   /** 查询某业务日是否已领取（供 GET /rewards/daily 展示用） */
   hasClaimedDaily?(userId: string, businessDate: string, rewardType: string): Promise<boolean>;
-  /** 积分流水（按创建时间倒序，游标为上一页最后一条的 createdAt 毫秒） */
-  listLedger?(userId: string, limit: number, beforeCreatedAt?: number): Promise<{
+  /** 积分流水：按 (created_at, id) 倒序的稳定复合游标 */
+  listLedger?(userId: string, limit: number, cursor?: { createdAt: number; id: string }): Promise<{
     items: Array<{
-  id: string;
-  type: string;
-  delta: number;
-  balanceAfter: number;
-  reservedAfter: number;
-  reason: string;
-  createdAt: number;
-}>;
-    nextCursor: number | null;
+      id: string;
+      type: string;
+      delta: number;
+      balanceAfter: number;
+      reservedAfter: number;
+      reason: string;
+      createdAt: number;
+    }>;
+    nextCursor: { createdAt: number; id: string } | null;
   }>;
   claimDailyReward?(input: {
     userId: string;
