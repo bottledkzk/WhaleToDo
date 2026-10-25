@@ -368,20 +368,30 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!repo.listLedger) throw new ApiError('INTERNAL', '当前仓储未实现流水查询');
     const q = (req.query ?? {}) as { limit?: string; cursor?: string };
 
-    const limit = q.limit === undefined ? 50 : Number.parseInt(q.limit, 10);
+    // limit：只接受纯数字文本，避免 parseInt 的部分解析（如 "10abc"）
+    if (q.limit !== undefined && !/^\d{1,3}$/.test(q.limit)) {
+      throw new ApiError('VALIDATION_ERROR', 'limit 需为 1~100 的整数');
+    }
+    const limit = q.limit === undefined ? 50 : Number(q.limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new ApiError('VALIDATION_ERROR', 'limit 需为 1~100 的整数');
     }
 
-    // 游标格式 "<毫秒时间戳>:<uuid>"，两段都要校验，避免非法值进到 SQL
+    // 游标格式 "<毫秒时间戳>:<uuid>"：必须恰好两段、毫秒是纯数字且为安全整数、
+    // 能构造出合法 Date，uuid 段合法。任何一项不满足 → 400，绝不进 SQL
+    // （评审：999999999999999999999 会通过 isFinite 但产生 Invalid Date → 500）。
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     let cursor: { createdAt: number; id: string } | undefined;
-    if (q.cursor) {
-      const [msPart, idPart] = q.cursor.split(':');
-      const ms = Number.parseInt(msPart ?? '', 10);
-      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!Number.isFinite(ms) || ms < 0 || !idPart || !uuidRe.test(idPart)) {
-        throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
-      }
+    if (q.cursor !== undefined) {
+      const parts = q.cursor.split(':');
+      if (parts.length !== 2) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const [msPart, idPart] = parts as [string, string];
+      if (!/^\d{1,16}$/.test(msPart)) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const ms = Number(msPart);
+      if (!Number.isSafeInteger(ms) || ms < 0) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const asDate = new Date(ms);
+      if (Number.isNaN(asDate.getTime())) throw new ApiError('VALIDATION_ERROR', 'cursor 时间超出范围');
+      if (!UUID_RE.test(idPart)) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
       cursor = { createdAt: ms, id: idPart };
     }
 

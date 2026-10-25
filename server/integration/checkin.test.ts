@@ -2,6 +2,7 @@
 // 验证：只发一次奖、重复领取 409（路由层）、并发只成功一次、流水与余额一致
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import type { FastifyInstance } from 'fastify';

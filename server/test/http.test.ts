@@ -301,7 +301,17 @@ describe('流水游标（复合 (created_at, id)）', () => {
     await register('cursor_bad');
     const token = (await login('cursor_bad')).json().data.access_token;
     const headers = { authorization: `Bearer ${token}` };
-    for (const bad of ['abc', '123:not-a-uuid', '-1:00000000-0000-4000-8000-000000000000']) {
+    const uuid = '00000000-0000-4000-8000-000000000000';
+    for (const bad of [
+      'abc',
+      '123:not-a-uuid',
+      '-1:' + uuid,
+      // 评审复现：超大数字通过 isFinite 但 new Date 得到 Invalid Date → 必须 400 而不是 500
+      '999999999999999999999:' + uuid,
+      '1.5:' + uuid,
+      '10abc:' + uuid,
+      '12:' + uuid + ':extra',
+    ]) {
       const res = await inject({ method: 'GET', url: `/api/v1/wallet/ledger?cursor=${encodeURIComponent(bad)}`, headers });
       assert.equal(res.statusCode, 400, `cursor=${bad} 应 400，实际 ${res.statusCode}`);
     }
