@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
-import { decideMutation, batchStatus } from '../domain/sync.ts';
+import { decideMutation, batchStatus, isObjectType, isSyncOp } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
@@ -414,11 +414,15 @@ export class PrismaRepository implements AccountRepository {
             VALUES (${input.userId}::uuid, ${m.objectType}, ${m.objectId}::uuid, ${serverVersion}, ${m.op === 'delete'}, ${JSON.stringify(m.payload ?? null)}::jsonb)`;
         }
 
-        await tx.$executeRaw`
-          INSERT INTO sync_mutations
-            (id, batch_id, mutation_id, object_type, object_id, op, result, server_version)
-          VALUES (${randomUUID()}::uuid, ${batchRowId}::uuid, ${randomUUID()}::uuid,
-                  ${m.objectType}, ${m.objectId}::uuid, ${m.op}, ${decided.result}, ${serverVersion})`;
+        // sync_mutations 上有 CHECK(object_type IN 五种) 与 CHECK(op IN 三种)，
+        // 未知类型/操作的 rejected 写不进去；这类拒绝只记录在批次 response 里。
+        if (isObjectType(m.objectType) && isSyncOp(m.op)) {
+          await tx.$executeRaw`
+            INSERT INTO sync_mutations
+              (id, batch_id, mutation_id, object_type, object_id, op, result, server_version)
+            VALUES (${randomUUID()}::uuid, ${batchRowId}::uuid, ${randomUUID()}::uuid,
+                    ${m.objectType}, ${m.objectId}::uuid, ${m.op}, ${decided.result}, ${serverVersion})`;
+        }
 
         items.push({
           object_type: m.objectType,
