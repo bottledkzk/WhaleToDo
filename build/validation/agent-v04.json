@@ -1,0 +1,28 @@
+{
+  "version": "0.4.0",
+  "version_code": 4,
+  "database_version": 3,
+  "artifact_kind": "local_verified_debug_apk",
+  "apk_sha256": "25d8530336febe40d9268fe7205e897c107fb8c48d8d084895cfa6a2adb9f4f5",
+  "public_release_published": false,
+  "core_checks": 33,
+  "server_checks": 75,
+  "postgres_integration_checks": 14,
+  "device_cases_passed_in_stages": 26,
+  "real_provider_verification": {
+    "synthetic_requests": 2,
+    "chat_tokens": 220,
+    "edit_tokens": 381,
+    "server_data_mutated": false
+  },
+  "preserved_upgrade": "original five business tables matched on their pre-migration columns",
+  "production_account_bridge": "guest/disconnected until Weiding integration",
+  "new_server_policy_deployed": false,
+  "key_in_repository_or_apk": false,
+  "limitations": [
+    "share_image_export_gallery_camera_social_platforms_owned_by_Weiding",
+    "VIP_template_trial_service_not_implemented_here",
+    "new PG migration and billing policy only verified in isolated database",
+    "real account-to-APP-to-server acceptance pending"
+  ]
+}

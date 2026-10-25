@@ -15,3 +15,5 @@ GRANT SELECT(user_id,access_hash,revoked_at,access_expires_at) ON whaletodo.auth
 GRANT SELECT,UPDATE ON whaletodo.point_wallets TO whaletodo_ai;
 GRANT INSERT ON whaletodo.point_ledger TO whaletodo_ai;
 GRANT SELECT,INSERT,UPDATE ON whaletodo.ai_requests TO whaletodo_ai;
+
+GRANT SELECT(user_id,kind,expires_at) ON whaletodo.entitlements TO whaletodo_ai;

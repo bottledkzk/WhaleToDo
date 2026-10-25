@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "io.whaletodo.app"
     compileSdk = 36
-    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 3; versionName = "0.3.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.4.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildTypes {
         release { isMinifyEnabled = false }
         create("verification") {
@@ -46,3 +46,8 @@ dependencies {
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+
+// MigrationTestHelper must package the schema exported by this same variant, not a stale file.
+tasks.matching { it.name == "mergeVerificationAndroidTestAssets" }.configureEach {
+    dependsOn("kspVerificationKotlin")
+}

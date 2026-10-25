@@ -3,7 +3,7 @@ import { join } from 'node:path';
 export interface AiConfig {
  databaseUrl: string; apiKey: string; host: string; port: number; model: string;
  maxOutput: number; timeoutMs: number; userDailyCalls: number; globalDailyCalls: number;
- userDailyTokens: number; globalDailyTokens: number; businessTimezone: string;
+ userDailyTokens: number; globalDailyTokens: number; businessTimezone: string; tokensPerPoint?:number;editModel?:string;editEnabled?:boolean;
 }
 function integer(value: string | undefined, fallback: number, low: number, high: number): number {
  const n=value===undefined ? fallback : Number(value);
@@ -21,7 +21,7 @@ export function loadAiConfig(env: NodeJS.ProcessEnv=process.env): AiConfig {
  const businessTimezone=env.BUSINESS_TIMEZONE??'Asia/Shanghai';
  new Intl.DateTimeFormat('en-US',{timeZone:businessTimezone});
  return {databaseUrl,apiKey,host:'127.0.0.1',port:integer(env.AI_PORT,8081,1024,65535),
- model:env.DEEPSEEK_MODEL??'deepseek-flash',maxOutput:integer(env.AI_MAX_OUTPUT,2048,32,4096),
+ model:env.DEEPSEEK_MODEL??'deepseek-flash',tokensPerPoint:integer(env.AI_TOKENS_PER_POINT,1000,1,1000000),editModel:env.DEEPSEEK_EDIT_MODEL??'deepseek-v4-pro',editEnabled:env.AI_EDIT_ENABLED==='true',maxOutput:integer(env.AI_MAX_OUTPUT,2048,32,4096),
  timeoutMs:integer(env.AI_TIMEOUT_MS,45000,1000,60000),userDailyCalls:integer(env.AI_USER_DAILY_CALLS,5,1,100),
  globalDailyCalls:integer(env.AI_GLOBAL_DAILY_CALLS,40,1,1000),
  userDailyTokens:integer(env.AI_USER_DAILY_TOKENS,30000,1024,500000),

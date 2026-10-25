@@ -15,7 +15,7 @@ const store=new AiStore(process.env.VERIFY_AI_URL!);
 const users:string[]=[];const tokens:string[]=[];
 const hash=hashPassword('Synthetic-integration-password');
 const config={model:'deepseek-flash',maxOutput:2048,timeoutMs:1000,userDailyCalls:100,globalDailyCalls:1000,
- userDailyTokens:500000,globalDailyTokens:2000000,businessTimezone:'Asia/Shanghai'} as AiConfig;
+ userDailyTokens:500000,globalDailyTokens:2000000,businessTimezone:'Asia/Shanghai',tokensPerPoint:10000,editEnabled:true} as AiConfig;
 function input():AiInput{return {client_request_id:randomUUID(),mode:'chat',prompt:'合成验证，只需简短学习建议',context:'',model_code:'deepseek-default'};}
 before(async()=>{await owner.query('SELECT 1');});
 beforeEach(async()=>{
@@ -103,4 +103,32 @@ test('missing signup points fails closed; budgets and restart uncertainty remain
  const row=(await store.reserve(users[1]!,input(),config)).row;await store.running(row.id);await store.recover();
  assert.equal((await store.get(users[1]!,row.client_request_id))?.status,'unknown');
  const w=(await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[1]])).rows[0];assert.deepEqual(w,{available:4,reserved:1});
+});
+
+test('Token settlement refunds reserved headroom and bills actual k tokens once',async()=>{
+ await owner.query('UPDATE point_wallets SET available=20 WHERE user_id=$1',[users[0]]);
+ const row=(await store.reserve(users[0]!,input(),{...config,tokensPerPoint:1000})).row;
+ assert.ok(row.points>=2);await store.finish(row.id,'succeeded',{text:'合成答复',tokens:1200,inputTokens:900,outputTokens:300});
+ await store.finish(row.id,'succeeded',{text:'重复',tokens:1200});
+ const wallet=(await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[0]])).rows[0];assert.deepEqual(wallet,{available:18,reserved:0});
+ const usage=await store.usage(users[0]!,config.businessTimezone);assert.equal(usage.total_tokens,1200);assert.equal(usage.charged_points,2);assert.equal(usage.requests,1);
+});
+test('editing requires VIP, allowlisted model and per-request user consent; it only returns a proposal',async()=>{
+ let calls=0;const task=randomUUID();await owner.query('INSERT INTO tasks(id,user_id,title) VALUES($1,$2,$3)',[task,users[0],'原始事项']);
+ const app=buildAiApp({...config,editEnabled:true},store,async()=>{calls++;return {text:'建议修改标题',tokens:30,changes:[{type:'rename_task',target_id:task,title:'建议事项'}]};});
+ const body={...input(),mode:'edit',model_code:'deepseek-planner',edit_consent:true,context:`task id=${task} 原始事项`};
+ const req={method:'POST' as const,url:'/api/v1/ai/requests',headers:{authorization:`Bearer ${tokens[0]}`},payload:body};
+ assert.equal((await app.inject(req)).statusCode,403);
+ await owner.query("INSERT INTO entitlements(id,user_id,kind,expires_at) VALUES($1,$2,'vip',now()+interval '1 day')",[randomUUID(),users[0]]);
+ assert.equal((await app.inject({...req,payload:{...body,model_code:'deepseek-default'}})).statusCode,403);
+ assert.equal((await app.inject({...req,payload:{...body,edit_consent:false}})).statusCode,403);
+ const answer=await app.inject(req);assert.equal(answer.statusCode,200);assert.equal(answer.json().data.proposal.changes[0].type,'rename_task');assert.equal(calls,1);
+ assert.equal((await owner.query('SELECT title FROM tasks WHERE id=$1',[task])).rows[0].title,'原始事项');await app.close();
+});
+test('usage endpoint is owner-scoped and unauthorized request cannot read counts',async()=>{
+ const row=(await store.reserve(users[0]!,input(),config)).row;await store.finish(row.id,'succeeded',{text:'ok',tokens:100});
+ const app=buildAiApp(config,store,async()=>({text:'x',tokens:1}));
+ assert.equal((await app.inject({method:'GET',url:'/api/v1/ai/usage'})).statusCode,401);
+ const response=await app.inject({method:'GET',url:'/api/v1/ai/usage',headers:{authorization:`Bearer ${tokens[1]}`}});
+ assert.equal(response.json().data.requests,0);assert.equal(response.json().data.total_tokens,0);await app.close();
 });

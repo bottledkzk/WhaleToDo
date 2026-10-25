@@ -65,9 +65,8 @@ class WorkspaceControlsTest {
         // A new activity reads the same interval and the day view includes it.
         start(); ui.click("待办"); ui.click("日程"); ui.desc("后一天").click(); ui.text(title)
         ui.desc("分享 $title").click(); device.waitForIdle()
-        assertTrue(device.wait(Until.gone(By.text("WhaleToDo")), 5000))
-        device.pressBack(); device.waitForIdle()
-        ui.click("分享当天"); device.waitForIdle(); device.pressBack(); device.waitForIdle()
+        ui.text("分享样式"); ui.click("分享文字"); ui.text("登录后继续"); ui.click("返回"); ui.click("关闭")
+        ui.click("分享当天"); ui.text("分享样式"); ui.click("关闭")
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-agenda.png")
     }
     @Test fun calendarShowsThreeStatesAndCompletionCanBeChecked() {
@@ -91,7 +90,7 @@ class WorkspaceControlsTest {
         val original = device.executeShellCommand("getprop persist.sys.timezone").trim()
         start(); ui.click("助手"); ui.text("把想法，变成下一步")
         device.findObject(By.clazz("android.widget.EditText")).text = "请安排明天的学习"
-        ui.click("发送"); ui.text("登录后继续"); ui.click("前往账户")
+        ui.click("发送"); ui.text("登录后继续"); ui.click("前往账户"); ui.click("知道了")
         ui.text("🐋  本机访客"); ui.click("签到"); ui.text("登录后可领取每日积分。账户服务尚未开放。"); ui.click("知道了")
         ui.click("设置"); ui.click("深色"); ui.text("系统时区")
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-my-dark.png")

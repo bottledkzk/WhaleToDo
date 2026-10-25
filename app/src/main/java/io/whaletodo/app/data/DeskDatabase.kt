@@ -18,6 +18,7 @@ data class TaskRow(
     val note: String = "",
     val chunkMinutes: Int = 60,
     val splittable: Boolean = true,
+    @ColumnInfo(defaultValue = "'none'") val category: String = "none",
 )
 
 @Entity(tableName = "blocks")
@@ -44,6 +45,17 @@ data class SettingRow(@PrimaryKey val id: Int = 1, val startHour: Int = 9, val e
 @Entity(tableName = "daily_work_times")
 data class DailyWorkTimeRow(@PrimaryKey val date: String, val startMinute: Int, val endMinute: Int)
 
+@Entity(tableName = "agent_sessions")
+data class AgentSessionRow(@PrimaryKey val id: String, val ownerId: String, val title: String,
+    val created: Long, val updated: Long, val archived: Boolean = false)
+@Entity(tableName = "agent_messages", indices = [Index("sessionId")])
+data class AgentMessageRow(@PrimaryKey val id: String, val sessionId: String, val ownerId: String,
+    val role: String, val mode: String, val text: String, val created: Long,
+    val totalTokens: Int = 0, val promptTokens: Int? = null, val completionTokens: Int? = null, val chargedPoints: Int? = null, val status: String = "complete",
+    val snapshotHash: String? = null, val modelCode: String? = null, val editGranted: Boolean = false)
+@Entity(tableName = "agent_receipts", primaryKeys = ["id", "ownerId"])
+data class AgentReceiptRow(val id: String, val ownerId: String, val appliedAt: Long)
+
 @Dao
 interface DeskDao {
     @Query("SELECT * FROM tasks ORDER BY done, created DESC")
@@ -67,6 +79,17 @@ interface DeskDao {
 
     @Query("SELECT * FROM daily_work_times ORDER BY date")
     suspend fun workTimes(): List<DailyWorkTimeRow>
+
+    @Query("SELECT * FROM agent_sessions WHERE ownerId=:owner AND archived=0 ORDER BY updated DESC")
+    suspend fun sessions(owner: String): List<AgentSessionRow>
+    @Query("SELECT * FROM agent_messages WHERE sessionId=:session AND ownerId=:owner ORDER BY created,id")
+    suspend fun messages(session: String, owner: String): List<AgentMessageRow>
+    @Upsert suspend fun save(session: AgentSessionRow)
+    @Insert suspend fun addMessage(message: AgentMessageRow)
+    @Query("UPDATE agent_messages SET status=:status WHERE id=:id AND ownerId=:owner") suspend fun requestStatus(id: String, owner: String, status: String)
+    @Query("UPDATE agent_sessions SET archived=1 WHERE id=:id AND ownerId=:owner") suspend fun archiveSession(id: String, owner: String)
+    @Query("SELECT COUNT(*) FROM agent_receipts WHERE id=:id AND ownerId=:owner") suspend fun receiptCount(id: String, owner: String): Int
+    @Insert suspend fun addReceipt(receipt: AgentReceiptRow)
 
     @Upsert suspend fun save(workTime: DailyWorkTimeRow)
 
@@ -92,8 +115,9 @@ interface DeskDao {
             CheckInRow::class,
             SettingRow::class,
             DailyWorkTimeRow::class,
+            AgentSessionRow::class, AgentMessageRow::class, AgentReceiptRow::class,
         ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class DeskDatabase : RoomDatabase() {
@@ -109,13 +133,23 @@ abstract class DeskDatabase : RoomDatabase() {
                 }
             }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tasks ADD COLUMN category TEXT NOT NULL DEFAULT 'none'")
+                db.execSQL("CREATE TABLE IF NOT EXISTS agent_sessions (id TEXT NOT NULL PRIMARY KEY, ownerId TEXT NOT NULL, title TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL, archived INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS agent_messages (id TEXT NOT NULL PRIMARY KEY, sessionId TEXT NOT NULL, ownerId TEXT NOT NULL, role TEXT NOT NULL, mode TEXT NOT NULL, text TEXT NOT NULL, created INTEGER NOT NULL, totalTokens INTEGER NOT NULL, promptTokens INTEGER, completionTokens INTEGER, chargedPoints INTEGER, status TEXT NOT NULL, snapshotHash TEXT, modelCode TEXT, editGranted INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_agent_messages_sessionId ON agent_messages(sessionId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS agent_receipts (id TEXT NOT NULL, ownerId TEXT NOT NULL, appliedAt INTEGER NOT NULL, PRIMARY KEY(id,ownerId))")
+            }
+        }
+
         fun open(context: Context): DeskDatabase =
             Room.databaseBuilder(
                     context.applicationContext,
                     DeskDatabase::class.java,
                     "whaletodo.db",
                 )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

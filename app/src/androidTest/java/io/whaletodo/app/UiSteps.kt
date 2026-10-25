@@ -10,9 +10,17 @@ class UiSteps(val device: UiDevice) {
         device.wait(Until.findObject(By.text(s)), 10000) ?: error("Missing control: $s")
 
     fun click(s: String) {
-        text(s)
-        device.findObjects(By.text(s)).last().click()
-        device.waitForIdle()
+        repeat(4) {
+            val first = device.wait(Until.findObject(By.text(s)), 5000) ?: return@repeat
+            try {
+                val target = device.findObjects(By.text(s)).lastOrNull() ?: first
+                if (!target.isEnabled) { android.os.SystemClock.sleep(250); return@repeat }
+                target.click()
+                device.waitForIdle()
+                return
+            } catch (_: StaleObjectException) { device.waitForIdle() }
+        }
+        error("Control did not become stable: $s")
     }
 
     fun desc(s: String): UiObject2 =
