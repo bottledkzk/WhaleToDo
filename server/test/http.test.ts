@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
+import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
 import { hashToken } from '../src/lib/security.ts';
 
@@ -20,7 +21,7 @@ let repo: MemoryRepository;
 beforeEach(async () => {
   if (app) await app.close();
   repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  app = buildApp({ config: loadConfig(testEnv), repo });
+  app = buildApp({ config: loadConfig(testEnv), repo: fromSync(repo) });
 });
 
 // fastify 的 inject 有重载，Parameters<...>[0] 会选中零参数重载；直接用 light-my-request 类型
@@ -103,18 +104,35 @@ describe('注册', () => {
     assert.equal(repo.userCount, 1);
   });
 
-  test('相同 Idempotency-Key 不同体 → 409', async () => {
+  test('相同 Idempotency-Key、同一用户但不同密码 → 409', async () => {
+    // 注册 scope 由「归一化用户名」派生（评审规范），所以同 key 换用户名是两个独立操作；
+    // 只有同一 scope 下异体才冲突。
     await inject({
       method: 'POST', url: '/api/v1/auth/register',
       headers: { 'idempotency-key': 'k-2' },
       payload: { username: 'dave', password: 'S3cret-passw0rd' },
     });
-    const res = await inject({
+    const sameUserOtherPassword = await inject({
       method: 'POST', url: '/api/v1/auth/register',
       headers: { 'idempotency-key': 'k-2' },
-      payload: { username: 'dave2', password: 'S3cret-passw0rd' },
+      payload: { username: 'dave', password: 'Another-passw0rd' },
     });
-    assert.equal(res.statusCode, 409);
+    assert.equal(sameUserOtherPassword.statusCode, 409);
+    assert.equal(sameUserOtherPassword.json().error.code, 'CONFLICT');
+  });
+
+  test('相同 Idempotency-Key、不同用户名 → 视为两个独立注册（scope 由用户名派生）', async () => {
+    await inject({
+      method: 'POST', url: '/api/v1/auth/register',
+      headers: { 'idempotency-key': 'k-3' },
+      payload: { username: 'erin', password: 'S3cret-passw0rd' },
+    });
+    const other = await inject({
+      method: 'POST', url: '/api/v1/auth/register',
+      headers: { 'idempotency-key': 'k-3' },
+      payload: { username: 'frank', password: 'S3cret-passw0rd' },
+    });
+    assert.equal(other.statusCode, 201);
   });
 });
 

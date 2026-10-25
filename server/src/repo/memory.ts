@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
+import type { RepoUser } from './types.ts';
 
 export interface User {
   id: string;
@@ -142,12 +143,28 @@ export class MemoryRepository {
     this.store.wallets.set(userId, wallet);
   }
 
-  getIdempotent(key: string): { fingerprint: string; response: unknown } | undefined {
-    return this.store.idempotency.get(key);
+  getIdempotent(scope: string, key: string): { fingerprint: string; response: unknown } | undefined {
+    return this.store.idempotency.get(`${scope}\u0000${key}`);
   }
 
-  saveIdempotent(key: string, fingerprint: string, response: unknown): void {
-    this.store.idempotency.set(key, { fingerprint, response });
+  saveIdempotent(scope: string, key: string, fingerprint: string, response: unknown): void {
+    this.store.idempotency.set(`${scope}\u0000${key}`, { fingerprint, response });
+  }
+
+  /** 注册 + 回执：内存实现在同一同步段内完成，等价于事务 */
+  async createUserWithReceipt(input: {
+    username: string;
+    password: string;
+    displayName?: string;
+    scope: string;
+    key: string;
+    fingerprint: string;
+    buildResponse: (user: RepoUser) => unknown;
+  }): Promise<User> {
+    const user = await this.createUser(input.username, input.password, input.displayName);
+    const repoUser = { id: user.id, username: user.username, displayName: user.displayName, createdAt: user.createdAt };
+    this.saveIdempotent(input.scope, input.key, input.fingerprint, input.buildResponse(repoUser));
+    return user;
   }
 
   get userCount(): number { return this.store.users.size; }
