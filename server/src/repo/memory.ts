@@ -177,6 +177,36 @@ export class MemoryRepository {
   }
 
   /** 签到发奖：内存实现（唯一键语义用 Map 模拟，供本地联调与单元测试） */
+  async listLedger(userId: string, limit: number, beforeCreatedAt?: number): Promise<{
+    items: Array<{
+  id: string;
+  type: string;
+  delta: number;
+  balanceAfter: number;
+  reservedAfter: number;
+  reason: string;
+  createdAt: number;
+}>;
+    nextCursor: number | null;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 100);
+    const rows = this.store.ledger
+      .filter((r) => r.userId === userId && (beforeCreatedAt === undefined || r.createdAt < beforeCreatedAt))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, size)
+      .map((r) => ({
+        id: r.id,
+        type: r.type,
+        delta: r.delta,
+        balanceAfter: r.balanceAfter,
+        reservedAfter: r.reservedAfter,
+        reason: '',
+        createdAt: r.createdAt,
+      }));
+    const nextCursor = rows.length === size ? rows[rows.length - 1]!.createdAt : null;
+    return { items: rows, nextCursor };
+  }
+
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
     return this.store.claims.has(`${userId}:${businessDate}:${rewardType}`);
   }

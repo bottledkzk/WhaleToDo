@@ -310,6 +310,43 @@ export class PrismaRepository implements AccountRepository {
    *  3) 写 point_ledger（award，含 available_delta 与 balance_after）
    * 已领过则返回 claimed=false，不发奖也不写流水。
    */
+  async listLedger(userId: string, limit: number, beforeCreatedAt?: number): Promise<{
+    items: Array<{
+  id: string;
+  type: string;
+  delta: number;
+  balanceAfter: number;
+  reservedAfter: number;
+  reason: string;
+  createdAt: number;
+}>;
+    nextCursor: number | null;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 100);
+    const rows = await this.prisma.$queryRaw<Array<{
+      id: string; type: string; available_delta: number; balance_after: number;
+      reserved_after: number; reason: string; created_at: Date;
+    }>>`
+      SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
+        FROM point_ledger
+       WHERE user_id = ${userId}::uuid
+         AND (${beforeCreatedAt ?? null}::timestamptz IS NULL OR created_at < ${beforeCreatedAt ? new Date(beforeCreatedAt) : null})
+       ORDER BY created_at DESC
+       LIMIT ${size}`;
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      delta: r.available_delta,
+      balanceAfter: r.balance_after,
+      reservedAfter: r.reserved_after,
+      reason: r.reason,
+      createdAt: r.created_at.getTime(),
+    }));
+    const nextCursor = items.length === size ? items[items.length - 1]!.createdAt : null;
+    return { items, nextCursor };
+  }
+
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
     const rows = await this.prisma.$queryRaw<{ one: number }[]>`
       SELECT 1 AS one FROM daily_claims

@@ -363,6 +363,30 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return ok(req.requestId, { available: w.available, reserved: w.reserved, total: w.available + w.reserved });
   });
 
+  app.get('/api/v1/wallet/ledger', async (req) => {
+    await requireAuth(req);
+    if (!repo.listLedger) throw new ApiError('INTERNAL', '当前仓储未实现流水查询');
+    const q = (req.query ?? {}) as { limit?: string; cursor?: string };
+    const limit = Number.parseInt(q.limit ?? '50', 10);
+    const cursor = q.cursor ? Number.parseInt(q.cursor, 10) : undefined;
+    if (Number.isNaN(limit) || (cursor !== undefined && Number.isNaN(cursor))) {
+      throw new ApiError('VALIDATION_ERROR', 'limit / cursor 非法');
+    }
+    const page = await repo.listLedger(req.userId!, limit, cursor);
+    return ok(req.requestId, {
+      items: page.items.map((r) => ({
+        id: r.id,
+        type: r.type,
+        delta: r.delta,
+        balance_after: r.balanceAfter,
+        reserved_after: r.reservedAfter,
+        reason: r.reason,
+        created_at: new Date(r.createdAt).toISOString(),
+      })),
+      next_cursor: page.nextCursor,
+    });
+  });
+
   app.get('/api/v1/meta', async (req) => ok(req.requestId, {
     api_version: 'v1',
     base_url: config.publicBaseUrl,
