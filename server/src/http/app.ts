@@ -143,15 +143,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const password = String(body.password ?? '');
     if (!username || !password) throw new ApiError('VALIDATION_ERROR', '用户名与密码不能为空');
 
+    // 先预占额度，再做昂贵认证：超限请求**不会**进入 scrypt 校验，
+    // 否则限流只改了响应，猜中密码仍能 200 并清零（评审 P1）。
+    const precheck = loginLimiter.hit(loginKey);
+    if (!precheck.allowed) {
+      throw new ApiError('RATE_LIMITED', '登录失败次数过多，请稍后再试', { retry_after_ms: precheck.retryAfterMs });
+    }
+
     const user = await repo.authenticate(username, password);
     // 账号不存在与密码错误返回同一个错误，避免枚举账号
-    if (!user) {
-      const limit = loginLimiter.hit(loginKey);
-      if (!limit.allowed) {
-        throw new ApiError('RATE_LIMITED', '登录失败次数过多，请稍后再试', { retry_after_ms: limit.retryAfterMs });
-      }
-      throw new ApiError('UNAUTHENTICATED', '用户名或密码错误');
-    }
+    if (!user) throw new ApiError('UNAUTHENTICATED', '用户名或密码错误');
+
+    // 认证成功：清零计数（成功的尝试不占额度）
     loginLimiter.reset(loginKey);
 
     const { tokens } = repo.createSession(user.id);

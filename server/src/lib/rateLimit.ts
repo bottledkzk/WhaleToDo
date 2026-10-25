@@ -21,13 +21,16 @@ export class FixedWindowLimiter {
   private readonly limit: number;
   private readonly windowMs: number;
   private readonly now: () => number;
+  /** 桶数量上界：超过后先清理过期桶，仍然超限则淘汰最早到期的桶 */
+  private readonly maxBuckets: number;
 
-  constructor(limit: number, windowMs: number, now: () => number = Date.now) {
+  constructor(limit: number, windowMs: number, now: () => number = Date.now, maxBuckets = 10_000) {
     if (!Number.isInteger(limit) || limit < 1) throw new Error('limit 必须是正整数');
     if (!Number.isInteger(windowMs) || windowMs < 1) throw new Error('windowMs 必须是正整数');
     this.limit = limit;
     this.windowMs = windowMs;
     this.now = now;
+    this.maxBuckets = Math.max(1, Math.floor(maxBuckets));
   }
 
   /** 记一次尝试；返回是否放行。超过上限时不再自增，避免计数器无限增长。 */
@@ -35,6 +38,18 @@ export class FixedWindowLimiter {
     const t = this.now();
     let bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= t) {
+      // 新建桶前先控制总量：先清过期，仍超限则淘汰最早到期的（内存有上界，不需要定时任务）
+      if (this.buckets.size >= this.maxBuckets) {
+        this.sweep();
+        if (this.buckets.size >= this.maxBuckets) {
+          let oldestKey: string | null = null;
+          let oldestReset = Number.POSITIVE_INFINITY;
+          for (const [k, b] of this.buckets) {
+            if (b.resetAt < oldestReset) { oldestReset = b.resetAt; oldestKey = k; }
+          }
+          if (oldestKey !== null) this.buckets.delete(oldestKey);
+        }
+      }
       bucket = { count: 0, resetAt: t + this.windowMs };
       this.buckets.set(key, bucket);
     }
