@@ -68,6 +68,9 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      # 运行 PrismaRepository 的集成测试需要生成的 client（npm ci --ignore-scripts 会跳过 postinstall）
+      - name: 生成 Prisma Client（database job）
+        run: npx prisma generate --schema prisma/schema.prisma
       - name: Isolated CI database roles (synthetic passwords only)
         run: psql -h 127.0.0.1 -U postgres -d whaletodo_verify -v ON_ERROR_STOP=1 -f ../env/postgresql/ci-roles.sql
       - run: npm run db:deploy

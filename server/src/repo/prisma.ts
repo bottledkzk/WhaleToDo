@@ -89,18 +89,23 @@ export class PrismaRepository implements AccountRepository {
     const passwordHash = await hashPasswordAsync(password);
     const id = randomUUID();
     // 用户 + 钱包 + 默认设置 同事务（交接文档要求）；demo_slot 由 next_demo_slot() 生成
+    // 运行角色 whaletodo_app 没有 users.role / users.status 的写权限（grants 有意如此），
+    // 而 Prisma 的 create 会把 schema 里的字面默认值一起写进 INSERT，导致 42501。
+    // 因此用参数化 INSERT 只列允许字段，让数据库默认值（role=user / status=active）生效。
     const created = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          id,
-          username,
-          password_hash: passwordHash,
-          display_name: (displayName ?? username).slice(0, 64),
-        },
-        select: { id: true, username: true, display_name: true, created_at: true },
-      });
-      await tx.point_wallets.create({ data: { user_id: user.id } });
+      await tx.$executeRaw`
+        INSERT INTO users (id, username, password_hash, display_name)
+        VALUES (${id}::uuid, ${username}, ${passwordHash}, ${(displayName ?? username).slice(0, 64)})`;
+      const rows = await tx.$queryRaw<UserRow[]>`
+        SELECT id, username, display_name, created_at FROM users WHERE id = ${id}::uuid`;
+      const user = rows[0];
+      if (!user) throw new Error('创建用户后回读失败');
+
+      // user_settings 启用了 owner_scope RLS：WITH CHECK 要求 user_id = current_setting('app.user_id')。
+      // 必须在同一事务里设置事务级上下文（true = 仅本事务），不能设全局会话值。
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${user.id}, true)`;
       await tx.user_settings.create({ data: { user_id: user.id } });
+      await tx.point_wallets.create({ data: { user_id: user.id } });
       return user;
     });
     return toRepoUser(created);
@@ -227,16 +232,32 @@ export class PrismaRepository implements AccountRepository {
     return { fingerprint: row.fingerprint, response: row.response };
   }
 
+  /**
+   * 保存回执：
+   *  - 未过期的既有回执**不覆盖**（首次结果优先，异体由调用方比较指纹后返回 409）
+   *  - 只有已过期回执允许替换
+   *  - 并发插入的唯一冲突（P2002）按"已存在"处理；其他错误（连接、权限、超长等）必须抛出
+   */
   async saveIdempotent(scope: string, key: string, fingerprint: string, response: unknown): Promise<void> {
     const expiresAt = new Date(this.now() + IDEMPOTENCY_TTL_MS);
-    try {
-      await this.prisma.idempotency_receipts.upsert({
-        where: { scope_key: { scope, key } },
-        create: { scope, key, fingerprint, response: response as object, expires_at: expiresAt },
-        update: { fingerprint, response: response as object, expires_at: expiresAt },
+    const where = { scope_key: { scope, key } };
+    const existing = await this.prisma.idempotency_receipts.findUnique({ where });
+
+    if (existing) {
+      if (existing.expires_at.getTime() > this.now()) return;   // 未过期：保留首次结果
+      await this.prisma.idempotency_receipts.update({
+        where,
+        data: { fingerprint, response: response as object, expires_at: expiresAt },
       });
-    } catch {
-      // 并发插入同一键：唯一约束触发，按"已存在"处理，不覆盖首次结果
+      return;
+    }
+
+    try {
+      await this.prisma.idempotency_receipts.create({
+        data: { scope, key, fingerprint, response: response as object, expires_at: expiresAt },
+      });
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;   // 只吞并发唯一冲突，其余传播
     }
   }
 }
@@ -246,4 +267,9 @@ function splitScopeKey(raw: string): { scope: string; k: string } {
   const idx = raw.indexOf(':');
   if (idx <= 0) return { scope: 'default', k: raw.slice(0, 128) };
   return { scope: raw.slice(0, idx).slice(0, 80), k: raw.slice(idx + 1).slice(0, 128) };
+}
+
+/** Prisma 唯一约束冲突（P2002）：只在这种情况下按"已存在"处理 */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
 }

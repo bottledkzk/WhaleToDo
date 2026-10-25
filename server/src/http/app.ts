@@ -196,8 +196,18 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // 内存实现没有该方法时退化为两步，仅用于本地联调。
     let tokens: { accessToken: string; refreshToken: string; accessExpiresAt: number };
     if (repo.rotateSession) {
-      const rotated = await repo.rotateSession(session.id, session.userId, session.familyId);
-      tokens = rotated.tokens;
+      try {
+        const rotated = await repo.rotateSession(session.id, session.userId, session.familyId);
+        tokens = rotated.tokens;
+      } catch (err) {
+        // 并发刷新：旧会话已被另一个请求消费。按既定重放规则**整链撤销**并返回 401，
+        // 不能让外层统一处理器变成 500（评审 P1）。其他数据库故障继续向上抛。
+        if (err instanceof Error && err.message === 'SESSION_ALREADY_ROTATED') {
+          await repo.revokeFamily(session.familyId);
+          throw new ApiError('UNAUTHENTICATED', '刷新令牌已失效，请重新登录');
+        }
+        throw err;
+      }
     } else {
       await repo.revokeSession(session.id);
       const created = await repo.createSession(session.userId, session.familyId);
