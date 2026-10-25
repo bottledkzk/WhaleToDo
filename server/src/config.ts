@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 // 配置：全部来自环境变量，默认值可直接本地起服务；不含任何真实秘密。
 export interface ServerConfig {
   nodeEnv: 'development' | 'test' | 'demo' | 'production';
@@ -16,6 +18,16 @@ export interface ServerConfig {
    * 部署时**只应信任回环或实际代理地址**，不能对任意来源盲信 X-Forwarded-*。
    */
   trustProxy: boolean | string;
+  /** 注册/登录限流：窗口内最大尝试次数 */
+  rateLimitMaxAttempts: number;
+  /** 注册/登录限流：窗口长度（毫秒） */
+  rateLimitWindowMs: number;
+  /**
+   * 幂等 scope/fingerprint 的 HMAC 密钥。必须服务端持久配置：
+   * 用仅进程内随机密钥时，重启后同一请求会被判成"异体"而返回 409。
+   * 生产环境必须显式提供；test/development 缺省时用一次性随机值。
+   */
+  idempotencySecret: string;
 }
 
 const ALLOWED_ENVS = ['development', 'test', 'demo', 'production'] as const;
@@ -83,6 +95,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     mockWebhookToken,
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? 'http://127.0.0.1:8080/api/v1').replace(/\/$/, ''),
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    rateLimitMaxAttempts: parseIntEnv(env.RATE_LIMIT_MAX_ATTEMPTS, 10, 'RATE_LIMIT_MAX_ATTEMPTS'),
+    rateLimitWindowMs: parseIntEnv(env.RATE_LIMIT_WINDOW_MS, 5 * 60 * 1000, 'RATE_LIMIT_WINDOW_MS'),
+    idempotencySecret: resolveIdempotencySecret(env, nodeEnv),
   };
 }
 
@@ -105,4 +120,19 @@ export function loadDotEnv(fileUrl: URL | string): boolean {
   } catch {
     return false;
   }
+}
+/**
+ * 幂等密钥：生产必须显式提供；开发/测试允许缺失（用一次性随机值，重启即失效）。
+ * 长度下限 32 字符，避免弱密钥。
+ */
+function resolveIdempotencySecret(env: NodeJS.ProcessEnv, nodeEnv: ServerConfig['nodeEnv']): string {
+  const raw = (env.IDEMPOTENCY_SECRET ?? '').trim();
+  if (raw) {
+    if (raw.length < 32) throw new Error('IDEMPOTENCY_SECRET 至少 32 字符');
+    return raw;
+  }
+  if (nodeEnv === 'production') {
+    throw new Error('生产环境必须配置 IDEMPOTENCY_SECRET（幂等指纹密钥不可用进程内随机值）');
+  }
+  return randomUUID() + randomUUID();
 }

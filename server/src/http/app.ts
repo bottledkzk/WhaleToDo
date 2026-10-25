@@ -3,7 +3,10 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
-import { MemoryRepository } from '../repo/memory.ts';
+import { FixedWindowLimiter } from '../lib/rateLimit.ts';
+import { registerScope } from '../lib/idempotency.ts';
+import type { AccountRepository } from '../repo/types.ts';
+import { RegisterConflict } from '../repo/types.ts';
 import type { ServerConfig } from '../config.ts';
 
 declare module 'fastify' {
@@ -16,7 +19,7 @@ declare module 'fastify' {
 
 export interface AppDeps {
   config: ServerConfig;
-  repo: MemoryRepository;
+  repo: AccountRepository;
   logger?: boolean;
 }
 
@@ -30,15 +33,23 @@ function ok(requestId: string, data: unknown) {
  * 幂等指纹：HMAC-SHA256（进程内随机密钥）。
  * 只存摘要，**不存原始请求体**——否则注册密码会以明文留在幂等缓存里。
  */
-const IDEMPOTENCY_FINGERPRINT_KEY = randomBytes(32);
-function fingerprintOf(body: unknown): string {
-  return createHmac('sha256', IDEMPOTENCY_FINGERPRINT_KEY)
+/**
+ * 幂等指纹：HMAC-SHA256，密钥来自服务端持久配置，并做用途隔离。
+ * 只存摘要，不存原始请求体——否则注册密码会以明文留在幂等回执里。
+ */
+function fingerprintOf(secret: string, body: unknown): string {
+  return createHmac('sha256', `${secret}:idempotency-fingerprint`)
     .update(JSON.stringify(body ?? null))
     .digest('hex');
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const { config, repo } = deps;
+
+  // 限流：注册按 IP 计次（每次尝试都算）；登录只计失败次数，成功即清零。
+  // 单进程内存实现，多实例部署时需换共享存储（见 handoff 说明）。
+  const registerLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
+  const loginLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
   const app = Fastify({
     logger: deps.logger ?? false,
     trustProxy: config.trustProxy,
@@ -72,7 +83,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const header = req.headers.authorization ?? '';
     const m = /^Bearer\s+(.+)$/.exec(header);
     if (!m) throw new ApiError('UNAUTHENTICATED', '缺少访问令牌');
-    const session = repo.findActiveSessionByAccess(m[1]!.trim());
+    const session = await repo.findActiveSessionByAccess(m[1]!.trim());
     if (!session) throw new ApiError('UNAUTHENTICATED', '访问令牌无效、已撤销或已过期');
     req.userId = session.userId;
     req.sessionId = session.id;
@@ -90,6 +101,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
   /* ---------- 注册 ---------- */
   app.post('/api/v1/auth/register', async (req, reply) => {
+    const regKey = `ip:${req.ip}`;
+    const regLimit = registerLimiter.hit(regKey);
+    if (!regLimit.allowed) {
+      throw new ApiError('RATE_LIMITED', '注册请求过于频繁，请稍后再试', { retry_after_ms: regLimit.retryAfterMs });
+    }
     const body = (req.body ?? {}) as { username?: string; password?: string; display_name?: string };
     const username = String(body.username ?? '').trim();
     const password = String(body.password ?? '');
@@ -102,40 +118,112 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
     // 幂等：同 key 同体重放返回原结果；同 key 不同体返回 CONFLICT
     const idemKey = String(req.headers['idempotency-key'] ?? '').trim();
-    const scopeKey = idemKey ? `register:${idemKey}` : '';
+    // 注册 scope 由服务端按归一化用户名生成（不接受客户端传 scope / IP 散列）
+    const scopeKey = idemKey ? registerScope(config.idempotencySecret, username) : '';
     if (scopeKey) {
-      const hit = repo.getIdempotent(scopeKey);
+      const hit = await repo.getIdempotent(scopeKey, idemKey);
       if (hit) {
-        if (hit.fingerprint !== fingerprintOf({ username, password, display_name: body.display_name ?? null })) {
+        if (hit.fingerprint !== fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null })) {
           throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
         }
         return reply.code(201).send(hit.response);
       }
     }
 
-    if (repo.findUserByUsername(username)) {
+    // 指纹先算出来：下面的用户名预检查也可能需要拿它比较回执
+    const requestFingerprint = fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null });
+
+    if (await repo.findUserByUsername(username)) {
+      // 并发同体：赢家已提交时，这里会看到用户名被占用，但要先看回执——
+      // 同指纹说明就是同一个注册请求，应返回首次 201，而不是 409。
+      if (scopeKey) {
+        const existing = await repo.getIdempotent(scopeKey, idemKey);
+        if (existing) {
+          if (existing.fingerprint !== requestFingerprint) {
+            throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
+          }
+          return reply.code(201).send(existing.response);
+        }
+      }
       throw new ApiError('CONFLICT', '用户名已被占用');
     }
-    const user = repo.createUser(username, password, body.display_name);
+    // 有组合方法时用它：用户创建与回执写入在同一事务，避免"建了用户但没写回执"导致重试 409
+    let user;
+    if (repo.createUserWithReceipt && scopeKey) {
+      try {
+        user = await repo.createUserWithReceipt({
+          username,
+          password,
+          displayName: body.display_name,
+          scope: scopeKey,
+          key: idemKey,
+          fingerprint: requestFingerprint,
+          buildResponse: (u) => ok(req.requestId, {
+            user: { id: u.id, username: u.username, display_name: u.displayName },
+          }),
+        });
+      } catch (err) {
+        if (!(err instanceof RegisterConflict)) throw err;
+
+        // 无论哪种冲突，都先尝试读取"赢家"回执：并发同体请求应返回首次 201 响应，
+        // 而不是 409（评审指出只把 USERNAME_TAKEN 映射 409 仍不满足并发同体重放）。
+        // 赢家可能刚提交，故短暂重试几次以消除提交窗口。
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const existing = await repo.getIdempotent(scopeKey, idemKey);
+          if (existing) {
+            if (existing.fingerprint !== requestFingerprint) {
+              throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
+            }
+            return reply.code(201).send(existing.response);
+          }
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+
+        // 确认没有回执：这时才是真正的冲突
+        if (err.kind === 'USERNAME_TAKEN') throw new ApiError('CONFLICT', '用户名已被占用');
+        throw new ApiError('CONFLICT', '同一注册请求正在处理，请稍后重试');
+      }
+    } else {
+      user = await repo.createUser(username, password, body.display_name);
+    }
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
-    if (scopeKey) repo.saveIdempotent(scopeKey, fingerprintOf({ username, password, display_name: body.display_name ?? null }), response);
+    // 组合方法已在事务内写过回执；这里只给未提供组合方法的实现补写
+    if (scopeKey && !repo.createUserWithReceipt) {
+      await repo.saveIdempotent(
+        scopeKey,
+        idemKey,
+        fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }),
+        response,
+      );
+    }
     return reply.code(201).send(response);
   });
 
   /* ---------- 登录 ---------- */
   app.post('/api/v1/auth/login', async (req) => {
+    const loginKey = `ip:${req.ip}`;
     const body = (req.body ?? {}) as { username?: string; password?: string };
     const username = String(body.username ?? '').trim();
     const password = String(body.password ?? '');
     if (!username || !password) throw new ApiError('VALIDATION_ERROR', '用户名与密码不能为空');
 
-    const user = repo.authenticate(username, password);
+    // 先预占额度，再做昂贵认证：超限请求**不会**进入 scrypt 校验，
+    // 否则限流只改了响应，猜中密码仍能 200 并清零（评审 P1）。
+    const precheck = loginLimiter.hit(loginKey);
+    if (!precheck.allowed) {
+      throw new ApiError('RATE_LIMITED', '登录失败次数过多，请稍后再试', { retry_after_ms: precheck.retryAfterMs });
+    }
+
+    const user = await repo.authenticate(username, password);
     // 账号不存在与密码错误返回同一个错误，避免枚举账号
     if (!user) throw new ApiError('UNAUTHENTICATED', '用户名或密码错误');
 
-    const { tokens } = repo.createSession(user.id);
+    // 认证成功：清零计数（成功的尝试不占额度）
+    loginLimiter.reset(loginKey);
+
+    const { tokens } = await repo.createSession(user.id);
     return ok(req.requestId, {
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken,
@@ -152,21 +240,40 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const token = String(body.refresh_token ?? '').trim();
     if (!token) throw new ApiError('VALIDATION_ERROR', 'refresh_token 不能为空');
 
-    const session = repo.findSessionByRefresh(token);
+    const session = await repo.findSessionByRefresh(token);
     if (!session) throw new ApiError('UNAUTHENTICATED', '刷新令牌无效');
 
     if (session.revokedAt !== null) {
       // 已轮换过的 refresh 被再次使用 → 判定为泄漏，整串撤销
-      repo.revokeFamily(session.familyId);
+      await repo.revokeFamily(session.familyId);
       throw new ApiError('UNAUTHENTICATED', '刷新令牌已失效，请重新登录');
     }
     if (session.refreshExpiresAt <= Date.now()) {
-      repo.revokeSession(session.id);
+      await repo.revokeSession(session.id);
       throw new ApiError('UNAUTHENTICATED', '刷新令牌已过期，请重新登录');
     }
 
-    repo.revokeSession(session.id);
-    const { tokens } = repo.createSession(session.userId, session.familyId);
+    // 轮换：优先用仓储的原子实现（撤销旧 + 建新在同一事务，Prisma 提供）；
+    // 内存实现没有该方法时退化为两步，仅用于本地联调。
+    let tokens: { accessToken: string; refreshToken: string; accessExpiresAt: number };
+    if (repo.rotateSession) {
+      try {
+        const rotated = await repo.rotateSession(session.id, session.userId, session.familyId);
+        tokens = rotated.tokens;
+      } catch (err) {
+        // 并发刷新：旧会话已被另一个请求消费。按既定重放规则**整链撤销**并返回 401，
+        // 不能让外层统一处理器变成 500（评审 P1）。其他数据库故障继续向上抛。
+        if (err instanceof Error && err.message === 'SESSION_ALREADY_ROTATED') {
+          await repo.revokeFamily(session.familyId);
+          throw new ApiError('UNAUTHENTICATED', '刷新令牌已失效，请重新登录');
+        }
+        throw err;
+      }
+    } else {
+      await repo.revokeSession(session.id);
+      const created = await repo.createSession(session.userId, session.familyId);
+      tokens = created.tokens;
+    }
     return ok(req.requestId, {
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken,
@@ -178,14 +285,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 退出 ---------- */
   app.post('/api/v1/auth/logout', async (req, reply) => {
     await requireAuth(req);
-    repo.revokeSession(req.sessionId!);
+    await repo.revokeSession(req.sessionId!);
     return reply.code(204).send();
   });
 
   /* ---------- 个人资料 ---------- */
   app.get('/api/v1/me', async (req) => {
     await requireAuth(req);
-    const user = repo.findUserById(req.userId!);
+    const user = await repo.findUserById(req.userId!);
     if (!user) throw new ApiError('UNAUTHENTICATED', '账号不存在');
     return ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName, created_at: new Date(user.createdAt).toISOString() },
@@ -195,7 +302,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 权益（VIP 权益未冻结，只返回身份与到期时间占位） ---------- */
   app.get('/api/v1/me/entitlements', async (req) => {
     await requireAuth(req);
-    const wallet = repo.walletOf(req.userId!);
+    const wallet = await repo.walletOf(req.userId!);
     return ok(req.requestId, {
       vip: { active: false, expires_at: null },      // 具体权益待定，不默认无限调用
       balance: { available: wallet.available, reserved: wallet.reserved },
