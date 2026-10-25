@@ -54,6 +54,11 @@ export interface AccountRepository {
   authenticate(username: string, password: string): Promise<RepoUser | null>;
 
   createSession(userId: string, familyId?: string): Promise<CreatedSession>;
+  /**
+   * 原子轮换：撤销旧会话 + 创建同 family 新会话，必须在同一事务内完成。
+   * Prisma 实现提供该方法；内存实现不提供时，路由退化为"先撤销后创建"。
+   */
+  rotateSession?(oldSessionId: string, userId: string, familyId: string): Promise<CreatedSession>;
   findActiveSessionByAccess(accessToken: string): Promise<RepoSession | null>;
   findSessionByRefresh(refreshToken: string): Promise<RepoSession | null>;
   revokeSession(id: string): Promise<void>;

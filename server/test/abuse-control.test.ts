@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
+import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
 import { FixedWindowLimiter } from '../src/lib/rateLimit.ts';
 import { hashPasswordAsync, verifyPasswordAsync } from '../src/lib/security.ts';
@@ -21,7 +22,7 @@ let repo: MemoryRepository;
 beforeEach(async () => {
   if (app) await app.close();
   repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  app = buildApp({ config: loadConfig(baseEnv), repo });
+  app = buildApp({ config: loadConfig(baseEnv), repo: fromSync(repo) });
 });
 
 const inject = (opts: import('light-my-request').InjectOptions) => app.inject(opts);

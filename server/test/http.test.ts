@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
+import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
 import { hashToken } from '../src/lib/security.ts';
 
@@ -20,7 +21,7 @@ let repo: MemoryRepository;
 beforeEach(async () => {
   if (app) await app.close();
   repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  app = buildApp({ config: loadConfig(testEnv), repo });
+  app = buildApp({ config: loadConfig(testEnv), repo: fromSync(repo) });
 });
 
 // fastify 的 inject 有重载，Parameters<...>[0] 会选中零参数重载；直接用 light-my-request 类型

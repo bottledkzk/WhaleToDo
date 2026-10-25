@@ -5,7 +5,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
-import { MemoryRepository } from '../repo/memory.ts';
+import type { AccountRepository } from '../repo/types.ts';
 import type { ServerConfig } from '../config.ts';
 
 declare module 'fastify' {
@@ -18,7 +18,7 @@ declare module 'fastify' {
 
 export interface AppDeps {
   config: ServerConfig;
-  repo: MemoryRepository;
+  repo: AccountRepository;
   logger?: boolean;
 }
 
@@ -82,7 +82,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const header = req.headers.authorization ?? '';
     const m = /^Bearer\s+(.+)$/.exec(header);
     if (!m) throw new ApiError('UNAUTHENTICATED', '缺少访问令牌');
-    const session = repo.findActiveSessionByAccess(m[1]!.trim());
+    const session = await repo.findActiveSessionByAccess(m[1]!.trim());
     if (!session) throw new ApiError('UNAUTHENTICATED', '访问令牌无效、已撤销或已过期');
     req.userId = session.userId;
     req.sessionId = session.id;
@@ -120,7 +120,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // 注册 scope 由服务端按归一化用户名生成（不接受客户端传 scope / IP 散列）
     const scopeKey = idemKey ? registerScope(config.idempotencySecret, username) : '';
     if (scopeKey) {
-      const hit = repo.getIdempotent(scopeKey, idemKey);
+      const hit = await repo.getIdempotent(scopeKey, idemKey);
       if (hit) {
         if (hit.fingerprint !== fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null })) {
           throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
@@ -129,14 +129,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
     }
 
-    if (repo.findUserByUsername(username)) {
+    if (await repo.findUserByUsername(username)) {
       throw new ApiError('CONFLICT', '用户名已被占用');
     }
     const user = await repo.createUser(username, password, body.display_name);
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
-    if (scopeKey) repo.saveIdempotent(scopeKey, idemKey, fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }), response);
+    if (scopeKey) await repo.saveIdempotent(scopeKey, idemKey, fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }), response);
     return reply.code(201).send(response);
   });
 
@@ -162,7 +162,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     // 认证成功：清零计数（成功的尝试不占额度）
     loginLimiter.reset(loginKey);
 
-    const { tokens } = repo.createSession(user.id);
+    const { tokens } = await repo.createSession(user.id);
     return ok(req.requestId, {
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken,
@@ -179,21 +179,30 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const token = String(body.refresh_token ?? '').trim();
     if (!token) throw new ApiError('VALIDATION_ERROR', 'refresh_token 不能为空');
 
-    const session = repo.findSessionByRefresh(token);
+    const session = await repo.findSessionByRefresh(token);
     if (!session) throw new ApiError('UNAUTHENTICATED', '刷新令牌无效');
 
     if (session.revokedAt !== null) {
       // 已轮换过的 refresh 被再次使用 → 判定为泄漏，整串撤销
-      repo.revokeFamily(session.familyId);
+      await repo.revokeFamily(session.familyId);
       throw new ApiError('UNAUTHENTICATED', '刷新令牌已失效，请重新登录');
     }
     if (session.refreshExpiresAt <= Date.now()) {
-      repo.revokeSession(session.id);
+      await repo.revokeSession(session.id);
       throw new ApiError('UNAUTHENTICATED', '刷新令牌已过期，请重新登录');
     }
 
-    repo.revokeSession(session.id);
-    const { tokens } = repo.createSession(session.userId, session.familyId);
+    // 轮换：优先用仓储的原子实现（撤销旧 + 建新在同一事务，Prisma 提供）；
+    // 内存实现没有该方法时退化为两步，仅用于本地联调。
+    let tokens: { accessToken: string; refreshToken: string; accessExpiresAt: number };
+    if (repo.rotateSession) {
+      const rotated = await repo.rotateSession(session.id, session.userId, session.familyId);
+      tokens = rotated.tokens;
+    } else {
+      await repo.revokeSession(session.id);
+      const created = await repo.createSession(session.userId, session.familyId);
+      tokens = created.tokens;
+    }
     return ok(req.requestId, {
       access_token: tokens.accessToken,
       refresh_token: tokens.refreshToken,
@@ -205,14 +214,14 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 退出 ---------- */
   app.post('/api/v1/auth/logout', async (req, reply) => {
     await requireAuth(req);
-    repo.revokeSession(req.sessionId!);
+    await repo.revokeSession(req.sessionId!);
     return reply.code(204).send();
   });
 
   /* ---------- 个人资料 ---------- */
   app.get('/api/v1/me', async (req) => {
     await requireAuth(req);
-    const user = repo.findUserById(req.userId!);
+    const user = await repo.findUserById(req.userId!);
     if (!user) throw new ApiError('UNAUTHENTICATED', '账号不存在');
     return ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName, created_at: new Date(user.createdAt).toISOString() },
@@ -222,7 +231,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 权益（VIP 权益未冻结，只返回身份与到期时间占位） ---------- */
   app.get('/api/v1/me/entitlements', async (req) => {
     await requireAuth(req);
-    const wallet = repo.walletOf(req.userId!);
+    const wallet = await repo.walletOf(req.userId!);
     return ok(req.requestId, {
       vip: { active: false, expires_at: null },      // 具体权益待定，不默认无限调用
       balance: { available: wallet.available, reserved: wallet.reserved },

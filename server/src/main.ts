@@ -2,6 +2,10 @@
 // 配置来源：先加载 server/.env（存在则加载），再由环境变量覆盖。
 import { loadConfig, loadDotEnv } from './config.ts';
 import { MemoryRepository } from './repo/memory.ts';
+import { fromSync } from './repo/from-sync.ts';
+import { PrismaRepository } from './repo/prisma.ts';
+import type { AccountRepository } from './repo/types.ts';
+import { PrismaClient } from '@prisma/client';
 import { buildApp } from './http/app.ts';
 
 // 显式加载 .env：避免"文档让你复制 .env，但程序根本不读"的问题。
@@ -9,7 +13,25 @@ import { buildApp } from './http/app.ts';
 const dotenvLoaded = loadDotEnv(new URL('../.env', import.meta.url));
 
 const config = loadConfig();
-const repo = new MemoryRepository();
+/**
+ * 仓储选择：
+ *  - 配置了 DATABASE_URL → Prisma（生产唯一允许的方式）
+ *  - 生产环境未配置 → 拒绝启动（内存仓储重启即清空，不能当账户存储）
+ *  - 开发/测试 → 内存仓储（包一层异步适配器）
+ */
+function createRepository(): { repo: AccountRepository; mode: string } {
+  const databaseUrl = (process.env.DATABASE_URL ?? '').trim();
+  if (databaseUrl) {
+    const prisma = new PrismaClient();
+    return { repo: new PrismaRepository(prisma), mode: 'postgres(prisma)' };
+  }
+  if (config.nodeEnv === 'production') {
+    throw new Error('生产环境必须配置 DATABASE_URL：内存仓储只用于本地联调，不能作为账户存储');
+  }
+  return { repo: fromSync(new MemoryRepository()), mode: 'memory(dev only)' };
+}
+
+const { repo, mode: storageMode } = createRepository();
 const app = buildApp({ config, repo, logger: true });
 
 const shutdown = async (signal: string) => {
@@ -27,5 +49,5 @@ app.log.info({
   api: `http://${config.host}:${config.port}/api/v1`,
   business_timezone: config.businessTimezone,
   payment_provider: config.paymentProvider,
-  storage: 'memory（本地开发用，重启即清空）',
+  storage: storageMode,
 }, 'whaletodo-api ready');
