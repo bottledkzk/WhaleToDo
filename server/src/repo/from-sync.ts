@@ -43,6 +43,10 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     revokeFamily: async (familyId) => repo.revokeFamily(familyId),
     walletOf: async (userId) => repo.walletOf(userId),
     setWallet: async (userId, wallet) => { repo.setWallet(userId, wallet); },
+    // 签到/流水：内存实现有同名方法，直接转发（Prisma 实现则用自己的）
+    hasClaimedDaily: async (userId, businessDate, rewardType) => repo.hasClaimedDaily(userId, businessDate, rewardType),
+    claimDailyReward: async (input) => repo.claimDailyReward(input),
+    listLedger: async (userId, limit, beforeCreatedAt) => repo.listLedger(userId, limit, beforeCreatedAt),
     getIdempotent: async (scope, key) => repo.getIdempotent(scope, key),
     saveIdempotent: async (scope, key, fingerprint, response) => { repo.saveIdempotent(scope, key, fingerprint, response); },
   };

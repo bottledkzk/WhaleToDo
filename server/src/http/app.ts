@@ -3,6 +3,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
+import { businessDate } from '../config.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -307,6 +308,105 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       vip: { active: false, expires_at: null },      // 具体权益待定，不默认无限调用
       balance: { available: wallet.available, reserved: wallet.reserved },
       daily_quota: { claimed_today: false, points: 0, reward_points: 0 },
+    });
+  });
+
+  /* ---------- 签到与积分（发奖走真实 daily_claims + point_ledger） ---------- */
+  const DAILY_REWARD_POINTS = 30;
+
+  app.get('/api/v1/rewards/daily', async (req) => {
+    await requireAuth(req);
+    const date = businessDate(new Date(), config.businessTimezone);
+    const wallet = await repo.walletOf(req.userId!);
+    const claimed = repo.hasClaimedDaily
+      ? await repo.hasClaimedDaily(req.userId!, date, 'sign_in')
+      : false;
+    return ok(req.requestId, {
+      business_date: date,
+      claimed,
+      reward: { reward_type: 'sign_in', points: DAILY_REWARD_POINTS },
+      balance: { available: wallet.available, reserved: wallet.reserved },
+    });
+  });
+
+  app.post('/api/v1/rewards/daily/claim', async (req, reply) => {
+    await requireAuth(req);
+    const date = businessDate(new Date(), config.businessTimezone);
+    const eventId = `${req.userId}:${date}:sign_in`;
+
+    if (repo.claimDailyReward) {
+      const result = await repo.claimDailyReward({
+        userId: req.userId!,
+        businessDate: date,
+        rewardType: 'sign_in',
+        points: DAILY_REWARD_POINTS,
+        eventId,
+        reason: `sign-in:${date}`,
+      });
+      if (!result.claimed) {
+        throw new ApiError('CONFLICT', '今日已领取签到奖励', { business_date: date });
+      }
+      return reply.code(201).send(ok(req.requestId, {
+        business_date: date,
+        points_awarded: DAILY_REWARD_POINTS,
+        wallet: { available: result.available, reserved: result.reserved },
+      }));
+    }
+
+    // 没提供原子实现的仓储（理论上不该出现）：明确报错，避免静默不发奖
+    throw new ApiError('INTERNAL', '当前仓储未实现签到发奖');
+  });
+
+  app.get('/api/v1/wallet', async (req) => {
+    await requireAuth(req);
+    const w = await repo.walletOf(req.userId!);
+    return ok(req.requestId, { available: w.available, reserved: w.reserved, total: w.available + w.reserved });
+  });
+
+  app.get('/api/v1/wallet/ledger', async (req) => {
+    await requireAuth(req);
+    if (!repo.listLedger) throw new ApiError('INTERNAL', '当前仓储未实现流水查询');
+    const q = (req.query ?? {}) as { limit?: string; cursor?: string };
+
+    // limit：只接受纯数字文本，避免 parseInt 的部分解析（如 "10abc"）
+    if (q.limit !== undefined && !/^\d{1,3}$/.test(q.limit)) {
+      throw new ApiError('VALIDATION_ERROR', 'limit 需为 1~100 的整数');
+    }
+    const limit = q.limit === undefined ? 50 : Number(q.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ApiError('VALIDATION_ERROR', 'limit 需为 1~100 的整数');
+    }
+
+    // 游标格式 "<毫秒时间戳>:<uuid>"：必须恰好两段、毫秒是纯数字且为安全整数、
+    // 能构造出合法 Date，uuid 段合法。任何一项不满足 → 400，绝不进 SQL
+    // （评审：999999999999999999999 会通过 isFinite 但产生 Invalid Date → 500）。
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    let cursor: { createdAt: number; id: string } | undefined;
+    if (q.cursor !== undefined) {
+      const parts = q.cursor.split(':');
+      if (parts.length !== 2) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const [msPart, idPart] = parts as [string, string];
+      if (!/^\d{1,16}$/.test(msPart)) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const ms = Number(msPart);
+      if (!Number.isSafeInteger(ms) || ms < 0) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      const asDate = new Date(ms);
+      if (Number.isNaN(asDate.getTime())) throw new ApiError('VALIDATION_ERROR', 'cursor 时间超出范围');
+      if (!UUID_RE.test(idPart)) throw new ApiError('VALIDATION_ERROR', 'cursor 格式非法');
+      cursor = { createdAt: ms, id: idPart };
+    }
+
+    const page = await repo.listLedger(req.userId!, limit, cursor);
+    return ok(req.requestId, {
+      items: page.items.map((r) => ({
+        id: r.id,
+        type: r.type,
+        delta: r.delta,
+        balance_after: r.balanceAfter,
+        reserved_after: r.reservedAfter,
+        reason: r.reason,
+        created_at: new Date(r.createdAt).toISOString(),
+      })),
+      next_cursor: page.nextCursor ? `${page.nextCursor.createdAt}:${page.nextCursor.id}` : null,
     });
   });
 

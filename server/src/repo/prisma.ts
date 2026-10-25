@@ -303,6 +303,110 @@ export class PrismaRepository implements AccountRepository {
     });
   }
 
+  /**
+   * 签到发奖：同一事务内
+   *  1) INSERT daily_claims ... ON CONFLICT DO NOTHING —— 唯一键 (user_id, business_date, reward_type) 兜住并发
+   *  2) 钱包 available += points（UPDATE ... RETURNING 拿到余额快照）
+   *  3) 写 point_ledger（award，含 available_delta 与 balance_after）
+   * 已领过则返回 claimed=false，不发奖也不写流水。
+   */
+
+  async listLedger(
+    userId: string,
+    limit: number,
+    cursor?: { createdAt: number; id: string },
+  ): Promise<{
+    items: Array<{
+      id: string; type: string; delta: number; balanceAfter: number; reservedAfter: number;
+      reason: string; createdAt: number;
+    }>;
+    nextCursor: { createdAt: number; id: string } | null;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 100);
+    type Row = {
+      id: string; type: string; available_delta: number; balance_after: number;
+      reserved_after: number; reason: string; created_at: Date;
+    };
+
+    // 游标必须是合法的 Date + uuid，且用 (created_at, id) 复合比较，
+    // 否则同毫秒的多条流水会被漏掉（评审 P2）；毫秒 number 不能直接强转 timestamptz。
+    const rows: Row[] = cursor
+      ? await this.prisma.$queryRaw<Row[]>`
+          SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
+            FROM point_ledger
+           WHERE user_id = ${userId}::uuid
+             AND (created_at, id) < (${new Date(cursor.createdAt)}, ${cursor.id}::uuid)
+           ORDER BY created_at DESC, id DESC
+           LIMIT ${size + 1}`
+      : await this.prisma.$queryRaw<Row[]>`
+          SELECT id, type, available_delta, balance_after, reserved_after, reason, created_at
+            FROM point_ledger
+           WHERE user_id = ${userId}::uuid
+           ORDER BY created_at DESC, id DESC
+           LIMIT ${size + 1}`;
+
+    const page = rows.slice(0, size);
+    const last = page[page.length - 1];
+    return {
+      items: page.map((r) => ({
+        id: r.id,
+        type: r.type,
+        delta: r.available_delta,
+        balanceAfter: r.balance_after,
+        reservedAfter: r.reserved_after,
+        reason: r.reason,
+        createdAt: r.created_at.getTime(),
+      })),
+      nextCursor: rows.length > size && last ? { createdAt: last.created_at.getTime(), id: last.id } : null,
+    };
+  }
+
+  async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
+    const rows = await this.prisma.$queryRaw<{ one: number }[]>`
+      SELECT 1 AS one FROM daily_claims
+       WHERE user_id = ${userId}::uuid AND business_date = ${businessDate}::date AND reward_type = ${rewardType}
+       LIMIT 1`;
+    return rows.length > 0;
+  }
+
+  async claimDailyReward(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+    points: number;
+    eventId: string;
+    reason: string;
+  }): Promise<{ claimed: boolean; available: number; reserved: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const inserted = await tx.$executeRaw`
+        INSERT INTO daily_claims (id, user_id, business_date, reward_type, points)
+        VALUES (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.businessDate}::date, ${input.rewardType}, ${input.points})
+        ON CONFLICT (user_id, business_date, reward_type) DO NOTHING`;
+
+      if (inserted === 0) {
+        const w = await tx.point_wallets.findUnique({ where: { user_id: input.userId } });
+        return { claimed: false, available: w?.available ?? 0, reserved: w?.reserved ?? 0 };
+      }
+
+      const updated = await tx.$queryRaw<{ available: number; reserved: number }[]>`
+        UPDATE point_wallets
+           SET available = available + ${input.points}, updated_at = now()
+         WHERE user_id = ${input.userId}::uuid
+        RETURNING available, reserved`;
+      const wallet = updated[0];
+      if (!wallet) throw new Error('签到发奖时找不到钱包');
+
+      await tx.$executeRaw`
+        INSERT INTO point_ledger
+          (id, user_id, event_id, type, available_delta, reserved_delta, balance_after, reserved_after, reason)
+        VALUES
+          (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.eventId}, 'award',
+           ${input.points}, 0, ${wallet.available}, ${wallet.reserved}, ${input.reason})`;
+
+      return { claimed: true, available: wallet.available, reserved: wallet.reserved };
+    });
+  }
+
   /* ---------------- 幂等回执 ---------------- */
 
   async getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined> {
