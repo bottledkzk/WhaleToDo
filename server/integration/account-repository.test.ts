@@ -70,10 +70,11 @@ test('注册不会越权写 role/status，且默认值来自数据库', async ()
   assert.equal(r.rows[0].role, 'user');
   assert.equal(r.rows[0].status, 'active');
 
-  // 运行角色仍然不能改 role（授权未被放宽）
+  // 运行角色仍然不能改 role（授权未被放宽）。
+  // 注意：必须用受限的 whaletodo_app 连接（prisma），不能用迁移账号 owner——后者本来就能改。
   await assert.rejects(
-    owner.query("UPDATE users SET role='admin' WHERE id=$1", [user.id]),
-    /permission denied/i,
+    prisma.$executeRaw`UPDATE users SET role = 'admin' WHERE id = ${user.id}::uuid`,
+    /permission denied|denied for table/i,
   );
 });
 
