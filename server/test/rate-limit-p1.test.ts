@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
+import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
 import { FixedWindowLimiter } from '../src/lib/rateLimit.ts';
 
@@ -25,7 +26,7 @@ function makeApp(maxAttempts = 2) {
     RATE_LIMIT_MAX_ATTEMPTS: String(maxAttempts),
     RATE_LIMIT_WINDOW_MS: '60000',
   } as NodeJS.ProcessEnv;
-  const app = buildApp({ config: loadConfig(env), repo: memory });
+  const app = buildApp({ config: loadConfig(env), repo: fromSync(memory) });
   return { app, memory, counter };
 }
 
