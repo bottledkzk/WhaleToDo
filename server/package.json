@@ -3,13 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
     "dev": "node --env-file-if-exists=.env --watch src/main.ts",
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ai:start": "node src/ai/main.ts",
+    "test:database": "node --test integration/*.test.ts",
+    "db:validate": "prisma validate",
+    "db:deploy": "prisma migrate deploy"
   },
-  "dependencies": { "fastify": "^5.2.0" },
-  "devDependencies": { "typescript": "^5.7.2", "@types/node": "^22.10.5" }
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "fastify": "^5.2.0",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "8.15.5",
+    "prisma": "6.19.3",
+    "typescript": "^5.7.2"
+  }
 }
