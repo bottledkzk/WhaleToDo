@@ -40,7 +40,7 @@ class AgentExperienceTest {
         }
         override suspend fun query(requestId:String):AssistantReply {queryCount++;return AssistantReply("原请求已确认，无需重复发送。",500,400,100,1)}
     }
-        
+
     @After fun restore(){AgentBridgeHub.bridge=original}
     private fun start(bridge:AgentBridge){AgentBridgeHub.bridge=bridge;context.startActivity(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK));device.waitForIdle();ui.text("WorkTime")}
     private fun <T> db(action:suspend(DeskDatabase)->T):T=runBlocking{val d=DeskDatabase.open(context);try{action(d)}finally{d.close()}}
