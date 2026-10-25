@@ -27,6 +27,13 @@ jobs:
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      # npm ci --ignore-scripts 会跳过 Prisma 的 postinstall；不生成 client 时
+      # src/repo/prisma.ts 无法通过 tsc（@prisma/client 只有占位类型）。
+      # generate 不连接数据库，占位 DATABASE_URL 即可。
+      - name: 生成 Prisma Client
+        run: npx prisma generate --schema prisma/schema.prisma
+        env:
+          DATABASE_URL: postgresql://ci_placeholder:ci_placeholder@127.0.0.1:5432/ci_placeholder
       - run: sh -n ../script/backup-database.sh
       - name: TypeScript 类型检查
         run: npm run typecheck

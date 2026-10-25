@@ -142,12 +142,12 @@ export class MemoryRepository {
     this.store.wallets.set(userId, wallet);
   }
 
-  getIdempotent(key: string): { fingerprint: string; response: unknown } | undefined {
-    return this.store.idempotency.get(key);
+  getIdempotent(scope: string, key: string): { fingerprint: string; response: unknown } | undefined {
+    return this.store.idempotency.get(`${scope}\u0000${key}`);
   }
 
-  saveIdempotent(key: string, fingerprint: string, response: unknown): void {
-    this.store.idempotency.set(key, { fingerprint, response });
+  saveIdempotent(scope: string, key: string, fingerprint: string, response: unknown): void {
+    this.store.idempotency.set(`${scope}\u0000${key}`, { fingerprint, response });
   }
 
   get userCount(): number { return this.store.users.size; }

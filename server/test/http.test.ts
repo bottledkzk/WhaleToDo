@@ -103,18 +103,35 @@ describe('注册', () => {
     assert.equal(repo.userCount, 1);
   });
 
-  test('相同 Idempotency-Key 不同体 → 409', async () => {
+  test('相同 Idempotency-Key、同一用户但不同密码 → 409', async () => {
+    // 注册 scope 由「归一化用户名」派生（评审规范），所以同 key 换用户名是两个独立操作；
+    // 只有同一 scope 下异体才冲突。
     await inject({
       method: 'POST', url: '/api/v1/auth/register',
       headers: { 'idempotency-key': 'k-2' },
       payload: { username: 'dave', password: 'S3cret-passw0rd' },
     });
-    const res = await inject({
+    const sameUserOtherPassword = await inject({
       method: 'POST', url: '/api/v1/auth/register',
       headers: { 'idempotency-key': 'k-2' },
-      payload: { username: 'dave2', password: 'S3cret-passw0rd' },
+      payload: { username: 'dave', password: 'Another-passw0rd' },
     });
-    assert.equal(res.statusCode, 409);
+    assert.equal(sameUserOtherPassword.statusCode, 409);
+    assert.equal(sameUserOtherPassword.json().error.code, 'CONFLICT');
+  });
+
+  test('相同 Idempotency-Key、不同用户名 → 视为两个独立注册（scope 由用户名派生）', async () => {
+    await inject({
+      method: 'POST', url: '/api/v1/auth/register',
+      headers: { 'idempotency-key': 'k-3' },
+      payload: { username: 'erin', password: 'S3cret-passw0rd' },
+    });
+    const other = await inject({
+      method: 'POST', url: '/api/v1/auth/register',
+      headers: { 'idempotency-key': 'k-3' },
+      payload: { username: 'frank', password: 'S3cret-passw0rd' },
+    });
+    assert.equal(other.statusCode, 201);
   });
 });
 

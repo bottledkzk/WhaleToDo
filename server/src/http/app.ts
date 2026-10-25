@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
+import { registerScope } from '../lib/idempotency.ts';
 import { MemoryRepository } from '../repo/memory.ts';
 import type { ServerConfig } from '../config.ts';
 
@@ -31,9 +32,12 @@ function ok(requestId: string, data: unknown) {
  * 幂等指纹：HMAC-SHA256（进程内随机密钥）。
  * 只存摘要，**不存原始请求体**——否则注册密码会以明文留在幂等缓存里。
  */
-const IDEMPOTENCY_FINGERPRINT_KEY = randomBytes(32);
-function fingerprintOf(body: unknown): string {
-  return createHmac('sha256', IDEMPOTENCY_FINGERPRINT_KEY)
+/**
+ * 幂等指纹：HMAC-SHA256，密钥来自服务端持久配置，并做用途隔离。
+ * 只存摘要，不存原始请求体——否则注册密码会以明文留在幂等回执里。
+ */
+function fingerprintOf(secret: string, body: unknown): string {
+  return createHmac('sha256', `${secret}:idempotency-fingerprint`)
     .update(JSON.stringify(body ?? null))
     .digest('hex');
 }
@@ -113,11 +117,12 @@ export function buildApp(deps: AppDeps): FastifyInstance {
 
     // 幂等：同 key 同体重放返回原结果；同 key 不同体返回 CONFLICT
     const idemKey = String(req.headers['idempotency-key'] ?? '').trim();
-    const scopeKey = idemKey ? `register:${idemKey}` : '';
+    // 注册 scope 由服务端按归一化用户名生成（不接受客户端传 scope / IP 散列）
+    const scopeKey = idemKey ? registerScope(config.idempotencySecret, username) : '';
     if (scopeKey) {
-      const hit = repo.getIdempotent(scopeKey);
+      const hit = repo.getIdempotent(scopeKey, idemKey);
       if (hit) {
-        if (hit.fingerprint !== fingerprintOf({ username, password, display_name: body.display_name ?? null })) {
+        if (hit.fingerprint !== fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null })) {
           throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
         }
         return reply.code(201).send(hit.response);
@@ -131,7 +136,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
-    if (scopeKey) repo.saveIdempotent(scopeKey, fingerprintOf({ username, password, display_name: body.display_name ?? null }), response);
+    if (scopeKey) repo.saveIdempotent(scopeKey, idemKey, fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }), response);
     return reply.code(201).send(response);
   });
 
