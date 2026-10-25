@@ -101,7 +101,7 @@ internal fun AgendaPage(s: DeskState, onPlan: () -> Unit, onEdit: (TaskRow) -> U
             if (rows.isEmpty()) item { Text(if (query.isNotBlank()) "未找到匹配事务" else "暂无事项",
                 Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(rows, key = { it.id }) { t ->
-                AgendaTask(t, s, if (view == 1) day else null, onEdit, onComplete,
+                AgendaTask(t, onEdit, onComplete,
                     { onShare(taskText(t, s) + "\n${s.zoneId} · 来自 WhaleToDo") })
             }
         }
@@ -110,15 +110,9 @@ internal fun AgendaPage(s: DeskState, onPlan: () -> Unit, onEdit: (TaskRow) -> U
 }
 
 @Composable
-private fun AgendaTask(t: TaskRow, s: DeskState, day: LocalDate?, onEdit: (TaskRow) -> Unit,
+private fun AgendaTask(t: TaskRow, onEdit: (TaskRow) -> Unit,
     onComplete: (TaskRow) -> Unit, onShare: () -> Unit) {
     Column {
-        if (day != null) s.blocks.filter { b -> b.taskId == t.id &&
-            at(b.start, s).toLocalDate() <= day && at(b.end - 1, s).toLocalDate() >= day }.forEach { b ->
-            Text("${at(b.start, s).format(fullTime)}–${at(b.end, s).format(fullTime)} · ${if (b.locked) "手动" else "自动"}",
-                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 12.dp, bottom = 5.dp))
-        }
         TaskCard(t, onEdit, onComplete)
         TextButton(onClick = onShare, modifier = Modifier.align(Alignment.End).height(34.dp)
             .semantics { contentDescription = "分享 ${t.title}" }, contentPadding = PaddingValues(horizontal = 10.dp)) {
@@ -225,7 +219,7 @@ internal fun CalendarPage(s: DeskState, onEdit: (TaskRow) -> Unit, onComplete: (
             { pickingDate = true }, { onShare(dayText(s, day)) }, dayTasks(s, day).isNotEmpty()) }
         val tasks = dayTasks(s, day)
         if (tasks.isEmpty()) item { Text("这一天暂无记录", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(tasks, key = { it.id }) { t -> AgendaTask(t, s, day, onEdit, onComplete, { onShare(taskText(t, s) + "\n来自 WhaleToDo") }) }
+        items(tasks, key = { it.id }) { t -> AgendaTask(t, onEdit, onComplete, { onShare(taskText(t, s) + "\n来自 WhaleToDo") }) }
     }
     if (pickingDate) DayPicker(day, { pickingDate = false }, {
         selected = it.toString(); monthText = YearMonth.from(it).toString(); pickingDate = false
@@ -248,7 +242,7 @@ internal fun MyPage(s: DeskState, initialPanel: String = "") {
                 TextButton(onClick = { panel = "账户" }) { Text("登录 / 注册") }
             }
         }
-        listOf("签到" to "每日积分", "账户" to "身份与会员", "设置" to "外观与时间", "关于" to "WhaleToDo 0.4.0").forEach { (title, subtitle) ->
+        listOf("签到" to "每日积分", "账户" to "身份与会员", "设置" to "外观与时间", "关于" to "WhaleToDo 0.4.1").forEach { (title, subtitle) ->
             OutlinedCard(onClick = { panel = title }, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(title, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
@@ -273,7 +267,7 @@ internal fun MyPage(s: DeskState, initialPanel: String = "") {
                 Text("日期与时间自动跟随系统", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
             }
-            "关于" -> Text("WhaleToDo 0.4.0\n记录、安排与复盘每一天。\n\n事项保存在此设备。")
+            "关于" -> Text("WhaleToDo 0.4.1\n记录、安排与复盘每一天。\n\n事项保存在此设备。")
             "签到" -> Text("登录后可领取每日积分。账户服务尚未开放。")
             else -> Text("账户服务尚未开放。你可以继续使用本机记录与安排。")
         }

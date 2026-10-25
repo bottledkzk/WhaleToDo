@@ -1,0 +1,22 @@
+{
+  "version": "0.4.1",
+  "version_code": 5,
+  "database_version": 3,
+  "artifact_kind": "local_verified_debug_apk",
+  "apk_sha256": "bbc2d4d693673b3bd37477e89c29ba25c592c1d0c9604fced6a3a529699d63d0",
+  "native_icon_shapes": [
+    "square",
+    "rounded",
+    "circle",
+    "monochrome"
+  ],
+  "launcher_device": "API36 emulator",
+  "core_cached_checks": 33,
+  "existing_device_regression_passed": 1,
+  "agenda_and_preview_range_row_absent": true,
+  "all_8_business_tables_and_android_metadata_unchanged": true,
+  "private_inspection_activity_in_debug": false,
+  "provider_key_in_apk": false,
+  "public_release_published": false,
+  "real_phone_verified": false
+}
