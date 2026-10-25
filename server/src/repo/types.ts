@@ -51,6 +51,20 @@ export interface AccountRepository {
   findUserByUsername(username: string): Promise<RepoUser | null>;
   findUserById(id: string): Promise<RepoUser | null>;
   createUser(username: string, password: string, displayName?: string): Promise<RepoUser>;
+  /**
+   * 注册 + 回执**同一事务**：避免"用户已建、回执没写"时客户端重试拿到 409。
+   * 提供该方法的仓储由路由优先调用；未提供的实现退回 createUser + saveIdempotent。
+   */
+  createUserWithReceipt?(input: {
+    username: string;
+    password: string;
+    displayName?: string;
+    scope: string;
+    key: string;
+    fingerprint: string;
+    /** 用新建用户构造首次响应体；在事务内保存，保证回执存的是真实响应而非占位 */
+    buildResponse: (user: RepoUser) => unknown;
+  }): Promise<RepoUser>;
   authenticate(username: string, password: string): Promise<RepoUser | null>;
 
   createSession(userId: string, familyId?: string): Promise<CreatedSession>;

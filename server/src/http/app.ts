@@ -132,11 +132,32 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (await repo.findUserByUsername(username)) {
       throw new ApiError('CONFLICT', '用户名已被占用');
     }
-    const user = await repo.createUser(username, password, body.display_name);
+    // 有组合方法时用它：用户创建与回执写入在同一事务，避免"建了用户但没写回执"导致重试 409
+    const user = repo.createUserWithReceipt && scopeKey
+      ? await repo.createUserWithReceipt({
+          username,
+          password,
+          displayName: body.display_name,
+          scope: scopeKey,
+          key: idemKey,
+          fingerprint: fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }),
+          buildResponse: (u) => ok(req.requestId, {
+            user: { id: u.id, username: u.username, display_name: u.displayName },
+          }),
+        })
+      : await repo.createUser(username, password, body.display_name);
     const response = ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
-    if (scopeKey) await repo.saveIdempotent(scopeKey, idemKey, fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }), response);
+    // 组合方法已在事务内写过回执；这里只给未提供组合方法的实现补写
+    if (scopeKey && !repo.createUserWithReceipt) {
+      await repo.saveIdempotent(
+        scopeKey,
+        idemKey,
+        fingerprintOf(config.idempotencySecret, { username, password, display_name: body.display_name ?? null }),
+        response,
+      );
+    }
     return reply.code(201).send(response);
   });
 

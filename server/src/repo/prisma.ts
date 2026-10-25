@@ -209,6 +209,49 @@ export class PrismaRepository implements AccountRepository {
     });
   }
 
+  /**
+   * 注册 + 回执同一事务：任一步失败则整体回滚，不会留下"有用户没回执"的中间态。
+   * 回执唯一冲突（并发同 key）会抛 P2002，由路由重新读取回执处理。
+   */
+  async createUserWithReceipt(input: {
+    username: string;
+    password: string;
+    displayName?: string;
+    scope: string;
+    key: string;
+    fingerprint: string;
+    buildResponse: (user: RepoUser) => unknown;
+  }): Promise<RepoUser> {
+    const passwordHash = await hashPasswordAsync(input.password);
+    const id = randomUUID();
+    const expiresAt = new Date(this.now() + IDEMPOTENCY_TTL_MS);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO users (id, username, password_hash, display_name)
+        VALUES (${id}::uuid, ${input.username}, ${passwordHash}, ${(input.displayName ?? input.username).slice(0, 64)})`;
+      const rows = await tx.$queryRaw<UserRow[]>`
+        SELECT id, username, display_name, created_at FROM users WHERE id = ${id}::uuid`;
+      const user = rows[0];
+      if (!user) throw new Error('创建用户后回读失败');
+
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${user.id}, true)`;
+      await tx.user_settings.create({ data: { user_id: user.id } });
+      await tx.point_wallets.create({ data: { user_id: user.id } });
+      await tx.idempotency_receipts.create({
+        data: {
+          scope: input.scope,
+          key: input.key,
+          fingerprint: input.fingerprint,
+          response: input.buildResponse(toRepoUser(user)) as object,
+          expires_at: expiresAt,
+        },
+      });
+      return user;
+    });
+    return toRepoUser(created);
+  }
+
   /* ---------------- 钱包 ---------------- */
 
   async walletOf(userId: string): Promise<Wallet> {
