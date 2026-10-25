@@ -76,7 +76,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         repo.dao.requestStatus(sent.id,sent.ownerId,"complete")
         val model=bridge.models.find{it.code==sent.modelCode}
         var canPreview=reply.changes.isNotEmpty()&&model!=null&&sent.mode==AgentMode.EDIT.code&&sent.editGranted&&source!=null&&
-            sent.snapshotHash==hash(source)&&AgentPolicy.gate(mutable.value.access,AgentMode.EDIT,model!!,true)==null
+            sent.snapshotHash==hash(source)&&AgentPolicy.proposalGate(mutable.value.access,model!!)==null
         if(canPreview)canPreview=runCatching{repo.checkAgentPreview(source!!,reply.changes)}.isSuccess
         val rows=repo.dao.messages(sent.sessionId,sent.ownerId)
         mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(messages=rows,pendingId=null,
@@ -145,7 +145,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         val preview=mutable.value.preview?:return
         val current=mutable.value
         val model=bridge.models.find{it.code==preview.modelCode}
-        val gate=if(model==null)GateReason.MODEL else AgentPolicy.gate(current.access,AgentMode.EDIT,model,true)
+        val gate=if(model==null)GateReason.MODEL else AgentPolicy.proposalGate(current.access,model)
         if(gate!=null){mutable.update{it.copy(gate=gate)};return}
         if(current.owner!=preview.owner)return
         if(current.busySince!=null)return

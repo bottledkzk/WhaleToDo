@@ -26,7 +26,7 @@ class AgentExperienceTest {
     private val device=UiDevice.getInstance(instrument)
     private val ui=UiSteps(device)
     private val original=AgentBridgeHub.bridge
-    private class FixtureBridge(vip:Boolean=false,guest:Boolean=false,val target:String="", val pending:Boolean=false, val readonlyAttack:Boolean=false, val responseText:String="已根据只读日程生成建议。") : AgentBridge {
+    private class FixtureBridge(vip:Boolean=false,guest:Boolean=false,val target:String="", val pending:Boolean=false, val readonlyAttack:Boolean=false, val spendLastPoints:Boolean=false, val responseText:String="已根据只读日程生成建议。") : AgentBridge {
         override val access=MutableStateFlow(if(guest)AgentAccess() else AgentAccess(UUID.randomUUID().toString(),vip,100,true,setOf("deepseek-planner")))
         override val models=listOf(AgentModel("deepseek-default","DeepSeek"),AgentModel("deepseek-planner","DeepSeek · 安排",true))
         @Volatile var last:AssistantRequest?=null
@@ -35,6 +35,7 @@ class AgentExperienceTest {
         override suspend fun reply(request:AssistantRequest):AssistantReply {
             last=request;replyCount++;delay(2400)
             if(pending)throw AgentPendingException(request.id)
+            if(spendLastPoints)access.value=access.value.copy(availablePoints=0)
             return if(request.mode=="edit")AssistantReply("建议将这件事的标题更新。",1250,1000,250,2,changes=listOf(AgentChange.RenameTask(target,"已确认的新标题")))
             else AssistantReply(responseText,1250,1000,250,2,changes=if(readonlyAttack)listOf(AgentChange.RenameTask(target,"越权标题"))else emptyList())
         }
@@ -59,13 +60,14 @@ class AgentExperienceTest {
     }
     @Test fun vipSpecificModelAndExplicitConsentLeadToPreviewBeforeAtomicApply() {
         val t=TaskRow("agent-edit-${UUID.randomUUID()}","编辑提案验收");db{it.dao().save(t)}
-        val bridge=FixtureBridge(vip=true,target=t.id)
+        val bridge=FixtureBridge(vip=true,target=t.id,spendLastPoints=true)
         start(bridge);ui.click("助手");ui.click("聊天 ▾");ui.click("调整日程")
         assertFalse(device.hasObject(By.textContains("DeepSeek")));ui.desc("日常编辑开关").click()
         device.findObject(By.clazz("android.widget.EditText")).text="把标题更新为已确认的新标题";ui.click("发送");ui.text("采纳日程调整？")
         assertEquals(t.title,db{it.dao().tasks().single{x->x.id==t.id}.title})
         assertEquals("deepseek-planner",bridge.last!!.model);assertTrue(bridge.last!!.editConsent)
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-agent-proposal.png")
+        assertEquals(0,bridge.access.value.availablePoints)
         ui.click("Accept");ui.text("已应用提案");assertEquals("已确认的新标题",db{it.dao().tasks().single{x->x.id==t.id}.title})
     }
     @Test fun feedbackCreatesNewAuthorizedProposalAndRefuseNeverWrites() {

@@ -37,6 +37,13 @@ class AgentPolicyTest {
         }
         assertEquals("今天先完成阅读。",AssistantIdentity.display("今天先完成阅读。"))
     }
+    @Test fun paidProposalCanBeConfirmedWithZeroBalanceButNeverWithRevokedEntitlement() {
+        assertNull(AgentPolicy.proposalGate(access.copy(availablePoints=0),model))
+        assertEquals(GateReason.POINTS,AgentPolicy.gate(access.copy(availablePoints=0),AgentMode.EDIT,model,true))
+        assertEquals(GateReason.LOGIN,AgentPolicy.proposalGate(access.copy(userId=null),model))
+        assertEquals(GateReason.VIP,AgentPolicy.proposalGate(access.copy(vip=false),model))
+        assertEquals(GateReason.MODEL,AgentPolicy.proposalGate(access.copy(editModels=emptySet()),model))
+    }
     private val now=Instant.parse("2030-01-01T08:00:00Z").toEpochMilli()
     private val tasks=listOf(AgentTaskFact("t",false,now+10*3600000))
     private val block=AgentBlockFact("b","t",now+3600000,now+7200000,false,false)

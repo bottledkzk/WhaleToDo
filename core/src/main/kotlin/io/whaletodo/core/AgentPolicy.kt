@@ -27,15 +27,22 @@ object AgentPolicy {
         (if(mode.edits) models.firstOrNull { it.canEdit && it.code in access.editModels }
          else models.firstOrNull { !it.canEdit && !it.requiresVip })
         ?: AgentModel("unavailable", "鲸鱼AI", canEdit=mode.edits)
-    fun gate(access: AgentAccess, mode: AgentMode, model: AgentModel, consent: Boolean): GateReason? = when {
+    private fun permissionGate(access: AgentAccess, mode: AgentMode, model: AgentModel): GateReason? = when {
         access.userId.isNullOrBlank() -> GateReason.LOGIN
         (mode.edits || model.requiresVip) && !access.vip -> GateReason.VIP
-        mode.edits && (!model.canEdit || model.code !in access.editModels) -> GateReason.MODEL
-        mode.edits && !consent -> GateReason.CONSENT
-        access.availablePoints <= 0 -> GateReason.POINTS
-        !access.connected -> GateReason.CONNECTION
+        model.code == "unavailable" || mode.edits && (!model.canEdit || model.code !in access.editModels) -> GateReason.MODEL
         else -> null
     }
+    fun gate(access: AgentAccess, mode: AgentMode, model: AgentModel, consent: Boolean): GateReason? =
+        permissionGate(access,mode,model) ?: when {
+            mode.edits && !consent -> GateReason.CONSENT
+            access.availablePoints <= 0 -> GateReason.POINTS
+            !access.connected -> GateReason.CONNECTION
+            else -> null
+        }
+    /** Applying an already-paid proposal is a local confirmation, never a second billable request. */
+    fun proposalGate(access: AgentAccess, model: AgentModel): GateReason? =
+        permissionGate(access,AgentMode.EDIT,model) ?: if(!access.connected) GateReason.CONNECTION else null
     fun shareGate(access: AgentAccess, premium: Boolean, trialGranted: Boolean = false): GateReason? = when {
         access.userId.isNullOrBlank() -> GateReason.LOGIN
         premium && !access.vip && !trialGranted -> GateReason.VIP
