@@ -7,9 +7,16 @@ plugins {
 android {
     namespace = "io.whaletodo.app"
     compileSdk = 36
-    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 8; versionName = "0.5.1"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 9; versionName = "0.5.2"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildTypes {
         release { isMinifyEnabled = false }
+        create("publicPreview") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview.1"
+            manifestPlaceholders["appLabel"] = "WhaleToDo 预览"
+            matchingFallbacks += listOf("release")
+        }
         create("verification") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".verification"
