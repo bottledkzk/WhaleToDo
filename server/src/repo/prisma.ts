@@ -459,91 +459,105 @@ export class PrismaRepository implements AccountRepository {
     const nowDate = new Date(input.now);
     const currency = input.currency.trim().toUpperCase();
 
-    return this.prisma.$transaction(async (tx) => {
-      // orders / payment_events 的 RLS 都依赖 app.user_id：第一步设置认证用户
-      await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // orders / payment_events 的 RLS 都依赖 app.user_id：第一步设置认证用户
+        await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
 
-      const rows = await tx.$queryRaw<OrderRow[]>`
-        SELECT id, user_id, product_id, amount_minor, currency, status, environment,
-               product_snapshot, created_at, paid_at
-          FROM orders
-         WHERE id = ${input.orderId}::uuid
-         FOR UPDATE`;
-      const row = rows[0];
-      if (!row) return 'not_found';
-      const order = toRepoOrder(row);
+        const rows = await tx.$queryRaw<OrderRow[]>`
+          SELECT id, user_id, product_id, amount_minor, currency, status, environment,
+                 product_snapshot, created_at, paid_at
+            FROM orders
+           WHERE id = ${input.orderId}::uuid
+           FOR UPDATE`;
+        const row = rows[0];
+        if (!row) return 'not_found';
+        const order = toRepoOrder(row);
 
-      if (order.environment !== 'mock') return 'environment_mismatch';
-      if (!amountsMatch(
-        { amount_minor: order.amountMinor, currency: order.currency },
-        { amount_minor: input.amountMinor, currency },
-      )) return 'amount_mismatch';
+        if (order.environment !== 'mock') return 'environment_mismatch';
+        if (!amountsMatch(
+          { amount_minor: order.amountMinor, currency: order.currency },
+          { amount_minor: input.amountMinor, currency },
+        )) return 'amount_mismatch';
 
-      if (order.status === 'PAID') {
-        const existing = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM payment_events
+        // 先查 event_id 归属：同单 replay；异单 event_conflict。
+        // 注意 RLS 会隐藏他人订单的 payment_events，跨用户冲突走下面 INSERT 的 23505 兜底。
+        const existing = await tx.$queryRaw<{ order_id: string }[]>`
+          SELECT order_id FROM payment_events
            WHERE provider = ${input.provider} AND event_id = ${input.eventId}
            LIMIT 1`;
-        return existing.length > 0 ? 'replay' : 'state_conflict';
-      }
-      if (order.status !== 'PENDING') return 'state_conflict';
+        const eventOrderId = existing[0]?.order_id ?? null;
+        if (eventOrderId !== null) {
+          return eventOrderId === order.id ? 'replay' : 'event_conflict';
+        }
 
-      // 状态机唯一性：必须命中 1 行
-      const updated = await tx.$executeRaw`
-        UPDATE orders SET status = 'PAID', paid_at = ${nowDate}
-         WHERE id = ${order.id}::uuid AND status = 'PENDING'`;
-      if (updated !== 1) {
-        // 并发回调：另一个请求已把订单改成 PAID；同 event 视为 replay
-        const existing = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id FROM payment_events
-           WHERE provider = ${input.provider} AND event_id = ${input.eventId}
-           LIMIT 1`;
-        return existing.length > 0 ? 'replay' : 'state_conflict';
-      }
+        if (order.status === 'PAID') return 'state_conflict';
+        if (order.status !== 'PENDING') return 'state_conflict';
 
-      await tx.$executeRaw`
-        INSERT INTO payment_events
-          (id, provider, event_id, order_id, status, amount_minor, currency, payload_hash, received_at)
-        VALUES
-          (${randomUUID()}::uuid, ${input.provider}, ${input.eventId}, ${order.id}::uuid,
-           'succeeded', ${input.amountMinor}, ${currency}, ${input.payloadHash}, ${nowDate})`;
+        // 状态机唯一性：必须命中 1 行
+        const updated = await tx.$executeRaw`
+          UPDATE orders SET status = 'PAID', paid_at = ${nowDate}
+           WHERE id = ${order.id}::uuid AND status = 'PENDING'`;
+        if (updated !== 1) {
+          // 并发回调：另一个请求已把订单改成 PAID
+          const raced = await tx.$queryRaw<{ order_id: string }[]>`
+            SELECT order_id FROM payment_events
+             WHERE provider = ${input.provider} AND event_id = ${input.eventId}
+             LIMIT 1`;
+          const racedOrderId = raced[0]?.order_id ?? null;
+          if (racedOrderId === null) return 'state_conflict';
+          return racedOrderId === order.id ? 'replay' : 'event_conflict';
+        }
 
-      // 发积分：只读订单快照，绝不读 products
-      const points = order.snapshot.points;
-      if (points > 0) {
-        const wallets = await tx.$queryRaw<{ available: number; reserved: number }[]>`
-          UPDATE point_wallets
-             SET available = available + ${points}, updated_at = ${nowDate}
-           WHERE user_id = ${order.userId}::uuid
-           RETURNING available, reserved`;
-        const wallet = wallets[0];
-        if (!wallet) throw new Error('订单用户钱包不存在');
         await tx.$executeRaw`
-          INSERT INTO point_ledger
-            (id, user_id, event_id, type, available_delta, reserved_delta,
-             balance_after, reserved_after, reason)
+          INSERT INTO payment_events
+            (id, provider, event_id, order_id, status, amount_minor, currency, payload_hash, received_at)
           VALUES
-            (${randomUUID()}::uuid, ${order.userId}::uuid, ${`order:${order.id}`}, 'award',
-             ${points}, 0, ${wallet.available}, ${wallet.reserved}, ${`order:${order.id}`})`;
-      }
+            (${randomUUID()}::uuid, ${input.provider}, ${input.eventId}, ${order.id}::uuid,
+             'succeeded', ${input.amountMinor}, ${currency}, ${input.payloadHash}, ${nowDate})`;
 
-      // 发 VIP：同样只读订单快照；叠加 max(now, 现有有效到期) + vip_days
-      const vipDays = order.snapshot.vip_days;
-      if (vipDays > 0) {
-        const currentRows = await tx.$queryRaw<{ expires_at: Date | null }[]>`
-          SELECT max(expires_at) AS expires_at
-            FROM entitlements
-           WHERE user_id = ${order.userId}::uuid AND kind = 'vip' AND expires_at > ${nowDate}`;
-        const current = currentRows[0]?.expires_at ? currentRows[0].expires_at.getTime() : null;
-        await tx.$executeRaw`
-          INSERT INTO entitlements (id, user_id, kind, expires_at, source_order_id, created_at)
-          VALUES (${randomUUID()}::uuid, ${order.userId}::uuid, 'vip',
-                  ${new Date(vipExpiryAfter(current, input.now, vipDays))},
-                  ${order.id}::uuid, ${nowDate})`;
-      }
+        // 发积分：只读订单快照，绝不读 products
+        const points = order.snapshot.points;
+        if (points > 0) {
+          const wallets = await tx.$queryRaw<{ available: number; reserved: number }[]>`
+            UPDATE point_wallets
+               SET available = available + ${points}, updated_at = ${nowDate}
+             WHERE user_id = ${order.userId}::uuid
+             RETURNING available, reserved`;
+          const wallet = wallets[0];
+          if (!wallet) throw new Error('订单用户钱包不存在');
+          await tx.$executeRaw`
+            INSERT INTO point_ledger
+              (id, user_id, event_id, type, available_delta, reserved_delta,
+               balance_after, reserved_after, reason)
+            VALUES
+              (${randomUUID()}::uuid, ${order.userId}::uuid, ${`order:${order.id}`}, 'award',
+               ${points}, 0, ${wallet.available}, ${wallet.reserved}, ${`order:${order.id}`})`;
+        }
 
-      return 'applied';
-    });
+        // 发 VIP：同样只读订单快照；叠加 max(now, 现有有效到期) + vip_days
+        const vipDays = order.snapshot.vip_days;
+        if (vipDays > 0) {
+          const currentRows = await tx.$queryRaw<{ expires_at: Date | null }[]>`
+            SELECT max(expires_at) AS expires_at
+              FROM entitlements
+             WHERE user_id = ${order.userId}::uuid AND kind = 'vip' AND expires_at > ${nowDate}`;
+          const current = currentRows[0]?.expires_at ? currentRows[0].expires_at.getTime() : null;
+          await tx.$executeRaw`
+            INSERT INTO entitlements (id, user_id, kind, expires_at, source_order_id, created_at)
+            VALUES (${randomUUID()}::uuid, ${order.userId}::uuid, 'vip',
+                    ${new Date(vipExpiryAfter(current, input.now, vipDays))},
+                    ${order.id}::uuid, ${nowDate})`;
+        }
+
+        return 'applied';
+      });
+    } catch (err) {
+      // 跨用户复用 event_id 时 RLS 看不到他人事件，INSERT 会撞 (provider,event_id) 唯一键；
+      // 只把 payment_events 的 23505 映射成 event_conflict，其他错误继续抛。
+      if (isPaymentEventUniqueViolation(err)) return 'event_conflict';
+      throw err;
+    }
   }
 
   async vipExpiresAt(userId: string): Promise<number | null> {
@@ -1097,6 +1111,19 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * 只识别 payment_events 的唯一冲突（(provider,event_id) 跨订单复用）。
+ * applyPayment 内能撞唯一键的写只有 payment_events；point_ledger 的唯一键
+ * 由订单锁与状态机先行拦截。Prisma 部分版本的 P2010 meta.message 不含表名，
+ * 所以不能只靠字符串判断；含 point_ledger 的冲突仍继续抛出。
+ */
+function isPaymentEventUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { meta?: { message?: string }; message?: string };
+  const message = e.meta?.message ?? e.message ?? '';
+  return !message.includes('point_ledger');
 }
 
 /**

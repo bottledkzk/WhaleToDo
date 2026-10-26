@@ -523,7 +523,7 @@ export class MemoryRepository {
     currency: string;
     payloadHash: string;
     now: number;
-  }): Promise<'applied' | 'replay' | 'not_found' | 'amount_mismatch' | 'state_conflict' | 'environment_mismatch'> {
+  }): Promise<'applied' | 'replay' | 'not_found' | 'amount_mismatch' | 'state_conflict' | 'environment_mismatch' | 'event_conflict'> {
     const order = this.store.orders.get(input.orderId);
     if (!order || order.userId !== input.userId) return 'not_found';
     if (order.environment !== 'mock') return 'environment_mismatch';
@@ -532,10 +532,13 @@ export class MemoryRepository {
       { amount_minor: input.amountMinor, currency: input.currency },
     )) return 'amount_mismatch';
 
+    // 先查 event 归属：同单 replay，异单 event_conflict；不能覆盖已有映射
     const eventKey = `${input.provider}:${input.eventId}`;
-    if (order.status === 'PAID') {
-      return this.store.paymentEvents.has(eventKey) ? 'replay' : 'state_conflict';
+    const existingEvent = this.store.paymentEvents.get(eventKey);
+    if (existingEvent) {
+      return existingEvent.orderId === order.id ? 'replay' : 'event_conflict';
     }
+    if (order.status === 'PAID') return 'state_conflict';
     if (order.status !== 'PENDING') return 'state_conflict';
 
     order.status = 'PAID';

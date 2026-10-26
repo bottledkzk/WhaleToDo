@@ -573,6 +573,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       if (outcome === 'environment_mismatch') {
         throw new ApiError('VALIDATION_ERROR', '订单环境不匹配');
       }
+      if (outcome === 'event_conflict') {
+        throw new ApiError('CONFLICT', '支付事件已被其他订单使用');
+      }
       throw new ApiError('CONFLICT', '订单状态不允许本次支付');
     });
   }

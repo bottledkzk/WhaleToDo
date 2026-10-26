@@ -102,6 +102,7 @@ test('金额篡改 → amount_mismatch，订单 PENDING，无事件/流水/权�
   const user = await createUser('ord_mismatch');
   const order = await createOrder(user.id);
   assert.equal(await pay(user.id, order.id, 'evt-mismatch', 501), 'amount_mismatch');
+  assert.equal(await pay(user.id, order.id, 'evt-currency', 500, 'USD'), 'amount_mismatch');
 
   const rows = await owner.query('SELECT status FROM orders WHERE id=$1', [order.id]);
   assert.equal(rows.rows[0].status, 'PENDING');
@@ -111,6 +112,28 @@ test('金额篡改 → amount_mismatch，订单 PENDING，无事件/流水/权�
   }
   const wallet = await owner.query('SELECT available FROM point_wallets WHERE user_id=$1', [user.id]);
   assert.equal(wallet.rows[0].available, 0);
+});
+
+test('跨订单复用 event_id → event_conflict，B 订单 PENDING，不重复发奖', async () => {
+  const a = await createUser('ord_event_a');
+  const b = await createUser('ord_event_b');
+  const orderA = await createOrder(a.id);
+  const orderB = await createOrder(b.id);
+
+  assert.equal(await pay(a.id, orderA.id, 'evt-shared'), 'applied');
+  assert.equal(await pay(b.id, orderB.id, 'evt-shared'), 'event_conflict');
+
+  const bOrder = await owner.query('SELECT status FROM orders WHERE id=$1', [orderB.id]);
+  assert.equal(bOrder.rows[0].status, 'PENDING', 'B 订单必须保持 PENDING');
+
+  const events = await owner.query('SELECT count(*)::int AS n FROM payment_events');
+  assert.equal(events.rows[0].n, 1);
+  const ledger = await owner.query('SELECT count(*)::int AS n FROM point_ledger');
+  assert.equal(ledger.rows[0].n, 1);
+  const entitlements = await owner.query('SELECT count(*)::int AS n FROM entitlements');
+  assert.equal(entitlements.rows[0].n, 1);
+  const walletB = await owner.query('SELECT available FROM point_wallets WHERE user_id=$1', [b.id]);
+  assert.equal(walletB.rows[0].available, 0);
 });
 
 test('支付成功：PAID/paid_at/流水/钱包/entitlement 单事务落库', async () => {

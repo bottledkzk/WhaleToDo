@@ -187,6 +187,34 @@ describe('商品与订单（内存路径）', () => {
     assert.equal(tampered.json().error.message, '金额或币种与订单不一致');
     assert.equal(repo.store.orders.get(orderId)!.status, 'PENDING');
     assert.equal(repo.store.paymentEvents.size, 0);
+
+    const currencyMismatch = await pay(tokenA, orderId, 'evt-currency', 990, 'USD');
+    assert.equal(currencyMismatch.statusCode, 400);
+    assert.equal(currencyMismatch.json().error.message, '金额或币种与订单不一致');
+    assert.equal(repo.store.orders.get(orderId)!.status, 'PENDING');
+    assert.equal(repo.store.paymentEvents.size, 0);
+  });
+
+  test('跨订单复用 event_id → 409 CONFLICT，B 订单仍 PENDING，不重复发奖', async () => {
+    const tokenA = await registerAndLogin('orders_event_a');
+    const tokenB = await registerAndLogin('orders_event_b');
+    const orderA = (await createOrder(tokenA, 'combo_100_30')).json().data.order.id;
+    const orderB = (await createOrder(tokenB, 'combo_100_30')).json().data.order.id;
+
+    assert.equal((await pay(tokenA, orderA, 'evt-shared', 500)).statusCode, 200);
+    const conflict = await pay(tokenB, orderB, 'evt-shared', 500);
+    assert.equal(conflict.statusCode, 409, conflict.body);
+    assert.equal(conflict.json().error.code, 'CONFLICT');
+    assert.equal(conflict.json().error.message, '支付事件已被其他订单使用');
+
+    assert.equal(repo.store.orders.get(orderB)!.status, 'PENDING');
+    const userA = repo.store.orders.get(orderA)!.userId;
+    const userB = repo.store.orders.get(orderB)!.userId;
+    assert.equal(repo.walletOf(userA).available, 100);
+    assert.equal(repo.walletOf(userB).available, 0);
+    assert.equal(repo.store.entitlements.filter((e) => e.userId === userA).length, 1);
+    assert.equal(repo.store.entitlements.filter((e) => e.userId === userB).length, 0);
+    assert.equal(repo.store.paymentEvents.size, 1);
   });
 
   test('支付成功：PAID、积分入账、VIP active；重复 event_id 200 replay 不重复发奖', async () => {

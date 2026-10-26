@@ -18,7 +18,8 @@ export type PaymentOutcome =
   | 'not_found'
   | 'amount_mismatch'
   | 'state_conflict'
-  | 'environment_mismatch';
+  | 'environment_mismatch'
+  | 'event_conflict';
 
 /** 支付配置 → 订单 environment；disabled 返回 null（下单 503） */
 export function environmentForProvider(provider: 'disabled' | 'mock' | 'real'): 'mock' | 'production' | null {
