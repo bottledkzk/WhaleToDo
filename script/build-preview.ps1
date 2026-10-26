@@ -17,7 +17,7 @@ if ($expected -notmatch '^[a-f0-9]{64}$') { throw 'Signing certificate pin is mi
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Use a new output directory; published artifacts must never be overwritten.' }
 $source = (& git -C $repo rev-parse HEAD).Trim()
 if (& git -C $repo status --porcelain --untracked-files=normal) { throw 'Commit the source before building distribution artifacts.' }
-$secret = ConvertTo-SecureString (Get-Content -LiteralPath $PasswordFile -Raw)
+$secret = ConvertTo-SecureString ((Get-Content -LiteralPath $PasswordFile -Raw).Trim())
 $env:WHALETODO_SIGN_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
 Push-Location $repo
 try {
