@@ -11,6 +11,7 @@ import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
+import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
 const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -90,6 +91,8 @@ export class PrismaRepository implements AccountRepository {
   async createUser(username: string, password: string, displayName?: string): Promise<RepoUser> {
     const passwordHash = await hashPasswordAsync(password);
     const id = randomUUID();
+    // 默认昵称后缀只认服务端 id；客户端昵称（含 Whale-1234 形态）仅作展示值
+    const resolvedDisplayName = resolveDisplayName(id, username, displayName);
     // 用户 + 钱包 + 默认设置 同事务（交接文档要求）；demo_slot 由 next_demo_slot() 生成
     // 运行角色 whaletodo_app 没有 users.role / users.status 的写权限（grants 有意如此），
     // 而 Prisma 的 create 会把 schema 里的字面默认值一起写进 INSERT，导致 42501。
@@ -97,7 +100,7 @@ export class PrismaRepository implements AccountRepository {
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`
         INSERT INTO users (id, username, password_hash, display_name)
-        VALUES (${id}::uuid, ${username}, ${passwordHash}, ${(displayName ?? username).slice(0, 64)})`;
+        VALUES (${id}::uuid, ${username}, ${passwordHash}, ${resolvedDisplayName})`;
       const rows = await tx.$queryRaw<UserRow[]>`
         SELECT id, username, display_name, created_at FROM users WHERE id = ${id}::uuid`;
       const user = rows[0];
@@ -233,6 +236,8 @@ export class PrismaRepository implements AccountRepository {
   }): Promise<RepoUser> {
     const passwordHash = await hashPasswordAsync(input.password);
     const id = randomUUID();
+    // 幂等注册与普通注册共用同一昵称规则：后缀只认服务端 id，客户端昵称仅作展示值
+    const resolvedDisplayName = resolveDisplayName(id, input.username, input.displayName);
     const expiresAt = new Date(this.now() + IDEMPOTENCY_TTL_MS);
 
     return this.prisma.$transaction(async (tx) => {
@@ -255,7 +260,7 @@ export class PrismaRepository implements AccountRepository {
       try {
         await tx.$executeRaw`
           INSERT INTO users (id, username, password_hash, display_name)
-          VALUES (${id}::uuid, ${input.username}, ${passwordHash}, ${(input.displayName ?? input.username).slice(0, 64)})`;
+          VALUES (${id}::uuid, ${input.username}, ${passwordHash}, ${resolvedDisplayName})`;
       } catch (err) {
         if (isUniqueViolation(err)) throw new RegisterConflict('USERNAME_TAKEN');
         throw err;
