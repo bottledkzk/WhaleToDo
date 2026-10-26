@@ -1,0 +1,32 @@
+[
+  {
+    "name": "202610230001_initial",
+    "checksum": "2542369ee140c1ff6e1ac87e4a5bac5acb4de705c3cf4f82005b9e8fc0f90067",
+    "crlf_checksum": "c767b1d880cf4cd28decafa4fa570ec4bc06b2e5524eaaea75bd5f30f0c0b9d5"
+  },
+  {
+    "name": "202610230002_tenant_policies",
+    "checksum": "12efc8356984a7329e327dce6f1ecdc2d21f3217d21d0e6329a7e2c5df6964f8",
+    "crlf_checksum": "784298e5c40d159e493cb03e0a7edfad013341416d71eabc94c520286f01455f"
+  },
+  {
+    "name": "202610230003_schema_scope",
+    "checksum": "06a43026db4b54e27d73ef9151b15b68e75f78797a2bb7c5e25f7ff152b98a47",
+    "crlf_checksum": "8a5cb4766710c7d40829fc481e2365965e67928f1c02d0851079583ce40afe50"
+  },
+  {
+    "name": "202610230004_slot_default",
+    "checksum": "0206a0d4d94941b87fbca2534743b3878d5f5fb5c88e9e00daac6fe309f82729",
+    "crlf_checksum": "3cc53e47a7b8c9d1bf371e1fd37cd638b7789b7c410e8b42774138efed4c7ca8"
+  },
+  {
+    "name": "202610240001_agent_usage",
+    "checksum": "88fc7c26728b1a892db878164fc8f3bc8eb6fe32a67ff1cce2ce1275726a8249",
+    "crlf_checksum": "6b61f199eea99d658eee8fda088b6a40965431eb367956a4828d0f13b1ef795d"
+  },
+  {
+    "name": "202610250001_billing_email",
+    "checksum": "ca5eb7d449cc5f9e88f329012f5df32354d1eae736aeabae454b5cac3ab08ab9",
+    "crlf_checksum": "defe357083f37a262d5ef4a5d0b93ad862e6378333ac495756d37bc8d69c6c2c"
+  }
+]

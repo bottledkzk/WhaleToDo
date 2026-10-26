@@ -14,3 +14,6 @@ gradlew text eol=lf
 *.png binary
 
 script/backup-database.sh text eol=lf
+
+*.sql text eol=lf
+*.prisma text eol=lf

@@ -9,3 +9,7 @@ AI服务使用独立系统用户、回环8081、160MiB内存上限。运行时�
 `whaletodo-backup.timer` 每日03:15 UTC（随机延后至10分钟）运行；备份文件只在服务器0700目录，单文件0600。备份不是异地容灾，课程期间应定期由管理员保存加密异地副本；不要把数据库转存到公共仓库。脚本必须LF换行。
 
 回滚网关：停止新增whaletodo-ai服务并将API虚拟主机恢复为原503占位，nginx -t后reload；不要占用或重启原443服务。数据库已写入后不随代码回滚删表；使用审过的前向迁移和备份恢复流程。
+
+## 数据库运维
+
+backup每日03:15 UTC；restore-check每周日04:00 UTC，恢复到新临时库后清理；maintenance每小时分批清理过期临时认证数据。三个服务从`/opt/whaletodo/database-tools/current/script`运行，需root管理、PG16工具和python3。部署前校验脚本、保留旧版本、先手动成功再enable timer；不假定timer配置已触发。备份恢复失败会有systemd失败状态，尚无自动邮件告警。

@@ -1,0 +1,8 @@
+[Unit]
+Description=WhaleToDo hourly expiry maintenance
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+[Install]
+WantedBy=timers.target

@@ -5,11 +5,17 @@ on:
     paths:
       - 'server/**'
       - 'env/postgresql/**'
+      - 'env/systemd/whaletodo-*'
+      - 'script/*database*'
+      - 'script/verify-restore.sh'
       - '.github/workflows/server.yml'
   pull_request:
     paths:
       - 'server/**'
       - 'env/postgresql/**'
+      - 'env/systemd/whaletodo-*'
+      - 'script/*database*'
+      - 'script/verify-restore.sh'
       - '.github/workflows/server.yml'
   workflow_dispatch:
 
@@ -21,6 +27,8 @@ jobs:
         working-directory: server
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -34,7 +42,11 @@ jobs:
         run: npx prisma generate --schema prisma/schema.prisma
         env:
           DATABASE_URL: postgresql://ci_placeholder:ci_placeholder@127.0.0.1:5432/ci_placeholder
-      - run: sh -n ../script/backup-database.sh
+      - run: bash -n ../script/backup-database.sh ../script/verify-restore.sh ../script/maintain-database.sh
+      - run: npm run db:security
+      - run: npm run db:history
+        env:
+          MIGRATION_BASE_SHA: ${{ github.event.pull_request.base.sha }}
       - name: TypeScript 类型检查
         run: npm run typecheck
       - name: 单元与接口测试

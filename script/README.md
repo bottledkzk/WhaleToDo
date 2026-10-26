@@ -19,3 +19,7 @@ $env:JAVA_HOME = '<JDK21安装目录>'
 设备自动测试使用独立的 `io.whaletodo.app.verification` 应用（桌面名“WhaleToDo 验证”），避免测试框架安装／卸载目标应用时影响日常记录。正式调试应用仍为 `io.whaletodo.app`，通过 `install-debug.ps1` 覆盖升级时保留数据。数据库升级必须提供迁移并验证，禁止用清空数据代替迁移。
 
 当前Windows验证环境的宿主GPU曾在弹窗绘制时阻塞，`start-emulator.ps1`默认使用官方SwiftShader软件渲染并关闭Vulkan；WHPX处理器加速仍保留。其他机器可传 `-Gpu auto` 对比，不要因渲染卡顿清空AVD数据。
+
+## 数据库管理
+
+见[数据库管理入口](../env/postgresql/README.md)。新增SQL参数化/迁移门禁、原子备份、仅临时库恢复演练和分批到期清理。`test-database-isolated.sh`只使用自己创建的PG16实例；正式库禁止运行集成测试。
