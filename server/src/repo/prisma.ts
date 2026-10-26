@@ -6,13 +6,14 @@
 //  - demo_slot 由数据库函数 next_demo_slot() 生成，插入时不传
 //  - RLS 表（tasks/plan_blocks/...）不在此接口内，后续由内容仓储在事务里 set_config 处理
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
 import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
+import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
@@ -630,6 +631,146 @@ export class PrismaRepository implements AccountRepository {
     });
   }
 
+  /* ---------------- 邮箱验证码 ---------------- */
+
+  async sendEmailCode(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+    ttlMs: number;
+    ip?: string;
+    scopeSecret?: string;
+  }): Promise<{ sent: boolean; retryAfterMs: number }> {
+    if (!input.scopeSecret) {
+      throw new Error('sendEmailCode 需要 scopeSecret（服务端配置，禁止可预测回退）');
+    }
+    const secret = input.scopeSecret;
+    const now = new Date(input.now);
+    const windowStart = new Date(Math.floor(input.now / 3_600_000) * 3_600_000);
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // 先判 60 秒冷却：被拒请求直接返回，不写 email_throttle（不占小时配额）
+        const lastRows = await tx.$queryRaw<{ created_at: Date }[]>`
+          SELECT created_at FROM email_verifications
+           WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
+           ORDER BY created_at DESC LIMIT 1`;
+        const last = lastRows[0];
+        if (last) {
+          const elapsed = input.now - last.created_at.getTime();
+          if (elapsed < RESEND_INTERVAL_MS) {
+            return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
+          }
+        }
+
+        // 通过冷却后再原子计数（email / ip / global）
+        const bump = async (scope: string, scopeKey: string): Promise<number> => {
+          const rows = await tx.$queryRaw<{ count: number }[]>`
+            INSERT INTO email_throttle (scope, scope_key, window_start, count, updated_at)
+            VALUES (${scope}, ${scopeKey}, ${windowStart}, 1, ${now})
+            ON CONFLICT (scope, scope_key, window_start)
+            DO UPDATE SET count = email_throttle.count + 1, updated_at = ${now}
+            RETURNING count`;
+          return rows[0]?.count ?? 1;
+        };
+        const emailCount = await bump('email', emailScopeKey(secret, input.email));
+        const ipCount = input.ip ? await bump('ip', emailScopeKey(secret, input.ip)) : 0;
+        await bump('global', 'all');
+
+        if (emailCount > MAX_SENDS_PER_HOUR || ipCount > MAX_SENDS_PER_HOUR) {
+          return { sent: false, retryAfterMs: windowStart.getTime() + 3_600_000 - input.now };
+        }
+
+        // 同一 (email,purpose) 只保留一条未消费码：作废冷却窗口之前的旧码。
+        // 加 created_at 条件是为了并发安全：另一个请求刚插入的新码不能被本事务误作废，
+        // 否则唯一索引不会冲突，两个请求会都返回 sent:true（先插入的码被后到者消费）。
+        await tx.$executeRaw`
+          UPDATE email_verifications SET consumed_at = ${now}
+           WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
+             AND consumed_at IS NULL
+             AND created_at <= ${new Date(input.now - RESEND_INTERVAL_MS)}`;
+        await tx.$executeRaw`
+          INSERT INTO email_verifications (id, purpose, email_normalized, code_hmac, attempts, expires_at, created_at)
+          VALUES (${randomUUID()}::uuid, ${input.purpose}, ${input.email}, ${input.codeDigest}, 0,
+                  ${new Date(input.now + input.ttlMs)}, ${now})`;
+        return { sent: true, retryAfterMs: 0 };
+      });
+    } catch (err) {
+      // 并发同邮箱发码撞 email_verifications_unconsumed：按冷却中返回，不 500。
+      // 只吞该表这个唯一冲突；其他 P2010 / 23505 继续抛。
+      if (isEmailVerificationUniqueViolation(err)) {
+        return { sent: false, retryAfterMs: RESEND_INTERVAL_MS };
+      }
+      throw err;
+    }
+  }
+
+  async verifyEmailCode(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }> {
+    const now = new Date(input.now);
+
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ id: string; code_hmac: string; attempts: number; expires_at: Date }[]>`
+        SELECT id, code_hmac, attempts, expires_at FROM email_verifications
+         WHERE email_normalized = ${input.email} AND purpose = ${input.purpose} AND consumed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`;
+      const row = rows[0];
+      if (!row) return { ok: false, attemptsLeft: 0 };
+
+      if (row.expires_at.getTime() <= input.now) {
+        await tx.$executeRaw`
+          UPDATE email_verifications SET consumed_at = ${now}
+           WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
+        return { ok: false, attemptsLeft: 0 };
+      }
+
+      if (digestEquals(row.code_hmac, input.codeDigest)) {
+        const updated = await tx.$executeRaw`
+          UPDATE email_verifications SET consumed_at = ${now}
+           WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
+        return { ok: updated === 1, attemptsLeft: 0 };
+      }
+
+      // 失败一次；第 5 次失败即作废该码（attempts 封顶 5，绝不写 6）
+      const updated = await tx.$queryRaw<{ attempts: number }[]>`
+        UPDATE email_verifications
+           SET attempts = LEAST(attempts + 1, ${MAX_ATTEMPTS}),
+               consumed_at = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN ${now} ELSE consumed_at END
+         WHERE id = ${row.id}::uuid AND consumed_at IS NULL
+         RETURNING attempts`;
+      const attempts = updated[0]?.attempts ?? row.attempts + 1;
+      return { ok: false, attemptsLeft: Math.max(0, MAX_ATTEMPTS - attempts) };
+    });
+  }
+
+  async createEmailTicket(input: {
+    purpose: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+    ttlMs: number;
+  }): Promise<void> {
+    const now = new Date(input.now);
+    await this.prisma.$executeRaw`
+      INSERT INTO email_verify_tickets (id, token_hmac, purpose, email_normalized, expires_at, created_at)
+      VALUES (${randomUUID()}::uuid, ${input.ticketDigest}, ${input.purpose}, ${input.email},
+              ${new Date(input.now + input.ttlMs)}, ${now})`;
+  }
+
+  async consumeEmailTicket(input: { ticketDigest: string; now: number }): Promise<boolean> {
+    const now = new Date(input.now);
+    // 条件更新：未消费 + 未过期，并发调用只有一个能命中 1 行
+    const updated = await this.prisma.$executeRaw`
+      UPDATE email_verify_tickets SET consumed_at = ${now}
+       WHERE token_hmac = ${input.ticketDigest} AND consumed_at IS NULL AND expires_at > ${now}`;
+    return updated === 1;
+  }
+
   /* ---------------- 幂等回执 ---------------- */
 
   async getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined> {
@@ -682,6 +823,14 @@ function splitScopeKey(raw: string): { scope: string; k: string } {
 }
 
 /**
+ * 邮箱限流 scope_key：非 global 一律 64 位十六进制 HMAC（迁移 CHECK 约束）。
+ * 密钥由路由用服务端配置传入，客户端不可控。
+ */
+function emailScopeKey(secret: string, value: string): string {
+  return createHmac('sha256', secret).update(value).digest('hex');
+}
+
+/**
  * 唯一约束冲突识别：
  *  - Prisma 模型层：P2002
  *  - 原生 $executeRaw：P2010，且 meta.code === '23505'（PostgreSQL unique_violation）
@@ -692,6 +841,18 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * 只识别 email_verifications 的唯一冲突（并发发码）。
+ * 复用 isUniqueViolation 判断 P2002 / P2010+23505，再要求错误信息包含该表名；
+ * 其他表的唯一冲突不能被这里吞掉。
+ */
+function isEmailVerificationUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { meta?: { message?: string }; message?: string };
+  const message = e.meta?.message ?? e.message ?? '';
+  return message.includes('email_verifications');
 }
 
 /**

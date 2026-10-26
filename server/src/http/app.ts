@@ -5,6 +5,10 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { businessDate } from '../config.ts';
 import { parsePushBody, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
+import {
+  assertEmail, assertPurpose, CODE_TTL_MS, codeDigest, createTicketToken,
+  generateCode, invalidCodeError, TICKET_TTL_MS,
+} from '../domain/email.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -23,6 +27,11 @@ export interface AppDeps {
   config: ServerConfig;
   repo: AccountRepository;
   logger?: boolean;
+  /**
+   * 测试投递钩子：仅在真正写入验证码（sent:true）时调用。
+   * 明文码只交给钩子，不得进入响应、日志或数据库。
+   */
+  emailCodeSink?: (input: { purpose: string; email: string; code: string }) => void | Promise<void>;
 }
 
 const USERNAME_RE = /^[A-Za-z0-9_]{3,32}$/;
@@ -334,6 +343,57 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await requireAuth(req);
     await repo.revokeSession(req.sessionId!);
     return reply.code(204).send();
+  });
+
+  /* ---------- 邮箱验证码（注册/重置/绑定前置） ---------- */
+  app.post('/api/v1/auth/email/send-code', async (req, reply) => {
+    const body = (req.body ?? {}) as { purpose?: string; email?: string };
+    const purpose = assertPurpose(body.purpose ?? 'register');
+    const email = assertEmail(body.email);
+    if (!repo.sendEmailCode) throw new ApiError('INTERNAL', '当前仓储未实现邮箱验证码');
+
+    const code = generateCode();
+    const digest = codeDigest(config.idempotencySecret, purpose, email, code);
+    const result = await repo.sendEmailCode({
+      purpose,
+      email,
+      codeDigest: digest,
+      now: Date.now(),
+      ttlMs: CODE_TTL_MS,
+      ip: req.ip,
+      scopeSecret: config.idempotencySecret,
+    });
+    // 只有真正落库（sent:true）才投递；限流时明文码不交给任何外部钩子
+    if (result.sent && deps.emailCodeSink) {
+      await deps.emailCodeSink({ purpose, email, code });
+    }
+    // 一律 202：是否命中限流、邮箱是否已注册都不对外暴露；sent 取仓储真实结果
+    return reply.code(202).send(ok(req.requestId, { sent: result.sent, retry_after_ms: result.retryAfterMs }));
+  });
+
+  app.post('/api/v1/auth/email/verify', async (req) => {
+    const body = (req.body ?? {}) as { purpose?: string; email?: string; code?: string };
+    const purpose = assertPurpose(body.purpose ?? 'register');
+    const email = assertEmail(body.email);
+    const code = String(body.code ?? '').trim();
+    if (!/^\d{6}$/.test(code)) throw invalidCodeError();
+    if (!repo.verifyEmailCode) throw new ApiError('INTERNAL', '当前仓储未实现邮箱验证码');
+
+    const digest = codeDigest(config.idempotencySecret, purpose, email, code);
+    const result = await repo.verifyEmailCode({ purpose, email, codeDigest: digest, now: Date.now() });
+    // 错误/过期/次数用尽统一同一个 400，不暴露细节
+    if (!result.ok) throw invalidCodeError();
+
+    if (!repo.createEmailTicket) throw new ApiError('INTERNAL', '当前仓储未实现邮箱 ticket');
+    const ticket = createTicketToken();
+    await repo.createEmailTicket({
+      purpose,
+      email,
+      ticketDigest: ticket.digest,
+      now: Date.now(),
+      ttlMs: TICKET_TTL_MS,
+    });
+    return ok(req.requestId, { ticket: ticket.token, expires_in: Math.floor(TICKET_TTL_MS / 1000) });
   });
 
   /* ---------- 个人资料 ---------- */

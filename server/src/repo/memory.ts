@@ -3,6 +3,7 @@
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
+import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoUser } from './types.ts';
@@ -30,6 +31,24 @@ export interface Session {
   createdAt: number;
 }
 
+export interface EmailCodeRecord {
+  purpose: string;
+  email: string;
+  codeDigest: string;
+  attempts: number;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+}
+
+export interface EmailTicketRecord {
+  purpose: string;
+  email: string;
+  expiresAt: number;
+  consumedAt: number | null;
+  createdAt: number;
+}
+
 export interface MemoryStore {
   users: Map<string, User>;
   usernameIndex: Map<string, string>;
@@ -52,6 +71,12 @@ export interface MemoryStore {
     id: string; userId: string; eventId: string; type: string; delta: number;
     balanceAfter: number; reservedAfter: number; requestId: string | null; createdAt: number;
   }>;
+  /** 邮箱验证码：key=`${purpose}:${email}`，同邮箱同用途只保留最新一条 */
+  emailCodes: Map<string, EmailCodeRecord>;
+  /** 邮箱限流窗口：key=`${scope}:${scopeKey}`，记录当前小时窗口与计数 */
+  emailSends: Map<string, { windowStart: number; count: number }>;
+  /** 邮箱一次性 ticket：key=token 摘要 */
+  emailTickets: Map<string, EmailTicketRecord>;
 }
 
 export function createMemoryStore(): MemoryStore {
@@ -67,6 +92,9 @@ export function createMemoryStore(): MemoryStore {
     syncChanges: [],
     syncBatches: new Map(),
     syncSeq: 0,
+    emailCodes: new Map(),
+    emailSends: new Map(),
+    emailTickets: new Map(),
   };
 }
 
@@ -404,6 +432,109 @@ export class MemoryRepository {
       available: next.available,
       reserved: next.reserved,
     };
+  }
+
+  /* ---------------- 邮箱验证码（内存实现） ---------------- */
+
+  async sendEmailCode(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+    ttlMs: number;
+    ip?: string;
+    scopeSecret?: string;
+  }): Promise<{ sent: boolean; retryAfterMs: number }> {
+    const key = `${input.purpose}:${input.email}`;
+    const existing = this.store.emailCodes.get(key) ?? null;
+    const windowStart = Math.floor(input.now / 3_600_000) * 3_600_000;
+    const bump = (scope: string, scopeKey: string): number => {
+      const mapKey = `${scope}:${scopeKey}`;
+      const row = this.store.emailSends.get(mapKey);
+      if (!row || row.windowStart !== windowStart) {
+        this.store.emailSends.set(mapKey, { windowStart, count: 1 });
+        return 1;
+      }
+      row.count += 1;
+      return row.count;
+    };
+
+    // 先判 60 秒冷却：被拒请求直接返回，不写 emailSends（不占小时配额）
+    if (existing) {
+      const elapsed = input.now - existing.createdAt;
+      if (elapsed < RESEND_INTERVAL_MS) {
+        return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
+      }
+    }
+
+    // 通过冷却后再计数（email / ip / global）
+    const emailCount = bump('email', input.email);
+    const ipCount = input.ip ? bump('ip', input.ip) : 0;
+    bump('global', 'all');
+
+    if (emailCount > MAX_SENDS_PER_HOUR || ipCount > MAX_SENDS_PER_HOUR) {
+      return { sent: false, retryAfterMs: windowStart + 3_600_000 - input.now };
+    }
+
+    if (existing) existing.consumedAt = input.now;
+    this.store.emailCodes.set(key, {
+      purpose: input.purpose,
+      email: input.email,
+      codeDigest: input.codeDigest,
+      attempts: 0,
+      expiresAt: input.now + input.ttlMs,
+      consumedAt: null,
+      createdAt: input.now,
+    });
+    return { sent: true, retryAfterMs: 0 };
+  }
+
+  async verifyEmailCode(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }> {
+    const key = `${input.purpose}:${input.email}`;
+    const record = this.store.emailCodes.get(key);
+    if (!record || record.consumedAt !== null || record.expiresAt <= input.now) {
+      return { ok: false, attemptsLeft: 0 };
+    }
+    if (digestEquals(record.codeDigest, input.codeDigest)) {
+      record.consumedAt = input.now;
+      return { ok: true, attemptsLeft: 0 };
+    }
+
+    record.attempts = Math.min(record.attempts + 1, MAX_ATTEMPTS);
+    if (record.attempts >= MAX_ATTEMPTS) {
+      record.consumedAt = input.now;
+      return { ok: false, attemptsLeft: 0 };
+    }
+    return { ok: false, attemptsLeft: MAX_ATTEMPTS - record.attempts };
+  }
+
+  async createEmailTicket(input: {
+    purpose: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+    ttlMs: number;
+  }): Promise<void> {
+    if (this.store.emailTickets.has(input.ticketDigest)) throw new Error('邮箱 ticket 摘要重复');
+    this.store.emailTickets.set(input.ticketDigest, {
+      purpose: input.purpose,
+      email: input.email,
+      expiresAt: input.now + input.ttlMs,
+      consumedAt: null,
+      createdAt: input.now,
+    });
+  }
+
+  async consumeEmailTicket(input: { ticketDigest: string; now: number }): Promise<boolean> {
+    const ticket = this.store.emailTickets.get(input.ticketDigest);
+    if (!ticket || ticket.consumedAt !== null || ticket.expiresAt <= input.now) return false;
+    ticket.consumedAt = input.now;
+    return true;
   }
 
   get userCount(): number { return this.store.users.size; }
