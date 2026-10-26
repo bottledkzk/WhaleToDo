@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {softCompact,parseProposal,systemPrompt,MODES,formatK,ASSISTANT_IDENTITY} from '../src/ai/policy.ts';
+import {softCompact,parseProposal,systemPrompt,MODES,formatK,ASSISTANT_IDENTITY,parseDiary} from '../src/ai/policy.ts';
 import {callDeepSeek,prepareInput,providerMessages,tokenReservation,type AiInput} from '../src/ai/provider.ts';
 import type {AiConfig} from '../src/ai/config.ts';
 const input:AiInput={client_request_id:'00000000-0000-4000-a000-000000000010',mode:'chat',prompt:'学习建议',model_code:'deepseek-default'};
@@ -75,4 +75,24 @@ test('read-only requests cannot obtain executable changes from arbitrary provide
   const result=await callDeepSeek(config,{...input,mode},(async()=>new Response(JSON.stringify({choices:[{message:{content},finish_reason:'stop'}],usage:{total_tokens:20}}))) as typeof fetch);
   assert.equal(result.changes,undefined);
  }
+});
+
+
+test('diary envelope contains only plain prose and at most 800 Unicode characters',()=>{
+ assert.equal(parseDiary(JSON.stringify({diary:'🐳'.repeat(800)})),'🐳'.repeat(800));
+ for(const body of [{diary:'🐳'.repeat(801)},{diary:'已为你生成日记'},{diary:'任务汇报：完成'},{diary:'正文',save:true},{diary:''}])assert.throws(()=>parseDiary(JSON.stringify(body)));
+});
+test('diary provider uses JSON internally and returns only editable diary prose',async()=>{
+ const result=await callDeepSeek(config,{...input,mode:'diary'},(async(_url,init)=>{
+  const body=JSON.parse(String(init?.body));assert.equal(body.response_format.type,'json_object');
+  return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({diary:'今天完成了阅读，晚上给自己留了一点休息时间。'})},finish_reason:'stop'}],usage:{total_tokens:20}}));
+ }) as typeof fetch);assert.equal(result.text,'今天完成了阅读，晚上给自己留了一点休息时间。');assert.equal(result.changes,undefined);assert.equal(result.tokens,20);
+});
+test('invalid diary prose is not offered for saving and still settles actual supplier usage',async()=>{
+ const result=await callDeepSeek(config,{...input,mode:'diary'},(async()=>new Response(JSON.stringify({choices:[{message:{content:'{"diary":"已为你生成日记"}'},finish_reason:'stop'}],usage:{total_tokens:20}}))) as typeof fetch);
+ assert.ok(result.text.startsWith('日记草稿暂不可用'));assert.equal(result.tokens,20);assert.equal(result.changes,undefined);
+});
+test('unfinished diary JSON is never silently clipped into a saveable diary',async()=>{
+ const result=await callDeepSeek(config,{...input,mode:'diary'},(async()=>new Response(JSON.stringify({choices:[{message:{content:'{"diary":"尚未完成'},finish_reason:'length'}],usage:{total_tokens:20}}))) as typeof fetch);
+ assert.ok(result.text.startsWith('日记草稿暂不可用'));assert.equal(result.continuation,true);assert.equal(result.tokens,20);
 });

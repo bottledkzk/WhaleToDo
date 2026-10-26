@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -12,6 +13,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import java.time.*
 import java.time.format.DateTimeFormatter
+
+val LocalDeskZone = staticCompositionLocalOf { ZoneId.systemDefault() }
 
 fun minuteLabel(minute: Int): String = "%02d:%02d".format(minute / 60, minute % 60)
 
@@ -109,13 +112,14 @@ fun WorkTimeDialog(
     initialEnd: Int,
     onDismiss: () -> Unit,
     onSave: (Int, Int) -> Unit,
+    label:String="今日 WorkTime",
 ) {
     var step by remember { mutableIntStateOf(0) }
     var start by remember { mutableIntStateOf(initialStart) }
     key(step) {
         if (step == 0)
             ClockDialog(
-                "今日 WorkTime · 开始",
+                "$label · 开始",
                 start,
                 confirm = "下一步",
                 onDismiss = onDismiss,
@@ -126,7 +130,7 @@ fun WorkTimeDialog(
             )
         else
             ClockDialog(
-                "今日 WorkTime · 结束",
+                "$label · 结束",
                 maxOf(start, initialEnd),
                 minimum = start,
                 confirm = "保存",
@@ -140,8 +144,7 @@ fun WorkTimeDialog(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeadlinePickerDialog(initial: Long, onDismiss: () -> Unit, onSave: (Long) -> Unit,
-    label: String = "截止时间") {
-    val zone = ZoneId.systemDefault()
+    label: String = "截止时间", zone:ZoneId=LocalDeskZone.current) {
     val existing = remember {
         if (initial > 0) Instant.ofEpochMilli(initial).atZone(zone)
         else ZonedDateTime.now(zone).plusHours(1).withSecond(0).withNano(0)

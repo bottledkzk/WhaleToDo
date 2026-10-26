@@ -25,11 +25,14 @@ data class DeskState(
     val today: LocalDate = LocalDate.now(),
     val zoneId: String = ZoneId.systemDefault().id,
     val now: Long = System.currentTimeMillis(),
+    val preferences: List<UiPreferenceRow> = emptyList(),
 )
 
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     internal val repository = DeskRepository(DeskDatabase.open(app))
-    val assistant by lazy { io.whaletodo.app.agent.AssistantController(repository, viewModelScope) }
+    val profile by lazy { io.whaletodo.app.profile.ProfileController(repository,viewModelScope) }
+    val assistant by lazy { io.whaletodo.app.agent.AssistantController(repository, viewModelScope,
+        onDiaryReady={owner,date,text,id -> profile.offerDiary(owner,date,text,id)}) }
     private data class ClockState(val date: LocalDate, val zone: String, val now: Long)
     private fun clockState(): ClockState {
         val zone = ZoneId.systemDefault()
@@ -67,7 +70,11 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
             ) { tasks, blocks, checks, settings, workTimes ->
                 DeskState(tasks, blocks, checks, settings ?: SettingRow(), workTimes)
             }
-            .combine(clock) { state, time -> state.copy(today = time.date, zoneId = time.zone, now = time.now) }
+            .combine(repository.dao.observeOptions("device")) {state,options -> state.copy(preferences=options)}
+            .combine(clock) { state, time ->
+                val zone=DeskOptions.zone(state.preferences)
+                state.copy(today=java.time.Instant.ofEpochMilli(time.now).atZone(zone).toLocalDate(),zoneId=zone.id,now=time.now)
+            }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DeskState())
     var preview = MutableStateFlow<PlanPreview?>(null)
         private set
@@ -99,8 +106,8 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         message.value = "已保存"
     }
 
-    fun saveScheduled(task: TaskRow, manual: Window?, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
-        try { repository.saveScheduled(task, manual) }
+    fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
+        try { repository.saveScheduled(task, manual, reminder) }
         catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
         message.value = "已保存安排"
         onSaved()

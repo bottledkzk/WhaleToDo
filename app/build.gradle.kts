@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "io.whaletodo.app"
     compileSdk = 36
-    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 6; versionName = "0.4.2"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 7; versionName = "0.5.0"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildTypes {
         release { isMinifyEnabled = false }
         create("verification") {

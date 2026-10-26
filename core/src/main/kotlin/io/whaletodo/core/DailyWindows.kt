@@ -17,11 +17,12 @@ object DailyWindows {
         zone: ZoneId,
         defaults: MinuteRange,
         overrides: Map<LocalDate, MinuteRange>,
+        weekdays: Map<java.time.DayOfWeek, MinuteRange> = emptyMap(),
     ): List<Window> {
         require(days in 1..366)
         return (0 until days).mapNotNull { offset ->
             val date = first.plusDays(offset.toLong())
-            val range = overrides[date] ?: defaults
+            val range = overrides[date] ?: weekdays[date.dayOfWeek] ?: defaults
             val start =
                 date.atStartOfDay().plusMinutes(range.start.toLong()).atZone(zone).toInstant()
             val end = date.atStartOfDay().plusMinutes(range.end.toLong()).atZone(zone).toInstant()

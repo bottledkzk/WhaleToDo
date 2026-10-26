@@ -2,7 +2,7 @@ import type { AiConfig } from './config.ts';
 export const PROVIDER_URL='https://api.deepseek.com/chat/completions';
 export {MODES,systemPrompt} from './policy.ts';
 export type {Mode} from './policy.ts';
-import {type Mode,type EditChange,systemPrompt,softCompact,parseProposal,fingerprint,publicAssistantText} from './policy.ts';
+import {type Mode,type EditChange,systemPrompt,softCompact,parseProposal,fingerprint,publicAssistantText,parseDiary} from './policy.ts';
 export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[]}
 export class ProviderFailure extends Error {
@@ -37,7 +37,7 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const response=await fetcher(PROVIDER_URL,{method:'POST',redirect:'error',
  headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},
  body:JSON.stringify({model:input.model_code==='deepseek-planner'?(config.editModel??'deepseek-v4-pro'):config.model,thinking:{type:'disabled'},stream:false,max_tokens:config.maxOutput,
- ...(input.mode==='edit'?{response_format:{type:'json_object'}}:{}),
+ ...(['edit','diary'].includes(input.mode)?{response_format:{type:'json_object'}}:{}),
  messages:providerMessages(input)}),
  signal:AbortSignal.timeout(config.timeoutMs)});
  if(!response.ok){await response.body?.cancel();throw new ProviderFailure([400,401,402,403,404,413,422,429].includes(response.status));}
@@ -48,6 +48,11 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const continuation=choice.finish_reason==='length';
  const inputTokens=result.usage?.prompt_tokens;const outputTokens=result.usage?.completion_tokens;
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};
+ if(input.mode==='diary'){
+  if(continuation)return {text:'日记草稿暂不可用，请缩小范围后重新生成。',...usage};
+  try{return {text:publicAssistantText(parseDiary(text)),...usage};}
+  catch{return {text:'日记草稿暂不可用，请缩小范围后重新生成。',...usage};}
+ }
  if(input.mode==='edit'){
  if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试。',...usage};
  const proposal=parseProposal(text);return {text:publicAssistantText(proposal.summary),...usage,changes:proposal.changes};}

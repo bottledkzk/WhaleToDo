@@ -90,9 +90,9 @@ class WorkspaceControlsTest {
         val original = device.executeShellCommand("getprop persist.sys.timezone").trim()
         start(); ui.click("助手"); ui.text("把想法，变成下一步")
         device.findObject(By.clazz("android.widget.EditText")).text = "请安排明天的学习"
-        ui.click("发送"); ui.text("登录后继续"); ui.click("前往账户"); ui.click("知道了")
-        ui.text("🐋  本机访客"); ui.click("签到"); ui.text("登录后可领取每日积分。账户服务尚未开放。"); ui.click("知道了")
-        ui.click("设置"); ui.click("深色"); ui.text("系统时区")
+        ui.click("发送"); ui.text("登录后继续"); ui.click("前往账户"); ui.text("注册账户");ui.click("取消")
+        ui.text("本机访客"); ui.click("每日签到"); ui.text("登录后领取每日积分"); ui.click("关闭")
+        ui.click("设置");ui.click("外观设定");ui.click("深色");ui.click("跟随系统");ui.desc("返回设置").click();ui.click("时间和地区")
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-my-dark.png")
         try {
             device.executeShellCommand("cmd alarm set-timezone Asia/Tokyo")
@@ -102,7 +102,7 @@ class WorkspaceControlsTest {
         } finally {
             device.executeShellCommand("cmd alarm set-timezone $original")
         }
-        ui.click("跟随系统"); ui.click("知道了"); ui.click("助手")
+        ui.desc("返回设置").click();ui.desc("返回我的").click();ui.click("助手")
         device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-assistant.png")
     }
 }
