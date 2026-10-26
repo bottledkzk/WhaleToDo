@@ -118,3 +118,26 @@ describe('输入前置校验（评审 #12 P2）', () => {
     assert.deepEqual(r, { result: 'applied', serverVersion: 6 });
   });
 });
+describe('payload 字节边界（评审 #12 P2：多字节输入）', () => {
+  const uid = '11111111-1111-4111-8111-111111111111';
+  const push = (payload: unknown) => parsePushBody({
+    batch_id: uid, device_id: 'd',
+    mutations: [{ object_type: 'task', object_id: uid, op: 'create', payload }],
+  });
+
+  test('30000 个汉字（UTF-8 约 90KB）→ 400，不能只在字符数上通过', () => {
+    const payload = { title: '中'.repeat(30_000) };
+    assert.equal(JSON.stringify(payload).length < 60_000, true, '字符数确实低于阈值');
+    assert.equal(Buffer.byteLength(JSON.stringify(payload), 'utf8') > 60_000, true, '字节数超阈值');
+    assert.throws(() => push(payload), /payload 超过大小上限/);
+  });
+
+  test('emoji（4 字节/字符）同样按字节拒绝', () => {
+    const payload = { title: '🐳'.repeat(20_000) };
+    assert.throws(() => push(payload), /payload 超过大小上限/);
+  });
+
+  test('正常中文短文本可以通过', () => {
+    assert.doesNotThrow(() => push({ title: '写周报', note: '今天完成同步接口' }));
+  });
+});

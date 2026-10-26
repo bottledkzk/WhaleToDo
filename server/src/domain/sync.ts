@@ -37,7 +37,9 @@ export interface CurrentObject {
 
 const MAX_BATCH_MUTATIONS = 200;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_PAYLOAD_BYTES = 60_000;   // 表上约束 64KiB，留余量
+// 数据库约束是 octet_length(payload::text) <= 65536（**字节**，不是字符数）。
+// JSONB 会重新序列化（可能略大于 JSON.stringify），所以阈值取 60KB 留余量。
+const MAX_PAYLOAD_BYTES = 60_000;
 
 /** 批次指纹不一致（同 batch_id 异体）：路由映射为 409，不覆盖首次回执 */
 export class SyncBatchConflict extends Error {
@@ -94,7 +96,8 @@ export function parsePushBody(body: unknown): {
     if (typeof m.object_id !== 'string' || !isUuid(m.object_id)) {
       throw new ApiError('VALIDATION_ERROR', `第 ${i + 1} 项 object_id 需为 UUID`);
     }
-    if (m.payload !== undefined && m.payload !== null && JSON.stringify(m.payload).length > MAX_PAYLOAD_BYTES) {
+    if (m.payload !== undefined && m.payload !== null
+        && Buffer.byteLength(JSON.stringify(m.payload), 'utf8') > MAX_PAYLOAD_BYTES) {
       throw new ApiError('VALIDATION_ERROR', `第 ${i + 1} 项 payload 超过大小上限`);
     }
 
