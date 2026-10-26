@@ -51,8 +51,20 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // 单进程内存实现，多实例部署时需换共享存储（见 handoff 说明）。
   const registerLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
   const loginLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
+  // 不记录请求体；对鉴权头/幂等键/模拟支付令牌脱敏；关闭默认两行日志，改由 onResponse 输出一条。
+  const loggerOptions = {
+    level: config.logLevel,
+    redact: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      'req.headers["idempotency-key"]',
+      'req.headers["x-mock-token"]',
+      'res.headers["set-cookie"]',
+    ],
+  };
   const app = Fastify({
-    logger: deps.logger ?? false,
+    logger: deps.logger ? { ...loggerOptions, ...(config.logFile ? { file: config.logFile } : {}) } : false,
+    disableRequestLogging: true,
     trustProxy: config.trustProxy,
     genReqId: () => randomUUID(),
   });
@@ -64,15 +76,43 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     req.raw.headers['x-request-id'] = req.requestId;
   });
 
+  // 每个请求一条访问日志（不含 query，避免把敏感参数落盘）
+  app.addHook('onResponse', async (req: FastifyRequest, reply: FastifyReply) => {
+    const errCode = (reply as FastifyReply & { errorCode?: string }).errorCode ?? null;
+    req.log.info({
+      event: 'access',
+      request_id: req.requestId,
+      method: req.method,
+      path: req.url.split('?')[0],
+      status: reply.statusCode,
+      duration_ms: Math.round(reply.elapsedTime * 10) / 10,
+      user_id: req.userId ?? null,
+      error_code: errCode,
+    }, 'access');
+  });
+
   app.setErrorHandler((err, req: FastifyRequest, reply: FastifyReply) => {
     if (err instanceof ApiError) {
+      (reply as FastifyReply & { errorCode?: string }).errorCode = err.code;
       return reply.code(err.status).send(err.toBody(req.requestId));
     }
     const status = (err as { statusCode?: number }).statusCode ?? 500;
     if (status === 400) {
       return reply.code(400).send(new ApiError('VALIDATION_ERROR', err instanceof Error ? err.message : '请求无效').toBody(req.requestId));
     }
-    req.log.error({ err }, 'unhandled');
+    // 只记受控字段：数据库异常文本会把用户参数（如非法 batch_id）原样带出，
+    // 字段路径 redact 管不到自由文本，整段落盘等于绕过脱敏。
+    const meta = err as { name?: string; code?: string | number };
+    (reply as FastifyReply & { errorCode?: string }).errorCode = 'INTERNAL';
+    req.log.error({
+      event: 'unhandled_error',
+      request_id: req.requestId,
+      method: req.method,
+      path: req.url.split('?')[0],
+      error_name: typeof meta.name === 'string' ? meta.name : 'Error',
+      error_code: typeof meta.code === 'string' || typeof meta.code === 'number' ? String(meta.code) : null,
+      status,
+    }, 'unhandled_error');
     return reply.code(500).send(new ApiError('INTERNAL', '服务器内部错误').toBody(req.requestId));
   });
 
