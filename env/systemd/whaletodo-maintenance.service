@@ -1,0 +1,13 @@
+[Unit]
+Description=WhaleToDo bounded expiry maintenance
+After=postgresql@16-main.service
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/whaletodo/database-tools/current/script/maintain-database.sh
+UMask=0077
+Nice=15
+TimeoutStartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true

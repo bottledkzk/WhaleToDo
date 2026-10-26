@@ -14,7 +14,11 @@
     "ai:start": "node src/ai/main.ts",
     "test:database": "node --test --test-concurrency=1 integration/*.test.ts",
     "db:validate": "prisma validate",
-    "db:deploy": "prisma migrate deploy"
+    "db:deploy": "prisma migrate deploy",
+    "db:security": "node tools/sql-policy.ts",
+    "db:plan": "node tools/database-guard.ts plan",
+    "db:apply": "node tools/database-guard.ts apply",
+    "db:history": "node tools/check-migration-history.ts"
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
