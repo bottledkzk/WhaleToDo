@@ -52,6 +52,11 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     hasClaimedDaily: async (userId, businessDate, rewardType) => repo.hasClaimedDaily(userId, businessDate, rewardType),
     claimDailyReward: async (input) => repo.claimDailyReward(input),
     listLedger: async (userId, limit, beforeCreatedAt) => repo.listLedger(userId, limit, beforeCreatedAt),
+    // 邮箱验证码：默认路径也走内存实现，漏转发会让两条路由 500
+    sendEmailCode: async (input) => repo.sendEmailCode(input),
+    verifyEmailCode: async (input) => repo.verifyEmailCode(input),
+    createEmailTicket: async (input) => repo.createEmailTicket(input),
+    consumeEmailTicket: async (input) => repo.consumeEmailTicket(input),
     getIdempotent: async (scope, key) => repo.getIdempotent(scope, key),
     saveIdempotent: async (scope, key, fingerprint, response) => { repo.saveIdempotent(scope, key, fingerprint, response); },
   };

@@ -136,6 +136,43 @@ export interface AccountRepository {
     nextCursor: number;
     hasMore: boolean;
   }>;
+  /**
+   * 邮箱验证码：发送。
+   * 单事务内做 email/ip/global 限流、作废旧未消费码、只存 HMAC 摘要。
+   * 返回 sent=false 时 retryAfterMs 给出可重试等待；路由对外仍返回 202，避免探测。
+   */
+  sendEmailCode?(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+    ttlMs: number;
+    /** 请求来源 IP；用于 ip 维度限流（scope_key 只存 HMAC） */
+    ip?: string;
+    /** 限流 scope_key 的 HMAC 密钥（服务端配置，客户端不可传） */
+    scopeSecret?: string;
+  }): Promise<{ sent: boolean; retryAfterMs: number }>;
+  /**
+   * 邮箱验证码：校验。
+   * 未命中/过期统一返回 ok=false（对外不区分）；失败 attempts+1，满 5 次作废；
+   * 命中则原子消费该码。
+   */
+  verifyEmailCode?(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }>;
+  /** 邮箱验证码：创建一次性 ticket（只存摘要，有效期由 ttlMs 决定） */
+  createEmailTicket?(input: {
+    purpose: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+    ttlMs: number;
+  }): Promise<void>;
+  /** 邮箱 ticket：条件消费（未消费 + 未过期），并发只允许一个调用成功 */
+  consumeEmailTicket?(input: { ticketDigest: string; now: number }): Promise<boolean>;
   claimDailyReward?(input: {
     userId: string;
     businessDate: string;
