@@ -374,6 +374,12 @@ export class PrismaRepository implements AccountRepository {
       // 内容表与批次表都受 RLS 保护：本事务内设置认证用户
       await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
 
+      // P1：同账号所有同步写入串行化（账号级事务锁，先于任何读版本/写 seq）。
+      // 这样 seq 的分配顺序与提交顺序一致：不会出现"小 seq 的事务后提交"，
+      // pull 推进到较大 seq 后也不会永久漏掉那条小 seq 记录；
+      // 同对象的两个 expected_version 相同更新也只会有一个成功。
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`;
+
       // 批次幂等：UNIQUE(user_id, batch_id)
       const batchRowId = randomUUID();
       const inserted = await tx.$executeRaw`

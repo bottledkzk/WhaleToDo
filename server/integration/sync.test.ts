@@ -160,3 +160,39 @@ test('拉取游标：按 seq 升序、next_cursor 可继续', async () => {
   const ids = [...first.changes, ...second.changes].map((c) => c.objectId);
   assert.equal(new Set(ids).size, 3, '三页合计无重复');
 });
+
+test('P1 并发：同对象两个 expected_version=1 的更新只有一个成功', async () => {
+  const user = await repo.createUser('sync_cas', PASSWORD);
+  const objId = taskId();
+  await repo.pushSyncBatch!({
+    userId: user.id, batchId: randomUUID(), deviceId: 'd', fingerprint: 'a'.repeat(64),
+    mutations: [{ objectType: 'task', objectId: objId, op: 'create', expectedVersion: null, payload: { v: 0 } }],
+  });
+
+  const upd = (fp: string) => repo.pushSyncBatch!({
+    userId: user.id, batchId: randomUUID(), deviceId: 'd', fingerprint: fp.repeat(64),
+    mutations: [{ objectType: 'task', objectId: objId, op: 'update', expectedVersion: 1, payload: { v: 1 } }],
+  });
+  const [a, b] = await Promise.all([upd('b'), upd('c')]);
+  const applied = [a, b].filter((r) => r.items[0]!.result === 'applied').length;
+  assert.equal(applied, 1, `并发同版本更新只应成功一次，实际 ${applied}`);
+
+  // 库内版本必须严格单调：1 之后只允许一个 2
+  const rows = await owner.query('SELECT version FROM sync_changes WHERE user_id=$1 AND object_id=$2 ORDER BY seq', [user.id, objId]);
+  assert.deepEqual(rows.rows.map((r: { version: number }) => r.version), [1, 2]);
+});
+
+test('P1 并发：跨对象并发写入后，pull 能拿到全部变更（不漏项）', async () => {
+  const user = await repo.createUser('sync_water', PASSWORD);
+  const push = (fp: string) => repo.pushSyncBatch!({
+    userId: user.id, batchId: randomUUID(), deviceId: 'd', fingerprint: fp.repeat(64),
+    mutations: [{ objectType: 'task', objectId: taskId(), op: 'create', expectedVersion: null, payload: {} }],
+  });
+  await Promise.all([push('1'), push('2'), push('3'), push('4')]);
+
+  const all = await repo.pullSyncChanges!(user.id, 0, 100);
+  assert.equal(all.changes.length, 4, '四次并发写入必须都能被拉到');
+  const seqs = all.changes.map((c) => c.seq);
+  assert.deepEqual([...seqs].sort((x, y) => x - y), seqs, 'seq 必须升序');
+  assert.equal(new Set(seqs).size, 4, 'seq 不可重复');
+});
