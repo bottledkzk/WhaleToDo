@@ -7,12 +7,12 @@ import { businessDate } from '../config.ts';
 import { parsePushBody, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import {
   assertEmail, assertPurpose, CODE_TTL_MS, codeDigest, createTicketToken,
-  generateCode, invalidCodeError, TICKET_TTL_MS,
+  generateCode, invalidCodeError, TICKET_TTL_MS, ticketDigest,
 } from '../domain/email.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
-import { RegisterConflict } from '../repo/types.ts';
+import { EmailAccountConflict, RegisterConflict } from '../repo/types.ts';
 import type { ServerConfig } from '../config.ts';
 
 declare module 'fastify' {
@@ -257,13 +257,55 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return reply.code(201).send(response);
   });
 
-  /* ---------- 登录 ---------- */
+  /* ---------- 邮箱注册 ---------- */
+  app.post('/api/v1/auth/register/email', async (req, reply) => {
+    const regKey = `ip:${req.ip}`;
+    const regLimit = registerLimiter.hit(regKey);
+    if (!regLimit.allowed) {
+      throw new ApiError('RATE_LIMITED', '注册请求过于频繁，请稍后再试', { retry_after_ms: regLimit.retryAfterMs });
+    }
+    const body = (req.body ?? {}) as {
+      email?: string; ticket?: string; password?: string; display_name?: string;
+    };
+    const email = assertEmail(body.email);
+    const ticket = String(body.ticket ?? '').trim();
+    const password = String(body.password ?? '');
+    if (!ticket) throw new ApiError('VALIDATION_ERROR', 'ticket 不能为空');
+    if (password.length < 8 || password.length > 200) {
+      throw new ApiError('VALIDATION_ERROR', '密码长度需在 8~200 字符之间');
+    }
+    if (!repo.createUserWithEmail) throw new ApiError('INTERNAL', '当前仓储未实现邮箱注册');
+
+    try {
+      const user = await repo.createUserWithEmail({
+        email,
+        password,
+        displayName: body.display_name,
+        ticketDigest: ticketDigest(ticket),
+        now: Date.now(),
+      });
+      return reply.code(201).send(ok(req.requestId, {
+        user: { id: user.id, username: user.username, display_name: user.displayName },
+      }));
+    } catch (err) {
+      if (!(err instanceof EmailAccountConflict)) throw err;
+      if (err.kind === 'EMAIL_TAKEN') throw new ApiError('CONFLICT', '邮箱已被注册');
+      throw new ApiError('VALIDATION_ERROR', '验证码无效或已过期');
+    }
+  });
+
+  /* ---------- 登录（username 或 email 二选一） ---------- */
   app.post('/api/v1/auth/login', async (req) => {
     const loginKey = `ip:${req.ip}`;
-    const body = (req.body ?? {}) as { username?: string; password?: string };
+    const body = (req.body ?? {}) as { username?: string; email?: string; password?: string };
     const username = String(body.username ?? '').trim();
+    const emailRaw = String(body.email ?? '').trim();
     const password = String(body.password ?? '');
-    if (!username || !password) throw new ApiError('VALIDATION_ERROR', '用户名与密码不能为空');
+    if (!password) throw new ApiError('VALIDATION_ERROR', '密码不能为空');
+    if ((username && emailRaw) || (!username && !emailRaw)) {
+      throw new ApiError('VALIDATION_ERROR', 'username 与 email 只能二选一');
+    }
+    const email = emailRaw ? assertEmail(emailRaw) : '';
 
     // 先预占额度，再做昂贵认证：超限请求**不会**进入 scrypt 校验，
     // 否则限流只改了响应，猜中密码仍能 200 并清零（评审 P1）。
@@ -272,7 +314,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       throw new ApiError('RATE_LIMITED', '登录失败次数过多，请稍后再试', { retry_after_ms: precheck.retryAfterMs });
     }
 
-    const user = await repo.authenticate(username, password);
+    let user;
+    if (email) {
+      if (!repo.authenticateByEmail) throw new ApiError('INTERNAL', '当前仓储未实现邮箱登录');
+      user = await repo.authenticateByEmail(email, password);
+    } else {
+      user = await repo.authenticate(username, password);
+    }
     // 账号不存在与密码错误返回同一个错误，避免枚举账号
     if (!user) throw new ApiError('UNAUTHENTICATED', '用户名或密码错误');
 
@@ -288,6 +336,29 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       refresh_expires_in: Math.floor((tokens.refreshExpiresAt - Date.now()) / 1000),
       user: { id: user.id, username: user.username, display_name: user.displayName },
     });
+  });
+
+  /* ---------- 邮箱重置密码 ---------- */
+  app.post('/api/v1/auth/password/reset', async (req, reply) => {
+    const body = (req.body ?? {}) as { email?: string; ticket?: string; password?: string };
+    const email = assertEmail(body.email);
+    const ticket = String(body.ticket ?? '').trim();
+    const password = String(body.password ?? '');
+    if (!ticket) throw new ApiError('VALIDATION_ERROR', 'ticket 不能为空');
+    if (password.length < 8 || password.length > 200) {
+      throw new ApiError('VALIDATION_ERROR', '密码长度需在 8~200 字符之间');
+    }
+    if (!repo.resetPasswordWithTicket) throw new ApiError('INTERNAL', '当前仓储未实现密码重置');
+
+    const result = await repo.resetPasswordWithTicket({
+      email,
+      password,
+      ticketDigest: ticketDigest(ticket),
+      now: Date.now(),
+    });
+    if (!result.ok) throw new ApiError('VALIDATION_ERROR', '验证码无效或已过期');
+    // 重置不泄露账号是否存在：ticket 合法但邮箱无账号也返回 204
+    return reply.code(204).send();
   });
 
   /* ---------- 刷新（轮换 + 重放整串撤销） ---------- */
@@ -404,6 +475,26 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     return ok(req.requestId, {
       user: { id: user.id, username: user.username, display_name: user.displayName, created_at: new Date(user.createdAt).toISOString() },
     });
+  });
+
+  /* ---------- 绑定邮箱（登录态 + bind ticket） ---------- */
+  app.post('/api/v1/me/email/bind', async (req, reply) => {
+    await requireAuth(req);
+    const body = (req.body ?? {}) as { email?: string; ticket?: string };
+    const email = assertEmail(body.email);
+    const ticket = String(body.ticket ?? '').trim();
+    if (!ticket) throw new ApiError('VALIDATION_ERROR', 'ticket 不能为空');
+    if (!repo.bindEmailWithTicket) throw new ApiError('INTERNAL', '当前仓储未实现邮箱绑定');
+
+    const result = await repo.bindEmailWithTicket({
+      userId: req.userId!,
+      email,
+      ticketDigest: ticketDigest(ticket),
+      now: Date.now(),
+    });
+    if (result === 'ticket_invalid') throw new ApiError('VALIDATION_ERROR', '验证码无效或已过期');
+    if (result === 'email_taken') throw new ApiError('CONFLICT', '邮箱已被注册');
+    return reply.code(204).send();
   });
 
   /* ---------- 权益（VIP 权益未冻结，只返回身份与到期时间占位） ---------- */

@@ -1,18 +1,20 @@
 // 内存仓储：用于本地开发与集成测试（无数据库依赖）。
 // Prisma 仓储在下一阶段接入，接口保持一致，便于替换。
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoUser } from './types.ts';
+import { EmailAccountConflict } from './types.ts';
 import { decideMutation, batchStatus, SyncBatchConflict } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 
 export interface User {
   id: string;
   username: string;
+  email: string | null;
   passwordHash: string;
   displayName: string;
   createdAt: number;
@@ -52,6 +54,8 @@ export interface EmailTicketRecord {
 export interface MemoryStore {
   users: Map<string, User>;
   usernameIndex: Map<string, string>;
+  /** 规范化邮箱（lower）-> userId；无邮箱用户不入表 */
+  emailIndex: Map<string, string>;
   sessions: Map<string, Session>;
   wallets: Map<string, Wallet>;
   /** 幂等键 -> { 请求指纹, 响应体 } */
@@ -83,6 +87,7 @@ export function createMemoryStore(): MemoryStore {
   return {
     users: new Map(),
     usernameIndex: new Map(),
+    emailIndex: new Map(),
     sessions: new Map(),
     wallets: new Map(),
     idempotency: new Map(),
@@ -117,11 +122,17 @@ export class MemoryRepository {
     return this.store.users.get(id) ?? null;
   }
 
+  findUserByEmail(email: string): User | null {
+    const id = this.store.emailIndex.get(email.trim().toLowerCase());
+    return id ? this.store.users.get(id) ?? null : null;
+  }
+
   async createUser(username: string, password: string, displayName?: string): Promise<User> {
     const id = randomUUID();
     const user: User = {
       id,
       username,
+      email: null,
       passwordHash: await hashPasswordAsync(password),
       // 默认昵称后缀只认服务端刚分配的 id；客户端昵称仅作展示值
       displayName: resolveDisplayName(id, username, displayName),
@@ -141,6 +152,110 @@ export class MemoryRepository {
       return null;
     }
     return (await verifyPasswordAsync(password, user.passwordHash)) ? user : null;
+  }
+
+  /* ---------------- 邮箱账户（内存实现） ---------------- */
+
+  async createUserWithEmail(input: {
+    email: string;
+    password: string;
+    displayName?: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<User> {
+    const email = input.email.trim().toLowerCase();
+    const ticket = this.store.emailTickets.get(input.ticketDigest);
+    // 先判 ticket 有效性（不消费）：同 ticket 二次注册应返回 TICKET_INVALID，
+    // 而不是先看到邮箱已存在
+    if (!ticket
+        || ticket.consumedAt !== null
+        || ticket.expiresAt <= input.now
+        || ticket.purpose !== 'register'
+        || ticket.email !== email) {
+      throw new EmailAccountConflict('TICKET_INVALID');
+    }
+    // 邮箱占用时不消费 ticket（与 Prisma 事务回滚结果一致）
+    if (this.findUserByEmail(email)) throw new EmailAccountConflict('EMAIL_TAKEN');
+    if (!(await this.consumeEmailTicket({
+      ticketDigest: input.ticketDigest, purpose: 'register', email, now: input.now,
+    }))) {
+      throw new EmailAccountConflict('TICKET_INVALID');
+    }
+
+    let username = '';
+    do {
+      username = `whale_${randomBytes(6).toString('hex')}`;
+    } while (this.store.usernameIndex.has(username.toLowerCase()));
+
+    const id = randomUUID();
+    const user: User = {
+      id,
+      username,
+      email,
+      passwordHash: await hashPasswordAsync(input.password),
+      displayName: resolveDisplayName(id, username, input.displayName),
+      createdAt: input.now,
+    };
+    this.store.users.set(id, user);
+    this.store.usernameIndex.set(username.toLowerCase(), id);
+    this.store.emailIndex.set(email, id);
+    this.store.wallets.set(id, { available: 0, reserved: 0 });
+    return user;
+  }
+
+  async authenticateByEmail(email: string, password: string): Promise<User | null> {
+    const user = this.findUserByEmail(email);
+    if (!user) {
+      await hashPasswordAsync('dummy-password-for-timing');
+      return null;
+    }
+    return (await verifyPasswordAsync(password, user.passwordHash)) ? user : null;
+  }
+
+  async resetPasswordWithTicket(input: {
+    email: string;
+    password: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean }> {
+    const email = input.email.trim().toLowerCase();
+    const consumed = await this.consumeEmailTicket({
+      ticketDigest: input.ticketDigest, purpose: 'reset', email, now: input.now,
+    });
+    if (!consumed) return { ok: false };
+
+    const user = this.findUserByEmail(email);
+    if (!user) return { ok: true };
+
+    user.passwordHash = await hashPasswordAsync(input.password);
+    for (const session of this.store.sessions.values()) {
+      if (session.userId === user.id && session.revokedAt === null) session.revokedAt = input.now;
+    }
+    return { ok: true };
+  }
+
+  async bindEmailWithTicket(input: {
+    userId: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<'ok' | 'ticket_invalid' | 'email_taken'> {
+    const email = input.email.trim().toLowerCase();
+    const owner = this.findUserByEmail(email);
+    // 已被别人占用：不消费 ticket（与 Prisma 事务回滚结果一致）
+    if (owner && owner.id !== input.userId) return 'email_taken';
+
+    const consumed = await this.consumeEmailTicket({
+      ticketDigest: input.ticketDigest, purpose: 'bind', email, now: input.now,
+    });
+    if (!consumed) return 'ticket_invalid';
+
+    const user = this.store.users.get(input.userId);
+    if (!user) return 'ticket_invalid';
+    if (user.email) this.store.emailIndex.delete(user.email);
+    user.email = email;
+    this.store.emailIndex.set(email, user.id);
+    return 'ok';
   }
 
   createSession(userId: string, familyId?: string): { session: Session; tokens: ReturnType<typeof issueTokens> } {
@@ -530,9 +645,20 @@ export class MemoryRepository {
     });
   }
 
-  async consumeEmailTicket(input: { ticketDigest: string; now: number }): Promise<boolean> {
+  async consumeEmailTicket(input: {
+    ticketDigest: string;
+    purpose: string;
+    email: string;
+    now: number;
+  }): Promise<boolean> {
     const ticket = this.store.emailTickets.get(input.ticketDigest);
-    if (!ticket || ticket.consumedAt !== null || ticket.expiresAt <= input.now) return false;
+    if (!ticket
+        || ticket.consumedAt !== null
+        || ticket.expiresAt <= input.now
+        || ticket.purpose !== input.purpose
+        || ticket.email !== input.email.trim().toLowerCase()) {
+      return false;
+    }
     ticket.consumedAt = input.now;
     return true;
   }

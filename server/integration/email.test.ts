@@ -206,12 +206,12 @@ test('ticket 只存摘要，并发消费只成功一次', async () => {
   assert.equal(rows.rows[0].email_normalized, EMAIL);
 
   const results = await Promise.all([
-    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
-    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
+    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now }),
+    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now }),
   ]);
   assert.equal(results.filter(Boolean).length, 1, '并发消费只能成功一次');
   assert.equal(
-    await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now: now + 1 }),
+    await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now: now + 1 }),
     false,
     '已消费的 ticket 不能重放',
   );

@@ -176,10 +176,13 @@ describe('邮箱验证码（内存路径）', () => {
     });
 
     const results = await Promise.all([
-      repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
-      repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
+      repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: 'register', email: EMAIL, now }),
+      repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: 'register', email: EMAIL, now }),
     ]);
     assert.equal(results.filter(Boolean).length, 1, '并发消费只能成功一次');
-    assert.equal(await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }), false);
+    assert.equal(
+      await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: 'register', email: EMAIL, now }),
+      false,
+    );
   });
 });

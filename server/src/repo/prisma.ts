@@ -6,10 +6,10 @@
 //  - demo_slot 由数据库函数 next_demo_slot() 生成，插入时不传
 //  - RLS 表（tasks/plan_blocks/...）不在此接口内，后续由内容仓储在事务里 set_config 处理
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
-import { randomUUID, createHmac } from 'node:crypto';
+import { randomUUID, randomBytes, createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
-import { RegisterConflict } from './types.ts';
+import { EmailAccountConflict, RegisterConflict } from './types.ts';
 import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
@@ -296,6 +296,177 @@ export class PrismaRepository implements AccountRepository {
       }
       return toRepoUser(user);
     });
+  }
+
+  /* ---------------- 邮箱账户 ---------------- */
+
+  async findUserByEmail(email: string): Promise<RepoUser | null> {
+    const rows = await this.prisma.$queryRaw<UserRow[]>`
+      SELECT id, username, display_name, created_at
+        FROM users
+       WHERE lower(email) = lower(${email}) AND status = 'active'
+       LIMIT 1`;
+    return rows[0] ? toRepoUser(rows[0]) : null;
+  }
+
+  async createUserWithEmail(input: {
+    email: string;
+    password: string;
+    displayName?: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<RepoUser> {
+    const email = input.email.trim().toLowerCase();
+    const passwordHash = await hashPasswordAsync(input.password);
+    const nowDate = new Date(input.now);
+    const id = randomUUID();
+    // 邮箱注册不向用户要 username；whale_<12 位小写十六进制> 满足 username 正则
+    const username = `whale_${randomBytes(6).toString('hex')}`;
+    const displayName = resolveDisplayName(id, username, input.displayName);
+
+    // 预检 ticket 与邮箱占用：邮箱冲突时 ticket 不被消费（与事务回滚结果一致）；
+    // 事务内仍会条件消费，覆盖并发窗口。
+    const ticket = await this.prisma.email_verify_tickets.findUnique({
+      where: { token_hmac: input.ticketDigest },
+    });
+    if (!ticket
+        || ticket.consumed_at !== null
+        || ticket.expires_at.getTime() <= input.now
+        || ticket.purpose !== 'register'
+        || ticket.email_normalized !== email) {
+      throw new EmailAccountConflict('TICKET_INVALID');
+    }
+    if (await this.findUserByEmail(email)) throw new EmailAccountConflict('EMAIL_TAKEN');
+
+    return this.prisma.$transaction(async (tx) => {
+      // 消费与建号同事务：后续任何失败都会回滚 consumed_at
+      const consumed = await tx.$executeRaw`
+        UPDATE email_verify_tickets SET consumed_at = ${nowDate}
+         WHERE token_hmac = ${input.ticketDigest}
+           AND purpose = 'register'
+           AND email_normalized = ${email}
+           AND consumed_at IS NULL
+           AND expires_at > ${nowDate}`;
+      if (consumed !== 1) throw new EmailAccountConflict('TICKET_INVALID');
+
+      try {
+        // 只列 app 角色有列权限的字段；role/status/demo_slot 走数据库默认，
+        // email_verified_at 不写（app 无该列权限，写了会 42501）
+        await tx.$executeRaw`
+          INSERT INTO users (id, username, email, password_hash, display_name, created_at, updated_at)
+          VALUES (${id}::uuid, ${username}, ${email}, ${passwordHash}, ${displayName},
+                  ${nowDate}, ${nowDate})`;
+      } catch (err) {
+        if (isEmailAccountUniqueViolation(err)) throw new EmailAccountConflict('EMAIL_TAKEN');
+        throw err;
+      }
+
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${id}, true)`;
+      await tx.user_settings.create({ data: { user_id: id } });
+      await tx.point_wallets.create({ data: { user_id: id } });
+
+      return { id, username, displayName, createdAt: nowDate.getTime() };
+    });
+  }
+
+  async authenticateByEmail(email: string, password: string): Promise<RepoUser | null> {
+    const rows = await this.prisma.$queryRaw<(UserRow & { password_hash: string; status: string })[]>`
+      SELECT id, username, display_name, created_at, password_hash, status
+        FROM users
+       WHERE lower(email) = lower(${email})
+       LIMIT 1`;
+    const u = rows[0];
+    if (!u || u.status !== 'active') {
+      // 账号不存在也跑一次哈希，避免用响应时间探测邮箱是否存在
+      await hashPasswordAsync('dummy-password-for-timing');
+      return null;
+    }
+    const ok = await verifyPasswordAsync(password, u.password_hash);
+    return ok ? toRepoUser(u) : null;
+  }
+
+  async resetPasswordWithTicket(input: {
+    email: string;
+    password: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean }> {
+    const email = input.email.trim().toLowerCase();
+    const passwordHash = await hashPasswordAsync(input.password);
+    const nowDate = new Date(input.now);
+
+    return this.prisma.$transaction(async (tx) => {
+      const consumed = await tx.$executeRaw`
+        UPDATE email_verify_tickets SET consumed_at = ${nowDate}
+         WHERE token_hmac = ${input.ticketDigest}
+           AND purpose = 'reset'
+           AND email_normalized = ${email}
+           AND consumed_at IS NULL
+           AND expires_at > ${nowDate}`;
+      if (consumed !== 1) return { ok: false };
+
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM users
+         WHERE lower(email) = lower(${email}) AND status = 'active'
+         LIMIT 1`;
+      const user = rows[0];
+      // 重置不泄露账号是否存在：ticket 合法但邮箱无账号 → ok:true，不写任何数据
+      if (!user) return { ok: true };
+
+      await tx.$executeRaw`
+        UPDATE users SET password_hash = ${passwordHash}, updated_at = ${nowDate}
+         WHERE id = ${user.id}::uuid`;
+      await tx.$executeRaw`
+        UPDATE auth_sessions SET revoked_at = ${nowDate}
+         WHERE user_id = ${user.id}::uuid AND revoked_at IS NULL`;
+      return { ok: true };
+    });
+  }
+
+  async bindEmailWithTicket(input: {
+    userId: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<'ok' | 'ticket_invalid' | 'email_taken'> {
+    const email = input.email.trim().toLowerCase();
+    const nowDate = new Date(input.now);
+
+    // 预检 ticket 与邮箱占用：邮箱被占用时 ticket 不消费（事务内仍条件消费兜并发）
+    const ticket = await this.prisma.email_verify_tickets.findUnique({
+      where: { token_hmac: input.ticketDigest },
+    });
+    if (!ticket
+        || ticket.consumed_at !== null
+        || ticket.expires_at.getTime() <= input.now
+        || ticket.purpose !== 'bind'
+        || ticket.email_normalized !== email) {
+      return 'ticket_invalid';
+    }
+    const owner = await this.findUserByEmail(email);
+    if (owner && owner.id !== input.userId) return 'email_taken';
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const consumed = await tx.$executeRaw`
+          UPDATE email_verify_tickets SET consumed_at = ${nowDate}
+           WHERE token_hmac = ${input.ticketDigest}
+             AND purpose = 'bind'
+             AND email_normalized = ${email}
+             AND consumed_at IS NULL
+             AND expires_at > ${nowDate}`;
+        if (consumed !== 1) return 'ticket_invalid';
+
+        await tx.$executeRaw`
+          UPDATE users SET email = ${email}, updated_at = ${nowDate}
+           WHERE id = ${input.userId}::uuid`;
+        return 'ok';
+      });
+    } catch (err) {
+      // 邮箱唯一冲突：事务已回滚，ticket 不会被消费
+      if (isEmailAccountUniqueViolation(err)) return 'email_taken';
+      throw err;
+    }
   }
 
   /* ---------------- 钱包 ---------------- */
@@ -762,12 +933,21 @@ export class PrismaRepository implements AccountRepository {
               ${new Date(input.now + input.ttlMs)}, ${now})`;
   }
 
-  async consumeEmailTicket(input: { ticketDigest: string; now: number }): Promise<boolean> {
+  async consumeEmailTicket(input: {
+    ticketDigest: string;
+    purpose: string;
+    email: string;
+    now: number;
+  }): Promise<boolean> {
     const now = new Date(input.now);
     // 条件更新：未消费 + 未过期，并发调用只有一个能命中 1 行
     const updated = await this.prisma.$executeRaw`
       UPDATE email_verify_tickets SET consumed_at = ${now}
-       WHERE token_hmac = ${input.ticketDigest} AND consumed_at IS NULL AND expires_at > ${now}`;
+       WHERE token_hmac = ${input.ticketDigest}
+         AND purpose = ${input.purpose}
+         AND email_normalized = ${input.email.trim().toLowerCase()}
+         AND consumed_at IS NULL
+         AND expires_at > ${now}`;
     return updated === 1;
   }
 
@@ -841,6 +1021,17 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * 只识别 users_email_ci（lower(email) 唯一）冲突：邮箱注册/绑定映射 409。
+ * 其他唯一冲突（如随机 username 撞车）继续抛。
+ */
+function isEmailAccountUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { meta?: { message?: string }; message?: string };
+  const message = e.meta?.message ?? e.message ?? '';
+  return message.includes('users_email_ci');
 }
 
 /**

@@ -57,6 +57,18 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     verifyEmailCode: async (input) => repo.verifyEmailCode(input),
     createEmailTicket: async (input) => repo.createEmailTicket(input),
     consumeEmailTicket: async (input) => repo.consumeEmailTicket(input),
+    // 邮箱账户：默认内存路径，漏转发会让注册/登录/重置/绑定 500
+    findUserByEmail: async (email) => {
+      const u = repo.findUserByEmail(email);
+      return u ? toRepoUser(u) : null;
+    },
+    createUserWithEmail: async (input) => toRepoUser(await repo.createUserWithEmail(input)),
+    authenticateByEmail: async (email, password) => {
+      const u = await repo.authenticateByEmail(email, password);
+      return u ? toRepoUser(u) : null;
+    },
+    resetPasswordWithTicket: async (input) => repo.resetPasswordWithTicket(input),
+    bindEmailWithTicket: async (input) => repo.bindEmailWithTicket(input),
     getIdempotent: async (scope, key) => repo.getIdempotent(scope, key),
     saveIdempotent: async (scope, key, fingerprint, response) => { repo.saveIdempotent(scope, key, fingerprint, response); },
   };
