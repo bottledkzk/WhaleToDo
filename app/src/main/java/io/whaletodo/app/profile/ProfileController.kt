@@ -9,13 +9,18 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 enum class MyPageRoute(val title:String) { HOME("我的"),SETTINGS("设置"),ACCOUNT("账户信息"),APPEARANCE("外观设定"),WORKING("Working时间"),REGION("时间和地区"),ABOUT("关于") }
-enum class MyDialog { NONE,WORKING_CLOCK,AVATAR,CHECKIN,POINTS,RECHARGE_POINTS,RECHARGE_VIP,LOGIN,REGISTER,RESET_PASSWORD,REMINDERS,DIARY,DIARY_DATE,DELETE_DIARY,OVERWRITE_DIARY }
+enum class MyDialog { NONE,WORKING_CLOCK,AVATAR,CHECKIN,POINTS,RECHARGE_POINTS,RECHARGE_VIP,LOGIN,REGISTER,RESET_PASSWORD,REMINDERS,DIARY,DIARY_DATE,DELETE_DIARY,OVERWRITE_DIARY,UTC_ZONES,ZONE_CONFIRM }
+data class ZoneDraft(val choice:DeskZoneChoice,val previous:DeskZoneChoice,val from:String,val to:String)
+
 data class DiaryOffer(val owner:String,val date:String,val text:String,val messageId:String)
 data class DiaryEditor(val date:String,val text:String,val original:DiaryRow?,val editing:Boolean=false,val generated:Boolean=false,val sourceMessageId:String?=null)
 data class ProfileState(val owner:String="guest",val access:AgentAccess=AgentAccess(),val details:ProfileDetails?=null,
     val page:MyPageRoute=MyPageRoute.HOME,val dialog:MyDialog=MyDialog.NONE,val options:List<UiPreferenceRow> = emptyList(),val deviceOptions:List<UiPreferenceRow> = emptyList(),
     val busy:Boolean=false,val notice:String="",val error:String="",val diary:DiaryEditor?=null,val pendingDiary:DiaryOffer?=null,
-    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L)
+    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L,val zoneDraft:ZoneDraft?=null) {
+    val nickname:String get()=options.find{it.key=="profile.nickname"}?.value?.takeIf{it.isNotBlank()}?:details?.displayName?.takeIf{it.isNotBlank()}?:ProfileIdentity.defaultNickname(details?.publicId?:owner)
+    val motto:String get()=options.find{it.key=="profile.motto"}?.value?:details?.motto.orEmpty()
+}
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProfileController(private val repo:DeskRepository,private val scope:CoroutineScope,
@@ -33,8 +38,16 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
         }.collect{(owner,own,device)->mutable.update{if(it.owner==owner)it.copy(options=own,deviceOptions=device)else it}}}
     }
     fun open(dialog:MyDialog){if(!mutable.value.busy)mutable.update{it.copy(dialog=dialog,error="")}}
-    fun navigate(page:MyPageRoute){mutable.update{it.copy(page=page,dialog=MyDialog.NONE,error="")}}
-    fun dismiss(){if(!mutable.value.busy)mutable.update{it.copy(dialog=MyDialog.NONE,error="",diary=null)}}
+    fun navigate(page:MyPageRoute){mutable.update{it.copy(page=page,dialog=MyDialog.NONE,error="",zoneDraft=null)}}
+    fun leavePage(){mutable.update{it.copy(page=MyPageRoute.HOME,dialog=MyDialog.NONE,error="",zoneDraft=null,diary=null)}}
+    fun saveIdentity(nickname:Boolean,text:String):Boolean {
+        val s=mutable.value;if(s.busy)return false
+        if(s.access.userId==null){open(MyDialog.LOGIN);return false}
+        val clean=runCatching{if(nickname)ProfileIdentity.nickname(text)else ProfileIdentity.motto(text)}.getOrElse{mutable.update{it.copy(error="请检查输入")};return false}
+        action { owner->check(owner==mutable.value.owner);repo.dao.save(UiPreferenceRow(owner,if(nickname)"profile.nickname" else "profile.motto",clean));mutable.update{if(it.owner==owner)it.copy(notice="已保存",error="")else it}}
+        return true
+    }
+    fun dismiss(){if(!mutable.value.busy)mutable.update{it.copy(dialog=MyDialog.NONE,error="",diary=null,zoneDraft=null)}}
     fun back(){if(mutable.value.dialog!=MyDialog.NONE)dismiss() else navigate(if(mutable.value.page==MyPageRoute.SETTINGS)MyPageRoute.HOME else MyPageRoute.SETTINGS)}
     fun clearNotice(){mutable.update{it.copy(notice="")}}
     fun option(key:String,default:String="")=mutable.value.options.find{it.key==key}?.value?:default
@@ -61,11 +74,12 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
         action("暂时无法发送验证码，请稍后重试"){owner->val result=bridge.requestCode(email.trim(),purpose)
             mutable.update{if(it.owner==owner)it.copy(codeEmail=email.trim(),codePurpose=purpose,codeUntil=SystemClock.elapsedRealtime()+result.resendAfterSeconds.coerceIn(1,300)*1000L,notice="验证码已发送")else it}}
     }
-    fun authenticate(email:String,password:String,code:String="",register:Boolean=false,reset:Boolean=false){
+    fun authenticate(email:String,password:String,code:String="",register:Boolean=false,reset:Boolean=false,nickname:String?=null){
+        val publicName=if(register&&nickname!=null)runCatching{ProfileIdentity.nickname(nickname)}.getOrElse{mutable.update{it.copy(error="请检查昵称")};return}else null
         if(!validEmail(email)||password.length !in 8..200||(register||reset)&&!Regex("[0-9]{4,8}").matches(code)){
             mutable.update{it.copy(error="请检查邮箱、密码（8–200位）和验证码")};return}
         action("账户操作暂不可用，请稍后重试") {owner->
-            when{reset->bridge.resetPassword(email.trim(),code,password);register->bridge.register(email.trim(),code,password);else->bridge.login(email.trim(),password)}
+            when{reset->bridge.resetPassword(email.trim(),code,password);register->bridge.register(email.trim(),code,password,publicName);else->bridge.login(email.trim(),password)}
             if(reset||register)mutable.update{if(it.owner==owner)it.copy(dialog=MyDialog.LOGIN,notice=if(reset)"密码已更新" else "注册已完成，请登录")else it}
             else mutable.update{if(it.owner==owner)it.copy(dialog=MyDialog.NONE)else it}
         }
@@ -78,8 +92,20 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
         action{owner->repo.dao.save(UiPreferenceRow("device","working.${weekday?:"default"}","$start,$end"));dismissAfter(owner)}
     }
     fun clearWeekday(day:Int)=action{_->repo.dao.removeOption("device","working.$day")}
-    fun saveZone(value:String){if(value!="system")runCatching{ZoneId.of(value)}.getOrElse{mutable.update{it.copy(error="请选择有效时区")};return}
-        action{owner->repo.dao.save(UiPreferenceRow("device","time.zone",value));mutable.update{if(it.owner==owner)it.copy(notice="时区已更新")else it}}}
+    fun proposeZone(value:String,daylight:Boolean?=null) {
+        val id=if(value=="system")value else runCatching{DeskZones.parse(value)}.getOrElse{mutable.update{it.copy(error="请选择有效时区")};return}
+        val previous=DeskOptions.zoneChoice(mutable.value.deviceOptions)
+        val choice=DeskZoneChoice(id,daylight?:if(id==previous.id)previous.daylight else true)
+        mutable.update{it.copy(dialog=MyDialog.ZONE_CONFIRM,error="",zoneDraft=ZoneDraft(choice,previous,previous.effective().id,choice.effective().id))}
+    }
+    fun confirmZone(adjust:Boolean) {
+        val draft=mutable.value.zoneDraft?:return
+        action("暂时无法更改时区，请重新选择") { owner->
+            try{repo.changeZone(draft.choice,adjust,draft.previous,draft.from)}catch(e:IllegalArgumentException){mutable.update{if(it.owner==owner)it.copy(error=e.message?:"请检查日程时间")else it};return@action}
+            dismissAfter(owner,"时区已更新")
+            mutable.update{if(it.owner==owner)it.copy(zoneDraft=null)else it}
+        }
+    }
     fun saveReminderDefaults(enabled:Boolean,method:String,stars:Int){require(stars in 0..5);require(ReminderMethod.entries.any{it.code==method})
         action{owner->repo.dao.saveOptions(listOf("reminder.enabled" to enabled.toString(),"reminder.method" to method,"reminder.stars" to stars.toString()).map{(key,value)->UiPreferenceRow(owner,key,value)});dismissAfter(owner,"提醒偏好已保存")}}
     fun offerDiary(owner:String,date:String,text:String,messageId:String){

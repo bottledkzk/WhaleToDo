@@ -101,7 +101,7 @@ class ProfileExperienceTest {
         ui.text("09:15–17:45");assertEquals("555,1065",db{it.dao().deviceOptions().first{x->x.key=="working.default"}.value})
         visible("星期一").click();ui.text("星期一 Working · 开始");ui.time(10,10);ui.click("下一步");ui.time(16,20);ui.click("保存")
         assertEquals("610,980",db{it.dao().deviceOptions().first{x->x.key=="working.1"}.value});shot("working")
-        ui.desc("返回设置").click();ui.click("时间和地区");field(0,"+08:00");ui.click("应用自定义时区");ui.text("+08:00");shot("region")
+        ui.desc("返回设置").click();ui.click("时间和地区");ui.desc("跟随系统时区").click();ui.click("确认更改");field(0,"+08:00");ui.click("应用自定义时区");ui.click("确认更改");ui.text("UTC+08:00 · +08:00");shot("region")
         assertEquals("+08:00",db{DeskRepository(it).snapshot().zoneId})
         ui.desc("返回设置").click();ui.desc("返回我的").click();ui.text("每日签到")
     }
@@ -134,7 +134,7 @@ class ProfileExperienceTest {
         ui.click("我的");ui.text("7 积分");assertFalse(device.hasObject(By.text("小鲸同学")));assertFalse(device.hasObject(By.textContains("WHALE-DEMO")))
     }    @Test fun accountResetAboutAndDiaryDatePickerHaveConcreteUi(){
         val f=Fixture();start(f);ui.click("我的");ui.click("设置");ui.click("账户信息");ui.text("邮箱 · learner@example.test");ui.click("重置密码");ui.text("发送验证码");ui.click("发送验证码");ui.text("暂时无法发送验证码，请稍后重试");assertEquals(1,f.codeCalls);ui.click("取消")
-        ui.desc("返回设置").click();visible("关于").click();ui.text("版本 0.5.0");ui.text("GitHub · WhaleToDo");shot("about");ui.desc("返回设置").click();ui.desc("返回我的").click()
+        ui.desc("返回设置").click();visible("关于").click();ui.text("版本 0.5.1");ui.text("GitHub · WhaleToDo");shot("about");ui.desc("返回设置").click();ui.desc("返回我的").click()
         ui.click("日记");ui.click(LocalDate.now().toString());ui.text("查看日记");shot("diary-calendar")
         val day=LocalDate.now().withDayOfMonth(2);ui.click(day.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d, uuuu",java.util.Locale.US)));ui.click("查看日记");ui.text(day.toString())
     }

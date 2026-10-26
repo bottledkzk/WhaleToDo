@@ -212,8 +212,6 @@ internal fun CalendarPage(s: DeskState, onEdit: (TaskRow) -> Unit, onComplete: (
                     Text("● $label", color = color, style = MaterialTheme.typography.labelMedium)
                 }
             }
-            Text("按日涉及事项统计 · 色条比例表示状态", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 7.dp))
         }
         item { DateBar(day, { selected = it.toString(); monthText = YearMonth.from(it).toString() },
             { pickingDate = true }, { onShare(dayText(s, day)) }, dayTasks(s, day).isNotEmpty()) }

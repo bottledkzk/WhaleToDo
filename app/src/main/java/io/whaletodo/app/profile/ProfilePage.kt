@@ -64,28 +64,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
     val context=LocalContext.current
     if(s.page==MyPageRoute.HOME)LazyColumn(Modifier.fillMaxSize(),verticalArrangement=Arrangement.spacedBy(12.dp),contentPadding=PaddingValues(top=18.dp,bottom=30.dp)){
         item{Text("我的",style=MaterialTheme.typography.headlineMedium,fontWeight=FontWeight.Bold)}
-        item{Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer),modifier=Modifier.fillMaxWidth()){
-            Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
-                Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)){
-                    Box(Modifier.clickable{controller.open(MyDialog.AVATAR)}.semantics{contentDescription="编辑头像"}){
-                        ProfileAvatar(s);Text("✎",Modifier.align(Alignment.BottomEnd).background(MaterialTheme.colorScheme.surface,CircleShape).padding(4.dp))}
-                    Column(Modifier.weight(1f)){
-                        Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)){
-                            Text(if(s.access.userId==null)"本机访客" else s.details?.displayName?:"用户",style=MaterialTheme.typography.titleLarge,maxLines=1)
-                            if(s.access.userId!=null&&s.access.vip)Surface(color=Color(0xFFF2D890),shape=CircleShape){Text("♛ VIP",Modifier.padding(horizontal=8.dp,vertical=4.dp),color=Color(0xFF6D4B05),style=MaterialTheme.typography.labelMedium)}
-                        }
-                        if(s.access.userId!=null)Text("ID · ${s.details?.publicId?:s.owner.take(8)}",style=MaterialTheme.typography.bodySmall)
-                        else TextButton(onClick={controller.open(MyDialog.LOGIN)},contentPadding=PaddingValues(0.dp)){Text("登录 / 注册")}
-                    }
-                }
-                Row(verticalAlignment=Alignment.CenterVertically){
-                    Text("${if(s.access.userId==null)0 else s.access.availablePoints} 积分",style=MaterialTheme.typography.titleMedium,
-                        color=if(s.access.userId==null)MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
-                    IconButton(onClick={controller.open(MyDialog.POINTS)},Modifier.size(38.dp).semantics{contentDescription="积分获取途径"}){Text("？")}
-                    Spacer(Modifier.weight(1f));Text("${desk.tasks.count{it.done}} 件已完成",style=MaterialTheme.typography.bodySmall)
-                }
-            }
-        }}
+        item{ProfileHero(s,desk,controller)}
         item{ProfileRow("✓","每日签到","7日打卡 · 坚持有回响"){controller.open(MyDialog.CHECKIN)}}
         item{ProfileRow("＋","充值","积分购买 · 会员充值"){controller.open(MyDialog.RECHARGE_POINTS)}}
         item{ProfileRow("▤","日记","回看每天的小片段"){controller.openDiary(desk.today)}}
@@ -104,16 +83,11 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
                 item{ProfileRow("⌘","账户密码","重置密码"){controller.open(MyDialog.RESET_PASSWORD)}}
                 item{Text("偏好",Modifier.padding(top=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
                 item{ProfileRow("◐","外观设定"){controller.navigate(MyPageRoute.APPEARANCE)}}
-                item{ProfileRow("◷","Working时间","每日默认与星期安排"){controller.navigate(MyPageRoute.WORKING)}}
+                item{ProfileRow("◷","Working时间"){controller.navigate(MyPageRoute.WORKING)}}
                 item{ProfileRow("◎","时间和地区",desk.zoneId){controller.navigate(MyPageRoute.REGION)}}
                 item{ProfileRow("ⓘ","关于"){controller.navigate(MyPageRoute.ABOUT)}}
             }
-            MyPageRoute.ACCOUNT->Column(verticalArrangement=Arrangement.spacedBy(14.dp)){
-                ProfileAvatar(s)
-                if(s.access.userId==null){Text("登录后查看账户信息");Button(onClick={controller.open(MyDialog.LOGIN)}){Text("登录 / 注册")}}
-                else{Text(s.details?.displayName?:"用户",style=MaterialTheme.typography.titleLarge);Text("ID · ${s.details?.publicId?:s.owner.take(8)}");Text("邮箱 · ${s.details?.email?:"—"}")
-                    OutlinedButton(onClick={controller.open(MyDialog.RESET_PASSWORD)}){Text("重置密码")};TextButton(onClick=controller::signOut,enabled=!s.busy){Text("退出登录")}}
-            }
+            MyPageRoute.ACCOUNT->AccountPanel(s,controller)
             MyPageRoute.APPEARANCE->{
                 val prefs=remember{context.getSharedPreferences("appearance",Context.MODE_PRIVATE)}
                 var theme by remember{mutableStateOf(prefs.getString("theme","system"))}
@@ -132,17 +106,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
                         if(override!=null)TextButton(onClick={controller.clearWeekday(n)},enabled=!s.busy){Text("恢复每日默认")}}
                 }
             }
-            MyPageRoute.REGION->{
-                var query by remember{mutableStateOf("")}
-                val custom=s.deviceOptions.find{it.key=="time.zone"}?.value?.takeUnless{it=="system"}
-                val zones=remember(query){if(query.isBlank())listOf("Asia/Shanghai","Asia/Tokyo","America/Los_Angeles","Europe/London","UTC")else ZoneId.getAvailableZoneIds().filter{it.contains(query,true)}.sorted().take(30)}
-                Column{Row(verticalAlignment=Alignment.CenterVertically){Text("跟随系统",Modifier.weight(1f));Switch(custom==null,{controller.saveZone(if(it)"system" else desk.zoneId)},Modifier.semantics{contentDescription="跟随系统时区"})}
-                    Text(desk.zoneId,style=MaterialTheme.typography.bodyMedium)
-                    OutlinedTextField(query,{query=it},label={Text("搜索或自定义时区")},placeholder={Text("Asia/Shanghai 或 +08:00")},singleLine=true,modifier=Modifier.fillMaxWidth())
-                    TextButton(onClick={controller.saveZone(query.trim())},enabled=query.isNotBlank()&&!s.busy){Text("应用自定义时区")}
-                    LazyColumn{items(zones){zone->ListItem(headlineContent={Text(zone)},trailingContent={if(custom==zone)Text("✓")},modifier=Modifier.clickable{controller.saveZone(zone)})}}
-                }
-            }
+            MyPageRoute.REGION->RegionPanel(s,desk,controller)
             MyPageRoute.ABOUT->Column(verticalArrangement=Arrangement.spacedBy(14.dp)){
                 WhaleAvatar(Modifier.size(80.dp));Text("WhaleToDo",style=MaterialTheme.typography.headlineSmall)
                 Text("版本 ${remember{context.packageManager.getPackageInfo(context.packageName,0).versionName}}")

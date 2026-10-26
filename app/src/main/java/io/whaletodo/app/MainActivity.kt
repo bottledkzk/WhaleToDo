@@ -134,7 +134,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 listOf("今天" to "◉", "待办" to "✓", "预览" to "▦", "助手" to "✦", "我的" to "○").forEachIndexed { i, (title, icon) ->
                     NavigationBarItem(
                         selected = tab == i,
-                        onClick = { tab = i },
+                        onClick = { if(tab==4||i==4)vm.profile.leavePage();tab = i },
                         icon = { Text(icon, fontSize = 23.sp) },
                         label = { Text(title) },
                     )

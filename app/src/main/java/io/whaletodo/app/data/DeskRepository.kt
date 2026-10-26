@@ -134,6 +134,37 @@ class DeskRepository(private val db: DeskDatabase) {
         dao.save(DailyWorkTimeRow(date.toString(), start, end))
     }
 
+    /** Explicit user-confirmed conversion; historical instants and durations remain intact. */
+    suspend fun changeZone(choice:DeskZoneChoice,adjustSchedule:Boolean,expected:DeskZoneChoice,expectedZoneId:String?=null) = db.withTransaction {
+        val options=dao.deviceOptions()
+        check(DeskOptions.zoneChoice(options)==expected) { "时区已变化，请重新选择" }
+        val now=System.currentTimeMillis();val from=DeskOptions.zone(options);val to=choice.effective(Instant.ofEpochMilli(now))
+        check(expectedZoneId==null||from.id==expectedZoneId) { "系统时区已变化，请重新选择" }
+        if(adjustSchedule&&from!=to) {
+            val tasks=dao.tasks();val blocks=dao.blocks()
+            val shiftedTasks=tasks.map { t->if(!t.done&&t.deadline>now)t.copy(deadline=DeskZones.moveKeepingLocal(t.deadline,from,to))else t }
+            require(shiftedTasks.none { !it.done&&it.deadline>0&&tasks.first { old->old.id==it.id }.deadline>now&&it.deadline<=now }) { "同步后有截止时间早于现在" }
+            val moved=blocks.filter { !it.done&&it.start>now }.associate { b->
+                val start=DeskZones.moveKeepingLocal(b.start,from,to)
+                require(start>now) { "同步后有安排早于现在" }
+                b.id to b.copy(start=start,end=Math.addExact(start,b.end-b.start))
+            }
+            val result=blocks.map { moved[it.id]?:it }
+            for(b in moved.values) {
+                require(result.none { it.id!=b.id&&it.start<b.end&&it.end>b.start }) { "同步后有安排重叠" }
+                val task=shiftedTasks.find{it.id==b.taskId}
+                require(task==null||task.deadline==0L||b.end<=task.deadline) { "同步后安排晚于截止时间" }
+            }
+            for(b in result.filter{!it.done}) {
+                val task=shiftedTasks.find{it.id==b.taskId}
+                require(task==null||task.done||task.deadline==0L||b.end<=task.deadline) { "同步后安排晚于截止时间" }
+            }
+            shiftedTasks.filterIndexed { i,t->t!=tasks[i] }.forEach { dao.save(it) }
+            if(moved.isNotEmpty()){dao.clearBlocks();dao.insertBlocks(result)}
+        }
+        dao.saveOptions(listOf(UiPreferenceRow("device","time.zone",choice.id),UiPreferenceRow("device","time.dst",choice.daylight.toString())))
+    }
+
     suspend fun snapshot():DeskSnapshot {
         val options=dao.deviceOptions();val zone=DeskOptions.zone(options)
         return DeskSnapshot(dao.tasks(),dao.blocks(),dao.settings()?:SettingRow(),dao.workTimes(),LocalDate.now(zone),zone.id,options)

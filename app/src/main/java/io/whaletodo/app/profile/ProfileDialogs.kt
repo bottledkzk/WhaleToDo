@@ -35,6 +35,8 @@ import kotlinx.coroutines.delay
         MyDialog.RECHARGE_POINTS,MyDialog.RECHARGE_VIP->RechargeDialog(s,controller)
         MyDialog.LOGIN,MyDialog.REGISTER,MyDialog.RESET_PASSWORD->AuthDialog(s,controller)
         MyDialog.AVATAR->AvatarDialog(s,controller)
+        MyDialog.UTC_ZONES->UtcZoneDialog(s,controller)
+        MyDialog.ZONE_CONFIRM->ZoneConfirmation(s,controller)
         MyDialog.REMINDERS->ReminderDefaultsDialog(s,controller)
         MyDialog.DIARY->DiaryDialog(s,controller)
         MyDialog.DIARY_DATE->{val date=LocalDate.parse(s.diary?.date?:desk.today.toString());val picker=rememberDatePickerState(date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
@@ -70,9 +72,7 @@ import kotlinx.coroutines.delay
         ProfileRow("✓","去签到","每日打卡领取积分"){c.open(MyDialog.CHECKIN)}
         ProfileRow("＋","去充值","购买积分"){c.open(MyDialog.RECHARGE_POINTS)}
         ProfileRow("♛","开通VIP","查看会员方案"){c.open(MyDialog.RECHARGE_VIP)}
-        ProfileRow("✎","提出建议","GitHub Issues"){c.dismiss();openProjectLink(context,true)}
-        TextButton(onClick={c.dismiss();openProjectLink(context,true)}){Text("github.com/bottledkzk/WhaleToDo/issues",fontSize=11.sp)}
-        Text("贡献建议的奖励以审核结果为准",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        ProfileRow("✎","提出建议"){c.dismiss();openProjectLink(context,true)}
     }},confirmButton={TextButton(onClick=c::dismiss){Text("关闭")}})
 }
 @Composable private fun RechargeDialog(s:ProfileState,c:ProfileController){
@@ -91,12 +91,15 @@ import kotlinx.coroutines.delay
 @Composable private fun AuthDialog(s:ProfileState,c:ProfileController){
     val register=s.dialog==MyDialog.REGISTER;val reset=s.dialog==MyDialog.RESET_PASSWORD
     var email by remember{mutableStateOf(if(reset)s.details?.email.orEmpty() else "")}
+    var nickname by remember{mutableStateOf(ProfileIdentity.defaultNickname(java.util.UUID.randomUUID().toString()))}
+    var customNickname by remember{mutableStateOf(false)}
     var password by remember{mutableStateOf("")};var confirmation by remember{mutableStateOf("")};var code by remember{mutableStateOf("")}
     var now by remember{mutableLongStateOf(SystemClock.elapsedRealtime())}
     LaunchedEffect(s.codeUntil){while(s.codeUntil>SystemClock.elapsedRealtime()){now=SystemClock.elapsedRealtime();delay(1000)};now=SystemClock.elapsedRealtime()}
     val remaining=if(s.codeEmail==email.trim()&&s.codePurpose==(if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER))((s.codeUntil-now+999)/1000).coerceAtLeast(0)else 0
     AlertDialog(onDismissRequest=c::dismiss,title={Text(if(reset)"重置密码" else if(register)"注册" else "登录")},text={Column(Modifier.heightIn(max=430.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
         OutlinedTextField(email,{if(it.length<=254)email=it},label={Text("邮箱")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.semantics{contentDescription="账户邮箱"})
+        if(register)OutlinedTextField(nickname,{nickname=ProfileIdentity.clipNickname(it);customNickname=true},label={Text("用户昵称")},singleLine=true,modifier=Modifier.fillMaxWidth().semantics{contentDescription="注册昵称"})
         if(register||reset){Row(verticalAlignment=Alignment.CenterVertically){
             OutlinedTextField(code,{if(it.length<=8)code=it.filter(Char::isDigit)},label={Text("邮箱验证码")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.weight(1f).semantics{contentDescription="邮箱验证码"})
             TextButton(onClick={c.requestCode(email,if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER)},enabled=!s.busy&&remaining==0L){Text(if(remaining>0)"${remaining}s" else "发送验证码")}}
@@ -106,7 +109,7 @@ import kotlinx.coroutines.delay
         if(!register&&!reset)Row{TextButton(onClick={c.open(MyDialog.REGISTER)}){Text("注册账户")};TextButton(onClick={c.open(MyDialog.RESET_PASSWORD)}){Text("忘记密码")}}
         if(register||reset)TextButton(onClick={c.open(MyDialog.LOGIN)}){Text("返回登录")}
         DialogError(s)
-    }},confirmButton={TextButton(onClick={c.authenticate(email,password,code,register,reset)},enabled=!s.busy&&email.isNotBlank()&&password.isNotBlank()&&(!(register||reset)||code.isNotBlank()&&confirmation==password)){
+    }},confirmButton={TextButton(onClick={c.authenticate(email,password,code,register,reset,if(customNickname)nickname else null)},enabled=!s.busy&&email.isNotBlank()&&password.isNotBlank()&&(!register||runCatching{ProfileIdentity.nickname(nickname)}.isSuccess)&&(!(register||reset)||code.isNotBlank()&&confirmation==password)){
         Text(if(reset)"重置密码" else if(register)"创建账户" else "登录")}},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("取消")}})
 }
 @Composable private fun AvatarDialog(s:ProfileState,c:ProfileController){
