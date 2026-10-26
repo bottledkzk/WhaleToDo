@@ -642,52 +642,68 @@ export class PrismaRepository implements AccountRepository {
     ip?: string;
     scopeSecret?: string;
   }): Promise<{ sent: boolean; retryAfterMs: number }> {
+    if (!input.scopeSecret) {
+      throw new Error('sendEmailCode 需要 scopeSecret（服务端配置，禁止可预测回退）');
+    }
+    const secret = input.scopeSecret;
     const now = new Date(input.now);
     const windowStart = new Date(Math.floor(input.now / 3_600_000) * 3_600_000);
-    const secret = input.scopeSecret || 'whaletodo-email-scope';
 
-    return this.prisma.$transaction(async (tx) => {
-      const bump = async (scope: string, scopeKey: string): Promise<number> => {
-        const rows = await tx.$queryRaw<{ count: number }[]>`
-          INSERT INTO email_throttle (scope, scope_key, window_start, count, updated_at)
-          VALUES (${scope}, ${scopeKey}, ${windowStart}, 1, ${now})
-          ON CONFLICT (scope, scope_key, window_start)
-          DO UPDATE SET count = email_throttle.count + 1, updated_at = ${now}
-          RETURNING count`;
-        return rows[0]?.count ?? 1;
-      };
-
-      // 先原子计数再判断：与内存实现一致，限流命中也会占用窗口计数
-      const emailCount = await bump('email', emailScopeKey(secret, input.email));
-      const ipCount = input.ip ? await bump('ip', emailScopeKey(secret, input.ip)) : 0;
-      await bump('global', 'all');
-
-      // 60 秒重发间隔：以该 (email,purpose) 最新一条码的 created_at 为准
-      const lastRows = await tx.$queryRaw<{ created_at: Date }[]>`
-        SELECT created_at FROM email_verifications
-         WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
-         ORDER BY created_at DESC LIMIT 1`;
-      const last = lastRows[0];
-      if (last) {
-        const elapsed = input.now - last.created_at.getTime();
-        if (elapsed < RESEND_INTERVAL_MS) {
-          return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // 先判 60 秒冷却：被拒请求直接返回，不写 email_throttle（不占小时配额）
+        const lastRows = await tx.$queryRaw<{ created_at: Date }[]>`
+          SELECT created_at FROM email_verifications
+           WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
+           ORDER BY created_at DESC LIMIT 1`;
+        const last = lastRows[0];
+        if (last) {
+          const elapsed = input.now - last.created_at.getTime();
+          if (elapsed < RESEND_INTERVAL_MS) {
+            return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
+          }
         }
-      }
-      if (emailCount > MAX_SENDS_PER_HOUR || ipCount > MAX_SENDS_PER_HOUR) {
-        return { sent: false, retryAfterMs: windowStart.getTime() + 3_600_000 - input.now };
-      }
 
-      // 同一 (email,purpose) 只保留一条未消费码：先作废旧码
-      await tx.$executeRaw`
-        UPDATE email_verifications SET consumed_at = ${now}
-         WHERE email_normalized = ${input.email} AND purpose = ${input.purpose} AND consumed_at IS NULL`;
-      await tx.$executeRaw`
-        INSERT INTO email_verifications (id, purpose, email_normalized, code_hmac, attempts, expires_at, created_at)
-        VALUES (${randomUUID()}::uuid, ${input.purpose}, ${input.email}, ${input.codeDigest}, 0,
-                ${new Date(input.now + input.ttlMs)}, ${now})`;
-      return { sent: true, retryAfterMs: 0 };
-    });
+        // 通过冷却后再原子计数（email / ip / global）
+        const bump = async (scope: string, scopeKey: string): Promise<number> => {
+          const rows = await tx.$queryRaw<{ count: number }[]>`
+            INSERT INTO email_throttle (scope, scope_key, window_start, count, updated_at)
+            VALUES (${scope}, ${scopeKey}, ${windowStart}, 1, ${now})
+            ON CONFLICT (scope, scope_key, window_start)
+            DO UPDATE SET count = email_throttle.count + 1, updated_at = ${now}
+            RETURNING count`;
+          return rows[0]?.count ?? 1;
+        };
+        const emailCount = await bump('email', emailScopeKey(secret, input.email));
+        const ipCount = input.ip ? await bump('ip', emailScopeKey(secret, input.ip)) : 0;
+        await bump('global', 'all');
+
+        if (emailCount > MAX_SENDS_PER_HOUR || ipCount > MAX_SENDS_PER_HOUR) {
+          return { sent: false, retryAfterMs: windowStart.getTime() + 3_600_000 - input.now };
+        }
+
+        // 同一 (email,purpose) 只保留一条未消费码：作废冷却窗口之前的旧码。
+        // 加 created_at 条件是为了并发安全：另一个请求刚插入的新码不能被本事务误作废，
+        // 否则唯一索引不会冲突，两个请求会都返回 sent:true（先插入的码被后到者消费）。
+        await tx.$executeRaw`
+          UPDATE email_verifications SET consumed_at = ${now}
+           WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
+             AND consumed_at IS NULL
+             AND created_at <= ${new Date(input.now - RESEND_INTERVAL_MS)}`;
+        await tx.$executeRaw`
+          INSERT INTO email_verifications (id, purpose, email_normalized, code_hmac, attempts, expires_at, created_at)
+          VALUES (${randomUUID()}::uuid, ${input.purpose}, ${input.email}, ${input.codeDigest}, 0,
+                  ${new Date(input.now + input.ttlMs)}, ${now})`;
+        return { sent: true, retryAfterMs: 0 };
+      });
+    } catch (err) {
+      // 并发同邮箱发码撞 email_verifications_unconsumed：按冷却中返回，不 500。
+      // 只吞该表这个唯一冲突；其他 P2010 / 23505 继续抛。
+      if (isEmailVerificationUniqueViolation(err)) {
+        return { sent: false, retryAfterMs: RESEND_INTERVAL_MS };
+      }
+      throw err;
+    }
   }
 
   async verifyEmailCode(input: {
@@ -825,6 +841,18 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * 只识别 email_verifications 的唯一冲突（并发发码）。
+ * 复用 isUniqueViolation 判断 P2002 / P2010+23505，再要求错误信息包含该表名；
+ * 其他表的唯一冲突不能被这里吞掉。
+ */
+function isEmailVerificationUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { meta?: { message?: string }; message?: string };
+  const message = e.meta?.message ?? e.message ?? '';
+  return message.includes('email_verifications');
 }
 
 /**

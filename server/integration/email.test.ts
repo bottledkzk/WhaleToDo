@@ -90,7 +90,7 @@ test('发码只存 HMAC 摘要，email/global 限流行按实际列名写入', a
   assert.deepEqual(throttle.rows.map((r: { count: number }) => r.count), [1, 1]);
 });
 
-test('60 秒内二次发送被拒，global 计数递增', async () => {
+test('60 秒内二次发送被拒，且被拒请求不占配额', async () => {
   const now = FIXED_NOW;
   assert.equal((await send(EMAIL, CODE, now)).sent, true);
 
@@ -99,9 +99,61 @@ test('60 秒内二次发送被拒，global 计数递增', async () => {
   assert.ok(second.retryAfterMs > 0);
 
   const global = await owner.query("SELECT count FROM email_throttle WHERE scope='global'");
-  assert.equal(global.rows[0].count, 2, 'global 维度应累计每次尝试');
+  assert.equal(global.rows[0].count, 1, '被冷却拒绝的请求不写 global 计数');
   const email = await owner.query("SELECT count FROM email_throttle WHERE scope='email'");
-  assert.equal(email.rows[0].count, 2);
+  assert.equal(email.rows[0].count, 1, '被冷却拒绝的请求不占 email 配额');
+});
+
+test('并发同邮箱发码：一个 sent:true、一个 sent:false，不抛异常，只留 1 条未消费码', async () => {
+  const now = FIXED_NOW;
+  const results = await Promise.all([
+    send(EMAIL, '111111', now),
+    send(EMAIL, '222222', now),
+  ]);
+  assert.equal(results.filter((r) => r.sent).length, 1, '并发只能有一个真正发码');
+  assert.equal(results.filter((r) => !r.sent).length, 1, '另一个应按冷却返回 false');
+  const rejected = results.find((r) => !r.sent)!;
+  assert.ok(rejected.retryAfterMs > 0, 'sent:false 应带 retryAfterMs');
+
+  const unconsumed = await owner.query(
+    `SELECT count(*)::int AS n FROM email_verifications
+      WHERE email_normalized = $1 AND purpose = $2 AND consumed_at IS NULL`,
+    [EMAIL, PURPOSE],
+  );
+  assert.equal(unconsumed.rows[0].n, 1, '未消费码只能剩 1 行');
+});
+
+test('61 秒间隔连发 5 次成功，第 6 次被小时配额拒绝', async () => {
+  const now = FIXED_NOW;
+  for (let i = 0; i < 5; i += 1) {
+    const result = await send(EMAIL, CODE, now + i * 61_000);
+    assert.equal(result.sent, true, `第 ${i + 1} 次应成功`);
+    assert.equal(result.retryAfterMs, 0);
+  }
+
+  const sixth = await send(EMAIL, CODE, now + 5 * 61_000);
+  assert.equal(sixth.sent, false);
+  assert.ok(sixth.retryAfterMs > 0);
+
+  const emailThrottle = await owner.query("SELECT count FROM email_throttle WHERE scope='email'");
+  assert.equal(emailThrottle.rows[0].count, 6, '第 6 次先计数后拒绝');
+  const unconsumed = await owner.query(
+    'SELECT count(*)::int AS n FROM email_verifications WHERE consumed_at IS NULL',
+  );
+  assert.equal(unconsumed.rows[0].n, 1, '第 6 次不应插入新码');
+});
+
+test('缺 scopeSecret 直接报错，不留可预测回退', async () => {
+  await assert.rejects(
+    repo.sendEmailCode!({
+      purpose: PURPOSE,
+      email: EMAIL,
+      codeDigest: digestFor(EMAIL, CODE),
+      now: FIXED_NOW,
+      ttlMs: CODE_TTL_MS,
+    }),
+    /scopeSecret/,
+  );
 });
 
 test('发新码作废旧码：第一次的码校验失败，第二次的码成功', async () => {

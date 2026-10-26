@@ -76,9 +76,43 @@ describe('邮箱验证码（内存路径）', () => {
 
     const second = await sendCode();
     assert.equal(second.statusCode, 202, second.body);
-    assert.equal(second.json().data.sent, true);
+    assert.equal(second.json().data.sent, false, '60 秒内重发必须返回 sent:false');
     assert.ok(second.json().data.retry_after_ms > 0, '60 秒内重发应给出等待时间');
     assert.equal(sentCodes.length, 1, 'sent:false 时不得调用 emailCodeSink');
+  });
+
+  test('purpose 缺省 register：发码/校验都不传 purpose 也能走通', async () => {
+    const sent = await inject({
+      method: 'POST', url: '/api/v1/auth/email/send-code', payload: { email: EMAIL },
+    });
+    assert.equal(sent.statusCode, 202, sent.body);
+    assert.equal(sent.json().data.sent, true);
+
+    const code = latestCode();
+    const verified = await inject({
+      method: 'POST', url: '/api/v1/auth/email/verify', payload: { email: EMAIL, code },
+    });
+    assert.equal(verified.statusCode, 200, verified.body);
+    assert.equal(verified.json().data.expires_in, 60);
+  });
+
+  test('被冷却拒绝的请求不占小时配额（内存仓储）', async () => {
+    const base = Date.UTC(2026, 5, 1, 12, 0, 0);
+    const repo = new MemoryRepository(createMemoryStore(), () => base);
+    const email = 'cooldown@example.invalid';
+    const digest = 'a'.repeat(64);
+    const sendAt = (now: number) => repo.sendEmailCode({
+      purpose: 'register', email, codeDigest: digest, now, ttlMs: 300_000,
+    });
+
+    assert.equal((await sendAt(base)).sent, true);
+    const rejected = await sendAt(base + 1_000);
+    assert.equal(rejected.sent, false);
+    assert.ok(rejected.retryAfterMs > 0);
+    assert.equal((await sendAt(base + 61_000)).sent, true, '61 秒后可重发');
+
+    assert.equal(repo.store.emailSends.get(`email:${email}`)?.count, 2, '被拒请求不占 email 配额');
+    assert.equal(repo.store.emailSends.get('global:all')?.count, 2, '被拒请求不占 global 计数');
   });
 
   test('错误码 → 400，且错误信息不区分错误/过期/格式', async () => {

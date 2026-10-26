@@ -348,7 +348,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 邮箱验证码（注册/重置/绑定前置） ---------- */
   app.post('/api/v1/auth/email/send-code', async (req, reply) => {
     const body = (req.body ?? {}) as { purpose?: string; email?: string };
-    const purpose = assertPurpose(body.purpose);
+    const purpose = assertPurpose(body.purpose ?? 'register');
     const email = assertEmail(body.email);
     if (!repo.sendEmailCode) throw new ApiError('INTERNAL', '当前仓储未实现邮箱验证码');
 
@@ -367,13 +367,13 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (result.sent && deps.emailCodeSink) {
       await deps.emailCodeSink({ purpose, email, code });
     }
-    // 一律 202：是否命中限流、邮箱是否已注册都不对外暴露
-    return reply.code(202).send(ok(req.requestId, { sent: true, retry_after_ms: result.retryAfterMs }));
+    // 一律 202：是否命中限流、邮箱是否已注册都不对外暴露；sent 取仓储真实结果
+    return reply.code(202).send(ok(req.requestId, { sent: result.sent, retry_after_ms: result.retryAfterMs }));
   });
 
   app.post('/api/v1/auth/email/verify', async (req) => {
     const body = (req.body ?? {}) as { purpose?: string; email?: string; code?: string };
-    const purpose = assertPurpose(body.purpose);
+    const purpose = assertPurpose(body.purpose ?? 'register');
     const email = assertEmail(body.email);
     const code = String(body.code ?? '').trim();
     if (!/^\d{6}$/.test(code)) throw invalidCodeError();

@@ -459,17 +459,19 @@ export class MemoryRepository {
       return row.count;
     };
 
-    // 先计数再判断：与 Prisma 实现一致，限流命中也会占用窗口计数
-    const emailCount = bump('email', input.email);
-    const ipCount = input.ip ? bump('ip', input.ip) : 0;
-    bump('global', 'all');
-
+    // 先判 60 秒冷却：被拒请求直接返回，不写 emailSends（不占小时配额）
     if (existing) {
       const elapsed = input.now - existing.createdAt;
       if (elapsed < RESEND_INTERVAL_MS) {
         return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
       }
     }
+
+    // 通过冷却后再计数（email / ip / global）
+    const emailCount = bump('email', input.email);
+    const ipCount = input.ip ? bump('ip', input.ip) : 0;
+    bump('global', 'all');
+
     if (emailCount > MAX_SENDS_PER_HOUR || ipCount > MAX_SENDS_PER_HOUR) {
       return { sent: false, retryAfterMs: windowStart + 3_600_000 - input.now };
     }
