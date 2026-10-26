@@ -43,6 +43,10 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     revokeFamily: async (familyId) => repo.revokeFamily(familyId),
     walletOf: async (userId) => repo.walletOf(userId),
     setWallet: async (userId, wallet) => { repo.setWallet(userId, wallet); },
+    // 同步：默认路径（无 DATABASE_URL）返回 fromSync(new MemoryRepository())，
+    // 这里漏转发会让合法 push/pull 直接 500（#12 评审 P1）
+    pushSyncBatch: async (input) => repo.pushSyncBatch(input),
+    pullSyncChanges: async (userId, cursor, limit) => repo.pullSyncChanges(userId, cursor, limit),
     // 签到/流水：内存实现有同名方法，直接转发（Prisma 实现则用自己的）
     dailyStatus: async (input) => repo.dailyStatus(input),
     hasClaimedDaily: async (userId, businessDate, rewardType) => repo.hasClaimedDaily(userId, businessDate, rewardType),

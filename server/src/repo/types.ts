@@ -2,6 +2,7 @@
 // 目的：把"换持久化"变成纯替换，路由层不改；契约测试（test/repository-contract.test.ts）
 // 对任何实现跑同一套断言。
 import type { Wallet } from '../domain/ledger.ts';
+import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 
 export interface RepoUser {
   id: string;
@@ -109,6 +110,31 @@ export interface AccountRepository {
       createdAt: number;
     }>;
     nextCursor: { createdAt: number; id: string } | null;
+  }>;
+  /** 同步：推送一批变更（事务内 set_config + 批次幂等 + 逐项明细 + 变更序列） */
+  pushSyncBatch?(input: {
+    userId: string;
+    batchId: string;
+    deviceId: string;
+    fingerprint: string;
+    mutations: SyncMutationInput[];
+  }): Promise<{
+    replayed: boolean;
+    status: 'applied' | 'partial' | 'rejected';
+    items: SyncMutationResult[];
+  }>;
+  /** 同步：按变更序列拉取（游标为 seq） */
+  pullSyncChanges?(userId: string, cursor: number, limit: number): Promise<{
+    changes: Array<{
+      seq: number;
+      objectType: string;
+      objectId: string;
+      version: number;
+      deleted: boolean;
+      payload: unknown;
+    }>;
+    nextCursor: number;
+    hasMore: boolean;
   }>;
   claimDailyReward?(input: {
     userId: string;

@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
+import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
+import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
@@ -362,6 +364,146 @@ export class PrismaRepository implements AccountRepository {
     };
   }
 
+  async pushSyncBatch(input: {
+    userId: string;
+    batchId: string;
+    deviceId: string;
+    fingerprint: string;
+    mutations: SyncMutationInput[];
+  }): Promise<{ replayed: boolean; status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }> {
+    return this.prisma.$transaction(async (tx) => {
+      // 内容表与批次表都受 RLS 保护：本事务内设置认证用户
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
+
+      // P1：同账号所有同步写入串行化（账号级事务锁，先于任何读版本/写 seq）。
+      // 这样 seq 的分配顺序与提交顺序一致：不会出现"小 seq 的事务后提交"，
+      // pull 推进到较大 seq 后也不会永久漏掉那条小 seq 记录；
+      // 同对象的两个 expected_version 相同更新也只会有一个成功。
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`;
+
+      // 批次幂等：UNIQUE(user_id, batch_id)
+      const batchRowId = randomUUID();
+      const inserted = await tx.$executeRaw`
+        INSERT INTO sync_batches (id, user_id, batch_id, device_id, fingerprint, status)
+        VALUES (${batchRowId}::uuid, ${input.userId}::uuid, ${input.batchId}::uuid, ${input.deviceId}, ${input.fingerprint}, 'processing')
+        ON CONFLICT (user_id, batch_id) DO NOTHING`;
+
+      if (inserted === 0) {
+        const existing = await tx.$queryRaw<{ status: string; response: unknown; fingerprint: string }[]>`
+          SELECT status, response, fingerprint FROM sync_batches
+           WHERE user_id = ${input.userId}::uuid AND batch_id = ${input.batchId}::uuid`;
+        const row = existing[0];
+        // 同 batch_id 不同内容必须拒绝，否则新请求会被静默丢弃（评审 P2）
+        if (row && row.fingerprint !== input.fingerprint) throw new SyncBatchConflict();
+        if (row?.response) {
+          const saved = row.response as { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] };
+          return { replayed: true, status: saved.status, items: saved.items };
+        }
+        throw new Error('SYNC_BATCH_PENDING');
+      }
+
+      const items: SyncMutationResult[] = [];
+      for (const m of input.mutations) {
+        // 未知类型/操作：先判定，避免对非法 object_id 做 UUID 查询（评审 P2）
+        if (!isObjectType(m.objectType) || !isSyncOp(m.op)) {
+          const decided = decideMutation(null, m);
+          items.push({
+            object_type: m.objectType,
+            object_id: m.objectId,
+            op: m.op,
+            result: decided.result,
+            server_version: null,
+            ...(decided.reason ? { reason: decided.reason } : {}),
+          });
+          continue;
+        }
+        // 当前对象版本：取该对象最新一条变更
+        const currentRows = await tx.$queryRaw<{ version: number; deleted: boolean }[]>`
+          SELECT version, deleted FROM sync_changes
+           WHERE user_id = ${input.userId}::uuid
+             AND object_type = ${m.objectType}
+             AND object_id = ${m.objectId}::uuid
+           ORDER BY seq DESC LIMIT 1`;
+        const current = currentRows[0] ? { version: currentRows[0].version, deleted: currentRows[0].deleted } : null;
+
+        const decided = decideMutation(current, m);
+        let serverVersion = decided.serverVersion;
+
+        if (decided.result === 'applied') {
+          serverVersion = decided.serverVersion ?? 1;
+          try {
+            await tx.$executeRaw`
+              INSERT INTO sync_changes (user_id, object_type, object_id, version, deleted, payload)
+              VALUES (${input.userId}::uuid, ${m.objectType}, ${m.objectId}::uuid, ${serverVersion}, ${m.op === 'delete'}, ${JSON.stringify(m.payload ?? null)}::jsonb)`;
+          } catch (err) {
+            // 只把 sync_changes_payload_check 的 23514 翻译成 400；其他 P2010/23514 继续传播
+            if (isPayloadTooLargeViolation(err)) throw new SyncPayloadTooLarge();
+            throw err;
+          }
+        }
+
+        // sync_mutations 上有 CHECK(object_type IN 五种) 与 CHECK(op IN 三种)，
+        // 未知类型/操作的 rejected 写不进去；这类拒绝只记录在批次 response 里。
+        if (isObjectType(m.objectType) && isSyncOp(m.op)) {
+          await tx.$executeRaw`
+            INSERT INTO sync_mutations
+              (id, batch_id, mutation_id, object_type, object_id, op, result, server_version)
+            VALUES (${randomUUID()}::uuid, ${batchRowId}::uuid, ${randomUUID()}::uuid,
+                    ${m.objectType}, ${m.objectId}::uuid, ${m.op}, ${decided.result}, ${serverVersion})`;
+        }
+
+        items.push({
+          object_type: m.objectType,
+          object_id: m.objectId,
+          op: m.op,
+          result: decided.result,
+          server_version: serverVersion,
+          ...(decided.reason ? { reason: decided.reason } : {}),
+        });
+      }
+
+      const status = batchStatus(items);
+      await tx.$executeRaw`
+        UPDATE sync_batches SET status = ${status}, response = ${JSON.stringify({ status, items })}::jsonb
+         WHERE id = ${batchRowId}::uuid`;
+
+      return { replayed: false, status, items };
+    });
+  }
+
+  async pullSyncChanges(userId: string, cursor: number, limit: number): Promise<{
+    changes: Array<{ seq: number; objectType: string; objectId: string; version: number; deleted: boolean; payload: unknown }>;
+    nextCursor: number;
+    hasMore: boolean;
+  }> {
+    const size = Math.min(Math.max(limit, 1), 200);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
+      const rows = await tx.$queryRaw<Array<{
+        seq: bigint; object_type: string; object_id: string; version: number; deleted: boolean; payload: unknown;
+      }>>`
+        SELECT seq, object_type, object_id, version, deleted, payload
+          FROM sync_changes
+         WHERE user_id = ${userId}::uuid AND seq > ${cursor}
+         ORDER BY seq ASC
+         LIMIT ${size + 1}`;
+      const page = rows.slice(0, size);
+      const last = page[page.length - 1];
+      return {
+        changes: page.map((r) => ({
+          seq: Number(r.seq),
+          objectType: r.object_type,
+          objectId: r.object_id,
+          version: r.version,
+          deleted: r.deleted,
+          payload: r.payload,
+        })),
+        nextCursor: last ? Number(last.seq) : cursor,
+        hasMore: rows.length > size,
+      };
+    });
+  }
+
   async hasClaimedDaily(userId: string, businessDate: string, rewardType: string): Promise<boolean> {
     const rows = await this.prisma.$queryRaw<{ one: number }[]>`
       SELECT 1 AS one FROM daily_claims
@@ -545,5 +687,19 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * jsonb 大小约束冲突识别：
+ *  - 原生 $executeRaw：P2010，meta.code === '23514'（PostgreSQL check_violation）
+ *  - 且约束名必须是 sync_changes_payload_check
+ * 其他 23514（别的 CHECK）与 P2010 必须继续传播，不能被笼统吞。
+ */
+function isPayloadTooLargeViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: string; meta?: { code?: string; message?: string }; message?: string };
+  if (e.code !== 'P2010' || e.meta?.code !== '23514') return false;
+  const message = e.meta?.message ?? e.message ?? '';
+  return message.includes('sync_changes_payload_check');
 }
 
