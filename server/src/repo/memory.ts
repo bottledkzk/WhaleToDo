@@ -164,6 +164,8 @@ export class MemoryRepository {
     now: number;
   }): Promise<User> {
     const email = input.email.trim().toLowerCase();
+    // 内存实现是单线程，不需要 advisory lock；先查占用再消费，
+    // 与 Prisma 的“锁 + 拿锁后重查”语义一致。
     const ticket = this.store.emailTickets.get(input.ticketDigest);
     // 先判 ticket 有效性（不消费）：同 ticket 二次注册应返回 TICKET_INVALID，
     // 而不是先看到邮箱已存在

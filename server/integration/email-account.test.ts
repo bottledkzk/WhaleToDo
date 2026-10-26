@@ -1,6 +1,7 @@
 // T15：邮箱账户真库集成测试（database job：PG16 + 受限 whaletodo_app）。
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import { PrismaRepository } from '../src/repo/prisma.ts';
@@ -104,6 +105,96 @@ test('邮箱唯一冲突：409 语义，ticket 不被消费', async () => {
   assert.equal(rows.rows[0].consumed_at, null, '邮箱冲突必须回滚 ticket 消费');
   const count = await owner.query('SELECT count(*)::int AS n FROM users');
   assert.equal(count.rows[0].n, 1);
+});
+
+test('并发同邮箱两个 ticket：一个成功、一个 EMAIL_TAKEN，失败方 ticket 未消费', async () => {
+  const email = 'race@example.invalid';
+  const firstTicket = await issueTicket('register', email);
+  const secondTicket = await issueTicket('register', email);
+
+  const results = await Promise.allSettled([
+    repo.createUserWithEmail!({
+      email, password: PASSWORD, ticketDigest: firstTicket.digest, now: Date.now(),
+    }),
+    repo.createUserWithEmail!({
+      email, password: PASSWORD, ticketDigest: secondTicket.digest, now: Date.now(),
+    }),
+  ]);
+  const fulfilled = results.filter((r) => r.status === 'fulfilled');
+  const rejected = results.filter((r) => r.status === 'rejected');
+  assert.equal(fulfilled.length, 1, '并发只能有一个注册成功');
+  assert.equal(rejected.length, 1, '另一个必须失败');
+
+  const failed = (rejected[0] as PromiseRejectedResult).reason;
+  assert.ok(failed instanceof EmailAccountConflict && failed.kind === 'EMAIL_TAKEN');
+
+  const count = await owner.query('SELECT count(*)::int AS n FROM users');
+  assert.equal(count.rows[0].n, 1);
+
+  // 成功方的 ticket 已消费；失败方保持未消费
+  const firstConsumed = await owner.query(
+    'SELECT consumed_at FROM email_verify_tickets WHERE token_hmac=$1', [firstTicket.digest],
+  );
+  const secondConsumed = await owner.query(
+    'SELECT consumed_at FROM email_verify_tickets WHERE token_hmac=$1', [secondTicket.digest],
+  );
+  const states = [firstConsumed.rows[0].consumed_at, secondConsumed.rows[0].consumed_at];
+  assert.equal(states.filter((v) => v !== null).length, 1);
+  assert.equal(states.filter((v) => v === null).length, 1);
+});
+
+test('disabled 用户占用邮箱：新 ticket 注册同邮箱 → EMAIL_TAKEN，不 500', async () => {
+  const email = 'disabled@example.invalid';
+  const userId = randomUUID();
+  await owner.query(
+    `INSERT INTO users (id, username, email, password_hash, display_name, status, created_at, updated_at)
+     VALUES ($1, 'disabled_owner', $2, 'scrypt$synthetic-disabled', 'Disabled', 'disabled', now(), now())`,
+    [userId, email],
+  );
+
+  const ticket = await issueTicket('register', email);
+  await assert.rejects(
+    repo.createUserWithEmail!({
+      email, password: PASSWORD, ticketDigest: ticket.digest, now: Date.now(),
+    }),
+    (err: unknown) => err instanceof EmailAccountConflict && err.kind === 'EMAIL_TAKEN',
+  );
+
+  const consumed = await owner.query(
+    'SELECT consumed_at FROM email_verify_tickets WHERE token_hmac=$1', [ticket.digest],
+  );
+  assert.equal(consumed.rows[0].consumed_at, null, 'disabled 占用也必须不消费 ticket');
+  const count = await owner.query('SELECT count(*)::int AS n FROM users');
+  assert.equal(count.rows[0].n, 1);
+});
+
+test('两个用户并发 bind 同一邮箱：一个 ok、一个 email_taken，失败方 ticket 未消费', async () => {
+  const email = 'bind-race@example.invalid';
+  const a = await repo.createUser('bind_race_a', PASSWORD);
+  const b = await repo.createUser('bind_race_b', PASSWORD);
+  const ticketA = await issueTicket('bind', email);
+  const ticketB = await issueTicket('bind', email);
+
+  const results = await Promise.all([
+    repo.bindEmailWithTicket!({ userId: a.id, email, ticketDigest: ticketA.digest, now: Date.now() }),
+    repo.bindEmailWithTicket!({ userId: b.id, email, ticketDigest: ticketB.digest, now: Date.now() }),
+  ]);
+  assert.deepEqual([...results].sort(), ['email_taken', 'ok']);
+
+  const owners = await owner.query(
+    "SELECT id FROM users WHERE lower(email) = lower($1) AND email IS NOT NULL", [email],
+  );
+  assert.equal(owners.rowCount, 1, '邮箱只能归一人');
+
+  const consumedA = await owner.query(
+    'SELECT consumed_at FROM email_verify_tickets WHERE token_hmac=$1', [ticketA.digest],
+  );
+  const consumedB = await owner.query(
+    'SELECT consumed_at FROM email_verify_tickets WHERE token_hmac=$1', [ticketB.digest],
+  );
+  const states = [consumedA.rows[0].consumed_at, consumedB.rows[0].consumed_at];
+  assert.equal(states.filter((v) => v !== null).length, 1);
+  assert.equal(states.filter((v) => v === null).length, 1);
 });
 
 test('重置：改密并撤销该用户全部会话，其他用户会话不受影响', async () => {

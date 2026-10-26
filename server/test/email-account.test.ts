@@ -133,6 +133,22 @@ describe('邮箱账户（内存路径）', () => {
     assert.equal(wrongPurpose.statusCode, 400);
   });
 
+  test('同邮箱两个 register ticket：第二个 409，第二个 ticket 不消费', async () => {
+    const email = 'second-ticket@example.invalid';
+    const firstTicket = await ticketViaSink(email, 'register');
+    assert.equal((await registerEmail(email, firstTicket)).statusCode, 201);
+
+    const secondTicket = seedTicket(email, 'register');
+    const second = await registerEmail(email, secondTicket);
+    assert.equal(second.statusCode, 409, second.body);
+    assert.equal(second.json().error.code, 'CONFLICT');
+    assert.equal(
+      repo.store.emailTickets.get(ticketDigest(secondTicket))?.consumedAt,
+      null,
+      '409 时第二个 ticket 必须仍未消费',
+    );
+  });
+
   test('登录二选一：同时传 username+email → 400；只传 email 成功；密码错 401', async () => {
     const email = 'login@example.invalid';
     const ticket = await ticketViaSink(email, 'register');

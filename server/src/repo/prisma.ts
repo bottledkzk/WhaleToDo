@@ -339,6 +339,13 @@ export class PrismaRepository implements AccountRepository {
     if (await this.findUserByEmail(email)) throw new EmailAccountConflict('EMAIL_TAKEN');
 
     return this.prisma.$transaction(async (tx) => {
+      // 邮箱级事务咨询锁：同邮箱的注册/绑定串行化，避免并发插入撞唯一键
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(lower(${email})))`;
+      // 拿到锁后、消费 ticket 前，按邮箱重查（不带 status；disabled 也算占用）
+      const emailRows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM users WHERE lower(email) = lower(${email}) LIMIT 1`;
+      if (emailRows.length > 0) throw new EmailAccountConflict('EMAIL_TAKEN');
+
       // 消费与建号同事务：后续任何失败都会回滚 consumed_at
       const consumed = await tx.$executeRaw`
         UPDATE email_verify_tickets SET consumed_at = ${nowDate}
@@ -448,6 +455,13 @@ export class PrismaRepository implements AccountRepository {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        // 邮箱级事务咨询锁 + 拿锁后按邮箱重查（不带 status）
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(lower(${email})))`;
+        const emailRows = await tx.$queryRaw<{ id: string }[]>`
+          SELECT id FROM users WHERE lower(email) = lower(${email}) LIMIT 1`;
+        const ownerAfterLock = emailRows[0];
+        if (ownerAfterLock && ownerAfterLock.id !== input.userId) return 'email_taken';
+
         const consumed = await tx.$executeRaw`
           UPDATE email_verify_tickets SET consumed_at = ${nowDate}
            WHERE token_hmac = ${input.ticketDigest}
