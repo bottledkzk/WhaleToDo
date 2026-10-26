@@ -63,7 +63,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     ],
   };
   const app = Fastify({
-    logger: deps.logger ? { ...loggerOptions, ...(config.logFile ? { file: config.logFile } : {}) } : false,
+    // 显式传入 logger 用传入的；否则只有在配置了 LOG_FILE 时才开启（测试默认保持静默）
+    logger: (deps.logger ?? (config.logFile ? true : false))
+      ? { ...loggerOptions, ...(config.logFile ? { file: config.logFile } : {}) }
+      : false,
     disableRequestLogging: true,
     trustProxy: config.trustProxy,
     genReqId: () => randomUUID(),
@@ -98,6 +101,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     }
     const status = (err as { statusCode?: number }).statusCode ?? 500;
     if (status === 400) {
+      // 畸形 JSON / 框架层 400 也要带错误码，否则访问日志的 error_code 为空（评审补充）
+      (reply as FastifyReply & { errorCode?: string }).errorCode = 'VALIDATION_ERROR';
       return reply.code(400).send(new ApiError('VALIDATION_ERROR', err instanceof Error ? err.message : '请求无效').toBody(req.requestId));
     }
     // 只记受控字段：数据库异常文本会把用户参数（如非法 batch_id）原样带出，
