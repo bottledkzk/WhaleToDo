@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoUser } from './types.ts';
-import { decideMutation, batchStatus } from '../domain/sync.ts';
+import { decideMutation, batchStatus, SyncBatchConflict } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 
 export interface User {
@@ -42,7 +42,7 @@ export interface MemoryStore {
   /** 同步：变更序列（全局单调递增，按用户过滤） */
   syncChanges: Array<{ seq: number; userId: string; objectType: string; objectId: string; version: number; deleted: boolean; payload: unknown }>;
   /** 同步：批次回执 key=`${userId}:${batchId}` */
-  syncBatches: Map<string, { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }>;
+  syncBatches: Map<string, { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[]; fingerprint: string }>;
   /** 同步：序列计数器 */
   syncSeq: number;
   /** 账本流水（内存实现，接 Prisma 后由 point_ledger 承担） */
@@ -240,7 +240,10 @@ export class MemoryRepository {
   }): Promise<{ replayed: boolean; status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] }> {
     const batchKey = `${input.userId}:${input.batchId}`;
     const cached = this.store.syncBatches.get(batchKey);
-    if (cached) return { replayed: true, ...cached };
+    if (cached) {
+      if (cached.fingerprint !== input.fingerprint) throw new SyncBatchConflict();
+      return { replayed: true, status: cached.status, items: cached.items };
+    }
 
     const items: SyncMutationResult[] = [];
     for (const m of input.mutations) {
@@ -277,7 +280,7 @@ export class MemoryRepository {
       });
     }
     const status = batchStatus(items);
-    this.store.syncBatches.set(batchKey, { status, items });
+    this.store.syncBatches.set(batchKey, { status, items, fingerprint: input.fingerprint });
     return { replayed: false, status, items };
   }
 

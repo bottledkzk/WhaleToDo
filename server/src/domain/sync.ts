@@ -36,6 +36,20 @@ export interface CurrentObject {
 }
 
 const MAX_BATCH_MUTATIONS = 200;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PAYLOAD_BYTES = 60_000;   // 表上约束 64KiB，留余量
+
+/** 批次指纹不一致（同 batch_id 异体）：路由映射为 409，不覆盖首次回执 */
+export class SyncBatchConflict extends Error {
+  constructor() {
+    super('SYNC_BATCH_CONFLICT');
+    this.name = 'SyncBatchConflict';
+  }
+}
+
+export function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
 
 export function isObjectType(value: string): value is SyncObjectType {
   return (SYNC_OBJECT_TYPES as readonly string[]).includes(value);
@@ -54,7 +68,7 @@ export function parsePushBody(body: unknown): {
   const b = (body ?? {}) as Record<string, unknown>;
   const batchId = String(b.batch_id ?? '').trim();
   const deviceId = String(b.device_id ?? '').trim();
-  if (!batchId || batchId.length > 64) throw new ApiError('VALIDATION_ERROR', 'batch_id 缺失或过长');
+  if (!batchId || !isUuid(batchId)) throw new ApiError('VALIDATION_ERROR', 'batch_id 需为 UUID');
   if (!deviceId || deviceId.length > 64) throw new ApiError('VALIDATION_ERROR', 'device_id 缺失或过长');
   if (!Array.isArray(b.mutations) || b.mutations.length === 0) {
     throw new ApiError('VALIDATION_ERROR', 'mutations 不能为空');
@@ -64,10 +78,26 @@ export function parsePushBody(body: unknown): {
   }
 
   const mutations = b.mutations.map((raw, i) => {
-    const m = (raw ?? {}) as Record<string, unknown>;
-    if (!m.object_type || !m.object_id || !m.op) {
+    const m = (raw ?? {}) as Record<string, unknown>;    if (!m.object_type || !m.object_id || !m.op) {
       throw new ApiError('VALIDATION_ERROR', `第 ${i + 1} 项缺少 object_type/object_id/op`);
     }
+    if (m.object_type && typeof m.object_type === 'string' && !isObjectType(m.object_type)) {
+      // 未知类型：逐项 rejected，但要先于任何 UUID/数据库校验
+      return {
+        objectType: String(m.object_type),
+        objectId: String(m.object_id ?? ''),
+        op: String(m.op ?? ''),
+        expectedVersion: typeof m.expected_version === 'number' ? m.expected_version : null,
+        payload: m.payload,
+      } satisfies SyncMutationInput;
+    }
+    if (typeof m.object_id !== 'string' || !isUuid(m.object_id)) {
+      throw new ApiError('VALIDATION_ERROR', `第 ${i + 1} 项 object_id 需为 UUID`);
+    }
+    if (m.payload !== undefined && m.payload !== null && JSON.stringify(m.payload).length > MAX_PAYLOAD_BYTES) {
+      throw new ApiError('VALIDATION_ERROR', `第 ${i + 1} 项 payload 超过大小上限`);
+    }
+
     return {
       objectType: String(m.object_type),
       objectId: String(m.object_id),
@@ -101,7 +131,8 @@ export function decideMutation(
     if (m.payload === undefined || m.payload === null) {
       return { result: 'rejected', serverVersion: null, reason: 'payload_required' };
     }
-    return { result: 'applied', serverVersion: 1 };
+    // 墓碑之后重建：版本必须继续递增，否则旧离线 update(expected=1) 会覆盖新内容
+    return { result: 'applied', serverVersion: (current?.version ?? 0) + 1 };
   }
 
   if (!current || current.deleted) {

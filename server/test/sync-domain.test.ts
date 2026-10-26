@@ -76,12 +76,12 @@ describe('请求体校验', () => {
 
   test('单批超过 200 项 → 400', () => {
     const many = Array.from({ length: 201 }, (_, i) => ({ object_type: 'task', object_id: `o${i}`, op: 'create', payload: {} }));
-    assert.throws(() => parsePushBody({ batch_id: 'b', device_id: 'd', mutations: many }), (e: unknown) => e instanceof ApiError);
+    assert.throws(() => parsePushBody({ batch_id: '11111111-1111-4111-8111-111111111111', device_id: 'd', mutations: many }), (e: unknown) => e instanceof ApiError);
   });
 
   test('逐项缺字段 → 400 并指出第几项', () => {
     assert.throws(
-      () => parsePushBody({ batch_id: 'b', device_id: 'd', mutations: [{ object_type: 'task' }] }),
+      () => parsePushBody({ batch_id: '11111111-1111-4111-8111-111111111111', device_id: 'd', mutations: [{ object_type: 'task' }] }),
       /第 1 项/,
     );
   });
@@ -96,5 +96,25 @@ describe('批次结论', () => {
     assert.equal(batchStatus([mk('applied'), mk('conflict')]), 'partial');
     assert.equal(batchStatus([mk('conflict'), mk('rejected')]), 'rejected');
     assert.equal(batchStatus([]), 'rejected');
+  });
+});
+describe('输入前置校验（评审 #12 P2）', () => {
+  const uid = '11111111-1111-4111-8111-111111111111';
+  test('batch_id 非 UUID → 400', () => {
+    assert.throws(() => parsePushBody({ batch_id: 'b', device_id: 'd', mutations: [{ object_type: 'task', object_id: uid, op: 'create', payload: {} }] }),
+      /batch_id 需为 UUID/);
+  });
+  test('object_id 非 UUID → 400（不是 500）', () => {
+    assert.throws(() => parsePushBody({ batch_id: uid, device_id: 'd', mutations: [{ object_type: 'task', object_id: 'not-uuid', op: 'create', payload: {} }] }),
+      /object_id 需为 UUID/);
+  });
+  test('payload 超限 → 400', () => {
+    const big = 'x'.repeat(70_000);
+    assert.throws(() => parsePushBody({ batch_id: uid, device_id: 'd', mutations: [{ object_type: 'task', object_id: uid, op: 'create', payload: { big } }] }),
+      /payload 超过大小上限/);
+  });
+  test('墓碑后重建：版本继续递增而非回到 1', () => {
+    const r = decideMutation({ version: 5, deleted: true }, { objectType: 'task', objectId: uid, op: 'create', expectedVersion: null, payload: { a: 1 } });
+    assert.deepEqual(r, { result: 'applied', serverVersion: 6 });
   });
 });

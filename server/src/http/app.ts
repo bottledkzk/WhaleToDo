@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { businessDate } from '../config.ts';
-import { parsePushBody } from '../domain/sync.ts';
+import { parsePushBody, SyncBatchConflict } from '../domain/sync.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -417,9 +417,17 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!repo.pushSyncBatch) throw new ApiError('INTERNAL', '当前仓储未实现同步');
     const { batchId, deviceId, mutations } = parsePushBody(req.body);
     const fingerprint = fingerprintOf(config.idempotencySecret, mutations);
-    const result = await repo.pushSyncBatch({
-      userId: req.userId!, batchId, deviceId, fingerprint, mutations,
-    });
+    let result;
+    try {
+      result = await repo.pushSyncBatch({
+        userId: req.userId!, batchId, deviceId, fingerprint, mutations,
+      });
+    } catch (err) {
+      if (err instanceof SyncBatchConflict) {
+        throw new ApiError('CONFLICT', '相同 batch_id 的请求内容不一致');
+      }
+      throw err;
+    }
     return ok(req.requestId, {
       batch_id: batchId,
       status: result.status,

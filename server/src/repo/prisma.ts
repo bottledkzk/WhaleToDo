@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
-import { decideMutation, batchStatus, isObjectType, isSyncOp } from '../domain/sync.ts';
+import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
@@ -382,10 +382,12 @@ export class PrismaRepository implements AccountRepository {
         ON CONFLICT (user_id, batch_id) DO NOTHING`;
 
       if (inserted === 0) {
-        const existing = await tx.$queryRaw<{ status: string; response: unknown }[]>`
-          SELECT status, response FROM sync_batches
+        const existing = await tx.$queryRaw<{ status: string; response: unknown; fingerprint: string }[]>`
+          SELECT status, response, fingerprint FROM sync_batches
            WHERE user_id = ${input.userId}::uuid AND batch_id = ${input.batchId}::uuid`;
         const row = existing[0];
+        // 同 batch_id 不同内容必须拒绝，否则新请求会被静默丢弃（评审 P2）
+        if (row && row.fingerprint !== input.fingerprint) throw new SyncBatchConflict();
         if (row?.response) {
           const saved = row.response as { status: 'applied' | 'partial' | 'rejected'; items: SyncMutationResult[] };
           return { replayed: true, status: saved.status, items: saved.items };
@@ -395,6 +397,19 @@ export class PrismaRepository implements AccountRepository {
 
       const items: SyncMutationResult[] = [];
       for (const m of input.mutations) {
+        // 未知类型/操作：先判定，避免对非法 object_id 做 UUID 查询（评审 P2）
+        if (!isObjectType(m.objectType) || !isSyncOp(m.op)) {
+          const decided = decideMutation(null, m);
+          items.push({
+            object_type: m.objectType,
+            object_id: m.objectId,
+            op: m.op,
+            result: decided.result,
+            server_version: null,
+            ...(decided.reason ? { reason: decided.reason } : {}),
+          });
+          continue;
+        }
         // 当前对象版本：取该对象最新一条变更
         const currentRows = await tx.$queryRaw<{ version: number; deleted: boolean }[]>`
           SELECT version, deleted FROM sync_changes
