@@ -352,19 +352,35 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   /* ---------- 签到与积分（发奖走真实 daily_claims + point_ledger） ---------- */
-  const DAILY_REWARD_POINTS = 30;
 
   app.get('/api/v1/rewards/daily', async (req) => {
     await requireAuth(req);
     const date = businessDate(new Date(), config.businessTimezone);
     const wallet = await repo.walletOf(req.userId!);
+
+    if (repo.dailyStatus) {
+      const st = await repo.dailyStatus({
+        userId: req.userId!, businessDate: date, rewardType: 'sign_in',
+      });
+      return ok(req.requestId, {
+        business_date: date,
+        claimed: st.claimed,
+        consecutive_days: st.consecutiveDays,
+        cycle_day: st.cycleDay,
+        points_today: st.pointsToday,
+        next_points: st.nextPoints,
+        reward: { reward_type: 'sign_in', daily_points: 1, cycle_bonus_points: 5, cycle_days: 7 },
+        balance: { available: wallet.available, reserved: wallet.reserved },
+      });
+    }
+
     const claimed = repo.hasClaimedDaily
       ? await repo.hasClaimedDaily(req.userId!, date, 'sign_in')
       : false;
     return ok(req.requestId, {
       business_date: date,
       claimed,
-      reward: { reward_type: 'sign_in', points: DAILY_REWARD_POINTS },
+      reward: { reward_type: 'sign_in', daily_points: 1, cycle_bonus_points: 5, cycle_days: 7 },
       balance: { available: wallet.available, reserved: wallet.reserved },
     });
   });
@@ -379,7 +395,6 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         userId: req.userId!,
         businessDate: date,
         rewardType: 'sign_in',
-        points: DAILY_REWARD_POINTS,
         eventId,
         reason: `sign-in:${date}`,
       });
@@ -388,7 +403,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
       return reply.code(201).send(ok(req.requestId, {
         business_date: date,
-        points_awarded: DAILY_REWARD_POINTS,
+        points_awarded: result.pointsAwarded,
+        consecutive_days: result.consecutiveDays,
+        cycle_day: result.cycleDay,
         wallet: { available: result.available, reserved: result.reserved },
       }));
     }

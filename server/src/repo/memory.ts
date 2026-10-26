@@ -1,5 +1,6 @@
 // 内存仓储：用于本地开发与集成测试（无数据库依赖）。
 // Prisma 仓储在下一阶段接入，接口保持一致，便于替换。
+import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
@@ -221,34 +222,98 @@ export class MemoryRepository {
     return this.store.claims.has(`${userId}:${businessDate}:${rewardType}`);
   }
 
+
+  async dailyStatus(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+  }): Promise<{
+    claimed: boolean;
+    consecutiveDays: number;
+    cycleDay: number;
+    pointsToday: number | null;
+    nextPoints: number;
+  }> {
+    const claimedDates = new Set<string>();
+    let pointsToday: number | null = null;
+    for (const [key, points] of this.store.claims.entries()) {
+      const [uid, date, type] = key.split(':');
+      if (uid !== input.userId || type !== input.rewardType || !date) continue;
+      claimedDates.add(date);
+      if (date === input.businessDate) pointsToday = points;
+    }
+    const claimed = claimedDates.has(input.businessDate);
+    const prevStreak = streakBefore(claimedDates, input.businessDate);
+    const consecutiveDays = claimed ? prevStreak + 1 : prevStreak;
+    const shownDays = claimed ? consecutiveDays : prevStreak + 1;
+    return {
+      claimed,
+      consecutiveDays,
+      cycleDay: cycleDay(Math.max(shownDays, 1)),
+      pointsToday: claimed ? pointsToday : null,
+      nextPoints: pointsFor(shownDays),
+    };
+  }
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;
     rewardType: string;
-    points: number;
     eventId: string;
     reason: string;
-  }): Promise<{ claimed: boolean; available: number; reserved: number }> {
-    const key = `${input.userId}:${input.businessDate}:${input.rewardType}`;
+  }): Promise<{
+    claimed: boolean;
+    pointsAwarded: number;
+    consecutiveDays: number;
+    cycleDay: number;
+    available: number;
+    reserved: number;
+  }> {
     const wallet = this.walletOf(input.userId);
-    if (this.store.claims.has(key)) {
-      return { claimed: false, available: wallet.available, reserved: wallet.reserved };
+    const claimedDates = new Set<string>();
+    for (const key of this.store.claims.keys()) {
+      const [uid, date, type] = key.split(':');
+      if (uid === input.userId && type === input.rewardType && date) claimedDates.add(date);
     }
-    this.store.claims.set(key, input.points);
-    const next = { available: wallet.available + input.points, reserved: wallet.reserved };
+
+    const prevStreak = streakBefore(claimedDates, input.businessDate);
+    const key = `${input.userId}:${input.businessDate}:${input.rewardType}`;
+    if (claimedDates.has(input.businessDate)) {
+      return {
+        claimed: false,
+        pointsAwarded: 0,
+        consecutiveDays: prevStreak,
+        cycleDay: cycleDay(Math.max(prevStreak, 1)),
+        available: wallet.available,
+        reserved: wallet.reserved,
+      };
+    }
+
+    const consecutiveDays = prevStreak + 1;
+    const points = pointsFor(consecutiveDays);
+    this.store.claims.set(key, points);
+    const next = { available: wallet.available + points, reserved: wallet.reserved };
     this.setWallet(input.userId, next);
     this.store.ledger.unshift({
       id: randomUUID(),
       userId: input.userId,
       eventId: input.eventId,
       type: 'award',
-      delta: input.points,
+      delta: points,
       balanceAfter: next.available,
       reservedAfter: next.reserved,
       requestId: null,
       createdAt: this.now(),
     } as never);
-    return { claimed: true, available: next.available, reserved: next.reserved };
+
+    return {
+      claimed: true,
+      pointsAwarded: points,
+      consecutiveDays,
+      cycleDay: cycleDay(consecutiveDays),
+      available: next.available,
+      reserved: next.reserved,
+    };
   }
 
   get userCount(): number { return this.store.users.size; }
