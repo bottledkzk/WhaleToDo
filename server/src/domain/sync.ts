@@ -38,14 +38,24 @@ export interface CurrentObject {
 const MAX_BATCH_MUTATIONS = 200;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // 数据库约束是 octet_length(payload::text) <= 65536（**字节**，不是字符数）。
-// JSONB 会重新序列化（可能略大于 JSON.stringify），所以阈值取 60KB 留余量。
-const MAX_PAYLOAD_BYTES = 60_000;
+// jsonb 会重新序列化（引号/逗号/空格都会膨胀）：6000 键对象 JSON.stringify 约 58KB，
+// 落库后 ::text 可到 70KB+。前置守卫只拦明显过大者，阈值取 32KB；
+// 贴近边界的由写库处的 23514 精确捕获兜底（见 SyncPayloadTooLarge）。
+const MAX_PAYLOAD_BYTES = 32 * 1024;
 
 /** 批次指纹不一致（同 batch_id 异体）：路由映射为 409，不覆盖首次回执 */
 export class SyncBatchConflict extends Error {
   constructor() {
     super('SYNC_BATCH_CONFLICT');
     this.name = 'SyncBatchConflict';
+  }
+}
+
+/** payload 落库后超过 sync_changes_payload_check：路由映射为 400，不回显数据库原文 */
+export class SyncPayloadTooLarge extends Error {
+  constructor() {
+    super('SYNC_PAYLOAD_TOO_LARGE');
+    this.name = 'SyncPayloadTooLarge';
   }
 }
 

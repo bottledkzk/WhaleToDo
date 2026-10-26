@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import { PrismaRepository } from '../src/repo/prisma.ts';
+import { SyncPayloadTooLarge } from '../src/domain/sync.ts';
 
 const ownerUrl = process.env.VERIFY_DATABASE_URL!;
 const appUrl = process.env.VERIFY_APP_URL!;
@@ -195,4 +196,55 @@ test('P1 并发：跨对象并发写入后，pull 能拿到全部变更（不漏
   const seqs = all.changes.map((c) => c.seq);
   assert.deepEqual([...seqs].sort((x, y) => x - y), seqs, 'seq 必须升序');
   assert.equal(new Set(seqs).size, 4, 'seq 不可重复');
+});
+
+/* ---------------- payload jsonb 边界（评审 #12 P1） ---------------- */
+
+test('payload 落库超 jsonb 上限：6000 键对象 → SyncPayloadTooLarge，事务回滚无残留', async () => {
+  const user = await repo.createUser('sync_payload_big', PASSWORD);
+  const batchId = randomUUID();
+  // 评审构造：JSON.stringify 约 58891 字节（旧 60KB 前置守卫会放过），
+  // 但 PG 重新格式化 jsonb 后 ::text 约 70890 字节 → 触发 sync_changes_payload_check。
+  // 这里直接调仓储，绕开 HTTP 前置守卫（守卫已收紧到 32KB），专门验证写库处兜底。
+  const payload = Object.fromEntries(Array.from({ length: 6000 }, (_, i) => [`k${i}`, 0]));
+  assert.ok(Buffer.byteLength(JSON.stringify(payload), 'utf8') < 60_000);
+
+  await assert.rejects(
+    () => repo.pushSyncBatch!({
+      userId: user.id,
+      batchId,
+      deviceId: 'd',
+      fingerprint: '9'.repeat(64),
+      mutations: [{ objectType: 'task', objectId: taskId(), op: 'create', expectedVersion: null, payload }],
+    }),
+    (err: unknown) => err instanceof SyncPayloadTooLarge,
+  );
+
+  const batches = await owner.query('SELECT count(*)::int AS n FROM sync_batches WHERE user_id=$1', [user.id]);
+  assert.equal(batches.rows[0].n, 0, '失败批次必须整体回滚，不留 sync_batches 行');
+  const changes = await owner.query('SELECT count(*)::int AS n FROM sync_changes WHERE user_id=$1', [user.id]);
+  assert.equal(changes.rows[0].n, 0, '不得留下 sync_changes 行');
+});
+
+test('payload 对照：正常中文短文本仍 applied', async () => {
+  const user = await repo.createUser('sync_payload_ok', PASSWORD);
+  const res = await repo.pushSyncBatch!({
+    userId: user.id, batchId: randomUUID(), deviceId: 'd', fingerprint: '8'.repeat(64),
+    mutations: [{ objectType: 'task', objectId: taskId(), op: 'create', expectedVersion: null, payload: { title: '写周报' } }],
+  });
+  assert.equal(res.status, 'applied');
+  assert.equal(res.items[0]!.result, 'applied');
+});
+
+test('payload 对照：非 payload 异常继续传播，非法 object_type 仍逐项 rejected', async () => {
+  const user = await repo.createUser('sync_payload_other', PASSWORD);
+  const res = await repo.pushSyncBatch!({
+    userId: user.id, batchId: randomUUID(), deviceId: 'd', fingerprint: '7'.repeat(64),
+    mutations: [
+      { objectType: 'goal', objectId: taskId(), op: 'create', expectedVersion: null, payload: {} },
+      { objectType: 'task', objectId: taskId(), op: 'create', expectedVersion: null, payload: { title: '正常' } },
+    ],
+  });
+  assert.equal(res.status, 'partial', '逐项 rejected 不应让整批抛错');
+  assert.deepEqual(res.items.map((i) => i.result), ['rejected', 'applied']);
 });

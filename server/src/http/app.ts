@@ -4,7 +4,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply }
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { businessDate } from '../config.ts';
-import { parsePushBody, SyncBatchConflict } from '../domain/sync.ts';
+import { parsePushBody, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
 import type { AccountRepository } from '../repo/types.ts';
@@ -425,6 +425,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     } catch (err) {
       if (err instanceof SyncBatchConflict) {
         throw new ApiError('CONFLICT', '相同 batch_id 的请求内容不一致');
+      }
+      if (err instanceof SyncPayloadTooLarge) {
+        // 只给稳定的 400 文案，不回显数据库约束/异常原文
+        throw new ApiError('VALIDATION_ERROR', 'payload 超过大小上限');
       }
       throw err;
     }

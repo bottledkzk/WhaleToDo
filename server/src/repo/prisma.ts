@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { RegisterConflict } from './types.ts';
-import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict } from '../domain/sync.ts';
+import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import type { Wallet } from '../domain/ledger.ts';
@@ -430,9 +430,15 @@ export class PrismaRepository implements AccountRepository {
 
         if (decided.result === 'applied') {
           serverVersion = decided.serverVersion ?? 1;
-          await tx.$executeRaw`
-            INSERT INTO sync_changes (user_id, object_type, object_id, version, deleted, payload)
-            VALUES (${input.userId}::uuid, ${m.objectType}, ${m.objectId}::uuid, ${serverVersion}, ${m.op === 'delete'}, ${JSON.stringify(m.payload ?? null)}::jsonb)`;
+          try {
+            await tx.$executeRaw`
+              INSERT INTO sync_changes (user_id, object_type, object_id, version, deleted, payload)
+              VALUES (${input.userId}::uuid, ${m.objectType}, ${m.objectId}::uuid, ${serverVersion}, ${m.op === 'delete'}, ${JSON.stringify(m.payload ?? null)}::jsonb)`;
+          } catch (err) {
+            // 只把 sync_changes_payload_check 的 23514 翻译成 400；其他 P2010/23514 继续传播
+            if (isPayloadTooLargeViolation(err)) throw new SyncPayloadTooLarge();
+            throw err;
+          }
         }
 
         // sync_mutations 上有 CHECK(object_type IN 五种) 与 CHECK(op IN 三种)，
@@ -605,5 +611,19 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * jsonb 大小约束冲突识别：
+ *  - 原生 $executeRaw：P2010，meta.code === '23514'（PostgreSQL check_violation）
+ *  - 且约束名必须是 sync_changes_payload_check
+ * 其他 23514（别的 CHECK）与 P2010 必须继续传播，不能被笼统吞。
+ */
+function isPayloadTooLargeViolation(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: string; meta?: { code?: string; message?: string }; message?: string };
+  if (e.code !== 'P2010' || e.meta?.code !== '23514') return false;
+  const message = e.meta?.message ?? e.message ?? '';
+  return message.includes('sync_changes_payload_check');
 }
 

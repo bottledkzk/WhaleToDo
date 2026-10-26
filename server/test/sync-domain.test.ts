@@ -140,4 +140,9 @@ describe('payload 字节边界（评审 #12 P2：多字节输入）', () => {
   test('正常中文短文本可以通过', () => {
     assert.doesNotThrow(() => push({ title: '写周报', note: '今天完成同步接口' }));
   });
+
+  test('32KB 前置守卫：31KB 通过、33KB 拒绝（jsonb 边界留给写库处兜底）', () => {
+    assert.doesNotThrow(() => push({ note: 'x'.repeat(31_000) }));
+    assert.throws(() => push({ note: 'x'.repeat(33_000) }), /payload 超过大小上限/);
+  });
 });
