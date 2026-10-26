@@ -53,3 +53,88 @@ WhaleToDo/
 环境与运行方法见 [script/README.md](script/README.md)，固定版本见 [env/toolchain.json](env/toolchain.json)。真实SDK、IDE、镜像和个人日志位于仓库外，不直接提交生成APK或缓存。下载网站源码在 [web](web/README.md)，账户API尚未部署；源码可在团队自己的环境继续运行和部署。
 
 最新外观调整见 [0.4.1图标与列表](doc/Bottledkzk/2026-10-25-图标与列表细节调整.md)，AI接口见 [0.4.0 AI助手与权限接入](doc/Bottledkzk/2026-10-24-AI助手设计与接入.md)，前一轮见 [0.3.0待办整合与手动安排](doc/Bottledkzk/2026-10-23-待办整合与手动安排.md)，前一轮记录见 [今日页面交互优化](doc/Bottledkzk/2026-10-23-今日页面交互优化.md)。默认每日时段设置、完整周视图及长期目标继续按后续任务安排。
+
+## 后端快速开始（账户 / 签到 / 同步）
+
+后端在 `server/`，Node 24 可直接运行 TypeScript，无需编译。
+
+```bash
+cd server
+npm ci --ignore-scripts                                      # 跳过 prisma postinstall
+npx prisma generate --schema prisma/schema.prisma            # 必须执行，CI 同款步骤
+npm run typecheck                                            # 期望 0 诊断
+npm test                                                     # 单元/接口测试
+npm run test:database                                        # 真库集成测试（需 PG）
+```
+
+### 启动方式
+
+```bash
+PORT=8080 npm start     # 主服务（main 已可用）：账户 / 签到 / 钱包 / 流水
+```
+
+> **待合并的功能不要当作 main 现有能力**：
+> - `/sync/push`、`/sync/pull` 在 PR #12，尚未进入 main
+> - 访问日志的 `LOG_LEVEL` / `LOG_FILE` 在 PR #13，尚未进入 main
+
+AI 网关是**独立进程**，启动前置条件较多，不能直接复制命令运行：需要 systemd
+`LoadCredential` 提供的凭据目录（`CREDENTIALS_DIRECTORY`）、走 127.0.0.1 的专用数据库连接、
+以及供应商模型 Key；缺任一条件会明确拒绝启动。部署条件与边界见
+`doc/Bottledkzk/2026-10-24-AI助手设计与接入.md`。本地内存账户**不能**与 PG 版 AI 网关联调。
+
+| 配置 | 说明 |
+| --- | --- |
+| `PORT` | 监听端口，默认 8080 |
+| `DATABASE_URL` | 未配置时用内存仓储（仅本地演示）；**生产未配置会拒绝启动** |
+| `IDEMPOTENCY_SECRET` | 幂等指纹密钥；生产要求 ≥32 字符，缺失拒绝启动 |
+| `BUSINESS_TIMEZONE` | 业务日时区，默认 `Asia/Shanghai` |
+| `LOG_LEVEL` / `LOG_FILE` | 访问日志级别与输出文件（**待 PR #13 合并**） |
+| `PAYMENT_PROVIDER` | `disabled` 时下单/支付接口不暴露 |
+
+### 接口一览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/v1/auth/register` | 注册（支持 `Idempotency-Key`） |
+| POST | `/api/v1/auth/login` | 登录（限流：认证前预占额度） |
+| POST | `/api/v1/auth/refresh` | 刷新（轮换 + 重放检测，整链撤销） |
+| POST | `/api/v1/auth/logout` | 退出（撤销当前会话） |
+| GET | `/api/v1/me` | 当前账户 |
+| GET | `/api/v1/rewards/daily` | 签到状态与余额 |
+| POST | `/api/v1/rewards/daily/claim` | 签到发奖（重复领取 409） |
+| GET | `/api/v1/wallet` | 钱包 |
+| GET | `/api/v1/wallet/ledger` | 积分流水（复合游标分页） |
+| POST | `/api/v1/sync/push` | 同步推送（批次幂等 + 版本冲突回传）**待 PR #12** |
+| GET | `/api/v1/sync/pull` | 同步拉取（变更序列游标）**待 PR #12** |
+
+统一响应格式 `{request_id, data}` 或 `{request_id, error:{code,message}}`；
+错误码固定 9 个，见 `server/docs/api-reference.md`。
+
+### 快速自测（三个请求）
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"username":"demo_user","password":"S3cret-passw0rd"}' \
+  http://127.0.0.1:8080/api/v1/auth/register
+
+TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+  --data '{"username":"demo_user","password":"S3cret-passw0rd"}' \
+  http://127.0.0.1:8080/api/v1/auth/login | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/me
+```
+
+### 测试与 CI
+
+| 层 | 命令 | 覆盖 |
+| --- | --- | --- |
+| 单元/接口 | `npm test` | 领域规则、路由契约、幂等、限流 |
+| 真库集成 | `npm run test:database` | 注册事务、RLS、并发签到、同毫秒翻页、同步隔离 |
+| CI | `.github/workflows/server.yml` | `verify`（typecheck + 单测）与 `database`（PG16 + 受限角色） |
+
+> 真库测试的前置条件（缺一不可，且**会清理数据，不要指向共享库或生产库**）：
+> - 独立库 `whaletodo_verify`（脚本校验库名，误连其他库直接抛错）
+> - `VERIFY_DATABASE_URL`（迁移角色）、`VERIFY_APP_URL`（受限应用角色）、`VERIFY_AI_URL`
+> - 该库已执行 `npm run db:deploy`，且 CI 创建的 `whaletodo_app` 与迁移角色已就位
+>
+> 角色、授权与迁移步骤以 `.github/workflows/server.yml` 的 `database` job 为准。
