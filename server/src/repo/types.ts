@@ -102,10 +102,16 @@ export interface AccountRepository {
     userId: string;
     businessDate: string;
     rewardType: string;
-    points: number;
     eventId: string;
     reason: string;
-  }): Promise<{ claimed: boolean; available: number; reserved: number }>;
+  }): Promise<{
+    claimed: boolean;
+    pointsAwarded: number;
+    consecutiveDays: number;
+    cycleDay: number;
+    available: number;
+    reserved: number;
+  }>;
   setWallet(userId: string, wallet: Wallet): Promise<void>;
 
   getIdempotent(scope: string, key: string): Promise<IdempotencyHit | undefined>;

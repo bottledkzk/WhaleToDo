@@ -5,6 +5,7 @@
 //  - 刷新轮换：撤销旧 + 插新同事务，撤销必须命中 1 行（并发消费检测）
 //  - demo_slot 由数据库函数 next_demo_slot() 生成，插入时不传
 //  - RLS 表（tasks/plan_blocks/...）不在此接口内，后续由内容仓储在事务里 set_config 处理
+import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
@@ -369,28 +370,58 @@ export class PrismaRepository implements AccountRepository {
     return rows.length > 0;
   }
 
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;
     rewardType: string;
-    points: number;
     eventId: string;
     reason: string;
-  }): Promise<{ claimed: boolean; available: number; reserved: number }> {
+  }): Promise<{
+    claimed: boolean;
+    pointsAwarded: number;
+    consecutiveDays: number;
+    cycleDay: number;
+    available: number;
+    reserved: number;
+  }> {
     return this.prisma.$transaction(async (tx) => {
+      // 1) 先算连续天数：取该用户最近若干条签到记录（含今天，若已签）
+      const rows = await tx.$queryRaw<{ business_date: string }[]>`
+        SELECT to_char(business_date, 'YYYY-MM-DD') AS business_date
+          FROM daily_claims
+         WHERE user_id = ${input.userId}::uuid AND reward_type = ${input.rewardType}
+         ORDER BY business_date DESC
+         LIMIT 400`;
+      const claimedDates = new Set(rows.map((r) => r.business_date));
+
+      const prevStreak = streakBefore(claimedDates, input.businessDate);
+      const consecutiveDays = prevStreak + 1;              // 今天将计入
+      const day = cycleDay(consecutiveDays);
+      const points = pointsFor(consecutiveDays);
+
+      // 2) 唯一键兜并发：插不进去说明今天已领
       const inserted = await tx.$executeRaw`
         INSERT INTO daily_claims (id, user_id, business_date, reward_type, points)
-        VALUES (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.businessDate}::date, ${input.rewardType}, ${input.points})
+        VALUES (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.businessDate}::date, ${input.rewardType}, ${points})
         ON CONFLICT (user_id, business_date, reward_type) DO NOTHING`;
 
       if (inserted === 0) {
         const w = await tx.point_wallets.findUnique({ where: { user_id: input.userId } });
-        return { claimed: false, available: w?.available ?? 0, reserved: w?.reserved ?? 0 };
+        return {
+          claimed: false,
+          pointsAwarded: 0,
+          consecutiveDays: prevStreak,   // 今天没领成，连续天数还是截至昨天
+          cycleDay: cycleDay(Math.max(prevStreak, 1)),
+          available: w?.available ?? 0,
+          reserved: w?.reserved ?? 0,
+        };
       }
 
+      // 3) 钱包 + 流水，同一事务
       const updated = await tx.$queryRaw<{ available: number; reserved: number }[]>`
         UPDATE point_wallets
-           SET available = available + ${input.points}, updated_at = now()
+           SET available = available + ${points}, updated_at = now()
          WHERE user_id = ${input.userId}::uuid
         RETURNING available, reserved`;
       const wallet = updated[0];
@@ -401,9 +432,16 @@ export class PrismaRepository implements AccountRepository {
           (id, user_id, event_id, type, available_delta, reserved_delta, balance_after, reserved_after, reason)
         VALUES
           (${randomUUID()}::uuid, ${input.userId}::uuid, ${input.eventId}, 'award',
-           ${input.points}, 0, ${wallet.available}, ${wallet.reserved}, ${input.reason})`;
+           ${points}, 0, ${wallet.available}, ${wallet.reserved}, ${input.reason})`;
 
-      return { claimed: true, available: wallet.available, reserved: wallet.reserved };
+      return {
+        claimed: true,
+        pointsAwarded: points,
+        consecutiveDays,
+        cycleDay: day,
+        available: wallet.available,
+        reserved: wallet.reserved,
+      };
     });
   }
 

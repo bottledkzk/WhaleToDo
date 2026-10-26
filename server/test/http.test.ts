@@ -276,18 +276,18 @@ describe('签到与流水（内存实现）', () => {
 
     const claim = await inject({ method: 'POST', url: '/api/v1/rewards/daily/claim', headers });
     assert.equal(claim.statusCode, 201);
-    assert.equal(claim.json().data.points_awarded, 30);
+    assert.equal(claim.json().data.points_awarded, 1);
 
     const wallet = await inject({ method: 'GET', url: '/api/v1/wallet', headers });
-    assert.equal(wallet.json().data.available, 30);
+    assert.equal(wallet.json().data.available, 1);
 
     const ledger = await inject({ method: 'GET', url: '/api/v1/wallet/ledger', headers });
     assert.equal(ledger.statusCode, 200);
     const items = ledger.json().data.items;
     assert.equal(items.length, 1, '应有且只有一条流水');
     assert.equal(items[0].type, 'award');
-    assert.equal(items[0].delta, 30);
-    assert.equal(items[0].balance_after, 30);
+    assert.equal(items[0].delta, 1);
+    assert.equal(items[0].balance_after, 1);
     assert.match(items[0].created_at, /^\d{4}-\d{2}-\d{2}T.*Z$/);
     assert.equal(ledger.json().data.next_cursor, null);
 
