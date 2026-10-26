@@ -56,8 +56,27 @@ data class AgentMessageRow(@PrimaryKey val id: String, val sessionId: String, va
 @Entity(tableName = "agent_receipts", primaryKeys = ["id", "ownerId"])
 data class AgentReceiptRow(val id: String, val ownerId: String, val appliedAt: Long)
 
+@Entity(tableName="ui_preferences",primaryKeys=["ownerId","key"])
+data class UiPreferenceRow(val ownerId:String,val key:String,val value:String)
+@Entity(tableName="task_reminders",primaryKeys=["ownerId","taskId"])
+data class TaskReminderRow(val ownerId:String,val taskId:String,val enabled:Boolean=false,val method:String="message",val timing:String="start")
+@Entity(tableName="diaries",primaryKeys=["ownerId","date"])
+data class DiaryRow(val ownerId:String,val date:String,val content:String,val updatedAt:Long,val sourceMessageId:String?=null)
+
 @Dao
 interface DeskDao {
+    @Query("SELECT * FROM ui_preferences WHERE ownerId=:owner ORDER BY `key`") fun observeOptions(owner:String):Flow<List<UiPreferenceRow>>
+    @Query("SELECT * FROM ui_preferences WHERE ownerId='device' ORDER BY `key`") suspend fun deviceOptions():List<UiPreferenceRow>
+    @Query("SELECT * FROM ui_preferences WHERE ownerId=:owner ORDER BY `key`") suspend fun options(owner:String):List<UiPreferenceRow>
+    @Upsert suspend fun saveOptions(options:List<UiPreferenceRow>)
+    @Upsert suspend fun save(option:UiPreferenceRow)
+    @Query("DELETE FROM ui_preferences WHERE ownerId=:owner AND `key`=:key") suspend fun removeOption(owner:String,key:String)
+    @Query("SELECT * FROM task_reminders WHERE ownerId=:owner AND taskId=:task") suspend fun reminder(owner:String,task:String):TaskReminderRow?
+    @Upsert suspend fun save(reminder:TaskReminderRow)
+    @Query("SELECT * FROM diaries WHERE ownerId=:owner AND date=:date") suspend fun diary(owner:String,date:String):DiaryRow?
+    @Upsert suspend fun save(diary:DiaryRow)
+    @Query("DELETE FROM diaries WHERE ownerId=:owner AND date=:date AND updatedAt=:stamp") suspend fun deleteDiary(owner:String,date:String,stamp:Long):Int
+
     @Query("SELECT * FROM tasks ORDER BY done, created DESC")
     fun observeTasks(): Flow<List<TaskRow>>
 
@@ -116,8 +135,9 @@ interface DeskDao {
             SettingRow::class,
             DailyWorkTimeRow::class,
             AgentSessionRow::class, AgentMessageRow::class, AgentReceiptRow::class,
+            UiPreferenceRow::class, TaskReminderRow::class, DiaryRow::class,
         ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class DeskDatabase : RoomDatabase() {
@@ -143,13 +163,21 @@ abstract class DeskDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3,4) {
+            override fun migrate(db:SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS ui_preferences (ownerId TEXT NOT NULL, `key` TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(ownerId,`key`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS task_reminders (ownerId TEXT NOT NULL, taskId TEXT NOT NULL, enabled INTEGER NOT NULL, method TEXT NOT NULL, timing TEXT NOT NULL, PRIMARY KEY(ownerId,taskId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS diaries (ownerId TEXT NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL, updatedAt INTEGER NOT NULL, sourceMessageId TEXT, PRIMARY KEY(ownerId,date))")
+            }
+        }
+
         fun open(context: Context): DeskDatabase =
             Room.databaseBuilder(
                     context.applicationContext,
                     DeskDatabase::class.java,
                     "whaletodo.db",
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

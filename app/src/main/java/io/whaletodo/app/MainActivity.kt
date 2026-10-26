@@ -29,6 +29,7 @@ import io.whaletodo.app.data.*
 import io.whaletodo.app.ui.*
 import io.whaletodo.core.*
 import io.whaletodo.app.agent.*
+import io.whaletodo.app.profile.*
 import kotlinx.coroutines.launch
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -43,7 +44,7 @@ private val dateTime =
         .withResolverStyle(java.time.format.ResolverStyle.STRICT)
 private val clock = DateTimeFormatter.ofPattern("HH:mm")
 
-private fun local(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
+private fun local(ms: Long, zone:ZoneId) = Instant.ofEpochMilli(ms).atZone(zone)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,6 +99,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DeskApp(vm: DeskViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val zone=ZoneId.of(state.zoneId)
+    val profile by vm.profile.state.collectAsStateWithLifecycle()
     val preview by vm.preview.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val working by vm.working.collectAsStateWithLifecycle()
@@ -113,8 +116,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     var shareDraft by remember { mutableStateOf<String?>(null) }
     var shareGate by remember { mutableStateOf<GateReason?>(null) }
     var trialStyle by remember { mutableStateOf(ShareStyle.MINIMAL) }
-    var accountPanel by remember { mutableStateOf("") }
-    LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null }
+    LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;edit=null;capture=false;rating=null }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
     LaunchedEffect(message) {
@@ -123,6 +125,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             vm.message.value = ""
         }
     }
+    LaunchedEffect(profile.notice){if(profile.notice.isNotBlank()){snackbar.showSnackbar(profile.notice);vm.profile.clearNotice()}}
+    CompositionLocalProvider(LocalDeskZone provides zone) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
@@ -148,7 +152,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
-            if (tab != 3) Row(
+            if (tab < 3) Row(
                 Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -193,8 +197,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 2 -> CalendarPage(state, onEdit = { edit = it },
                     onComplete = { if (it.done) vm.reopen(it) else rating = it },
                     onShare = { text -> shareDraft = text })
-                3 -> AssistantPanel(vm.assistant, onAccount = { accountPanel="账户";tab=4 }, onVip = { accountPanel="会员";tab=4 }, onPoints = { accountPanel="积分";tab=4 })
-                4 -> MyPage(state, accountPanel)
+                3 -> AssistantPanel(vm.assistant, onAccount = { vm.profile.open(MyDialog.LOGIN);tab=4 }, onVip = { vm.profile.open(MyDialog.RECHARGE_VIP);tab=4 }, onPoints = { vm.profile.open(MyDialog.POINTS);tab=4 })
+                4 -> ProfilePage(vm.profile,state)
 
             }
         }
@@ -202,8 +206,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     shareDraft?.let { text -> ShareStyleSheet(text, assistant.access, dismiss={shareDraft=null},
         onExport={shareText(context,text);shareDraft=null},onGate={reason,style->shareGate=reason;trialStyle=style}) }
     shareGate?.let { reason -> AccessDialog(reason,dismiss={shareGate=null},
-        onAccount={shareDraft=null;accountPanel="账户";tab=4},onVip={shareDraft=null;accountPanel="会员";tab=4},
-        onPoints={shareDraft=null;accountPanel="积分";tab=4},onTrial={uiScope.launch {
+        onAccount={shareDraft=null;vm.profile.open(MyDialog.LOGIN);tab=4},onVip={shareDraft=null;vm.profile.open(MyDialog.RECHARGE_VIP);tab=4},
+        onPoints={shareDraft=null;vm.profile.open(MyDialog.POINTS);tab=4},onTrial={uiScope.launch {
             if(assistant.access.availablePoints<=0)shareGate=GateReason.POINTS
             else {
                 val owner=vm.assistant.state.value.owner
@@ -220,8 +224,9 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                 vm.capture(it)
                 capture = false
             },
-            onDetailedSave = { task, manual ->
-                vm.saveScheduled(task, manual, onRejected = { saveError = it }) { capture = false }
+            repo=vm.repository,owner=assistant.owner,
+            onDetailedSave = { task, manual, reminder ->
+                vm.saveScheduled(task, manual, reminder, onRejected = { saveError = it }) { capture = false }
             },
             saveError = saveError,
         )
@@ -229,8 +234,9 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
         EditDialog(
             task,
             onDismiss = { edit = null },
-            onSave = { updated, manual ->
-                vm.saveScheduled(updated, manual, onRejected = { saveError = it }) { edit = null }
+            repo=vm.repository,owner=assistant.owner,
+            onSave = { updated, manual, reminder ->
+                vm.saveScheduled(updated, manual, reminder, onRejected = { saveError = it }) { edit = null }
             },
             externalError = saveError,
             manual = state.blocks.firstOrNull { it.taskId == task.id && it.locked && !it.done && it.start > state.now },
@@ -273,7 +279,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                     proposal.result.blocks.forEach { b ->
                         val title = state.tasks.find { it.id == b.taskId }?.title ?: "事项"
                         Text(
-                            "${local(b.window.start.toEpochMilli()).format(DateTimeFormatter.ofPattern("M/d HH:mm"))}–${local(b.window.end.toEpochMilli()).format(clock)}  $title",
+                            "${local(b.window.start.toEpochMilli(),zone).format(DateTimeFormatter.ofPattern("M/d HH:mm"))}–${local(b.window.end.toEpochMilli(),zone).format(clock)}  $title",
                             fontSize = 13.sp,
                         )
                     }
@@ -292,6 +298,9 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             dismissButton = { TextButton(onClick = { vm.preview.value = null }) { Text("返回") } },
         )
     }
+    ProfileDialogHost(vm.profile,state,blocked=capture||edit!=null||rating!=null||settings||preview!=null||shareDraft!=null||shareGate!=null||assistant.gate!=null||assistant.preview!=null||assistant.revision!=null)
+    }
+
 }
 
 @Composable
@@ -304,7 +313,8 @@ private fun TodayPage(
 ) {
     val done = s.tasks.count { it.done }
     val today = s.today
-    val blocks = s.blocks.filter { local(it.start).toLocalDate() == today }
+    val zone=ZoneId.of(s.zoneId)
+    val blocks = s.blocks.filter { local(it.start,zone).toLocalDate() == today }
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(14.dp),
         contentPadding = PaddingValues(bottom = 90.dp),
@@ -404,14 +414,15 @@ private fun EmptyCard(title: String, subtitle: String) {
 
 @Composable
 internal fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
+    val zone=LocalDeskZone.current
     Row(
         Modifier.fillMaxWidth().heightIn(min = 88.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.width(51.dp)) {
-            Text(local(b.start).format(clock), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(local(b.start,zone).format(clock), fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Text(
-                local(b.end).format(clock),
+                local(b.end,zone).format(clock),
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -449,6 +460,7 @@ internal fun TimeCard(b: BlockRow, t: TaskRow?, onEdit: (TaskRow) -> Unit) {
 
 @Composable
 internal fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRow) -> Unit) {
+    val zone=LocalDeskZone.current
     Card(
         Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(17.dp),
@@ -468,7 +480,7 @@ internal fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRo
                     buildString {
                         if (t.deadline > 0)
                             append(
-                                local(t.deadline).format(DateTimeFormatter.ofPattern("M/d HH:mm"))
+                                local(t.deadline,zone).format(DateTimeFormatter.ofPattern("M/d HH:mm"))
                             )
                         else append("未设截止")
                         append(if (t.minutes > 0) " · ${t.minutes}分钟" else " · 待估时")
@@ -491,14 +503,15 @@ internal fun TaskCard(t: TaskRow, onEdit: (TaskRow) -> Unit, onComplete: (TaskRo
 private fun todayRange(state: DeskState): Pair<Int, Int> {
     val today = state.workTimes.find { it.date == state.today.toString() }
     return if (today != null) today.startMinute to today.endMinute
-    else (state.settings.startHour * 60) to (state.settings.endHour * 60).coerceAtMost(1439)
+    else DeskOptions.forDay(state.today,state.preferences,state.settings).let{it.start to it.end.coerceAtMost(1439)}
 }
 
 @Composable
 private fun CaptureDialog(
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
-    onDetailedSave: (TaskRow, Window?) -> Unit,
+    onDetailedSave: (TaskRow, Window?, TaskReminderRow) -> Unit,
+    repo:DeskRepository,owner:String,
     saveError: String = "",
 ) {
     var title by remember { mutableStateOf("") }
@@ -508,7 +521,7 @@ private fun CaptureDialog(
         EditDialog(
             draft.copy(title = title),
             onDismiss = { detailed = false },
-            onSave = onDetailedSave,
+            onSave = onDetailedSave,repo=repo,owner=owner,
             isNew = true,
             externalError = saveError,
         )
@@ -542,11 +555,22 @@ private fun CaptureDialog(
 private fun EditDialog(
     t: TaskRow,
     onDismiss: () -> Unit,
-    onSave: (TaskRow, Window?) -> Unit,
+    onSave: (TaskRow, Window?, TaskReminderRow) -> Unit,
+    repo:DeskRepository,owner:String,
     isNew: Boolean = false,
     manual: BlockRow? = null,
     externalError: String = "",
 ) {
+    val zone=LocalDeskZone.current
+    var reminderLoaded by remember(t.id,owner){mutableStateOf(false)}
+    var remind by remember(t.id,owner){mutableStateOf(false)}
+    var remindMethod by remember(t.id,owner){mutableStateOf("message")}
+    var remindTiming by remember(t.id,owner){mutableStateOf("start")}
+    LaunchedEffect(t.id,owner){
+        val row=repo.dao.reminder(owner,t.id);val prefs=repo.dao.options(owner).associate{it.key to it.value}
+        remind=row?.enabled?:(prefs["reminder.enabled"]=="true"&&t.importance>=(prefs["reminder.stars"]?.toIntOrNull()?:0))
+        remindMethod=row?.method?:prefs["reminder.method"]?:"message";remindTiming=row?.timing?:"start";reminderLoaded=true
+    }
     var category by remember(t.id) { mutableStateOf(TaskCategory.from(t.category)) }
     var categoryMenu by remember { mutableStateOf(false) }
     var title by remember(t.id) { mutableStateOf(t.title) }
@@ -562,7 +586,7 @@ private fun EditDialog(
     var note by remember { mutableStateOf(t.note) }
     var split by remember { mutableStateOf(t.splittable) }
     var error by remember { mutableStateOf("") }
-    AlertDialog(
+    if(!choosingDeadline&&choosingManual==0)AlertDialog(
         onDismissRequest = onDismiss,
         title = { Column {
             Text(if (isNew) "记下一件事" else "整理待办")
@@ -588,6 +612,8 @@ private fun EditDialog(
                         DropdownMenuItem(text={Text("${c.symbol} ${c.label}")},onClick={category=c;categoryMenu=false})
                     } }
                 }
+                Row(verticalAlignment=Alignment.CenterVertically){Text("事务通知",Modifier.weight(1f));Switch(remind,{remind=it},enabled=reminderLoaded,modifier=Modifier.semantics{contentDescription="事务通知开关"})}
+                if(remind)ReminderChoices(remindMethod,{remindMethod=it},remindTiming,{remindTiming=it})
                 OutlinedCard(
                     onClick = { choosingDeadline = true },
                     modifier = Modifier.fillMaxWidth().semantics { contentDescription = "选择截止时间" },
@@ -603,7 +629,7 @@ private fun EditDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                if (due > 0) local(due).format(dateTime) else "选择日期与时间",
+                                if (due > 0) local(due,zone).format(dateTime) else "选择日期与时间",
                                 modifier = Modifier.padding(top = 5.dp),
                             )
                         }
@@ -622,7 +648,7 @@ private fun EditDialog(
                             .semantics { contentDescription = label }) {
                             Column(Modifier.padding(12.dp)) {
                                 Text(label, style = MaterialTheme.typography.labelMedium)
-                                Text(if (value > 0) local(value).format(dateTime) else "选择日期与时间")
+                                Text(if (value > 0) local(value,zone).format(dateTime) else "选择日期与时间")
                             }
                         }
                     }
@@ -704,12 +730,12 @@ private fun EditDialog(
                                 note = note,
                                 splittable = split,
                                 category = category.code,
-                            ), reservation
+                            ), reservation, TaskReminderRow(owner,t.id,remind,remindMethod,remindTiming)
                         )
                     } catch (e: Exception) {
                         error = e.message ?: "请检查输入"
                     }
-                }
+                },enabled=reminderLoaded
             ) {
                 Text(if (isNew) "记下" else "保存")
             }

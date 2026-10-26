@@ -46,7 +46,7 @@ class AgentExperienceTest {
     private fun start(bridge:AgentBridge){AgentBridgeHub.bridge=bridge;context.startActivity(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK));device.waitForIdle();ui.text("WorkTime")}
     private fun <T> db(action:suspend(DeskDatabase)->T):T=runBlocking{val d=DeskDatabase.open(context);try{action(d)}finally{d.close()}}
     @Test fun guestGatesAndWhaleAvatar() {
-        start(FixtureBridge(guest=true));ui.click("助手");device.findObject(By.clazz("android.widget.EditText")).text="合成学习问题";ui.click("发送"); device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-agent-guest-after-send.png");ui.text("登录后继续");ui.click("前往账户");ui.click("知道了");ui.desc("默认鲸鱼头像")
+        start(FixtureBridge(guest=true));ui.click("助手");device.findObject(By.clazz("android.widget.EditText")).text="合成学习问题";ui.click("发送"); device.executeShellCommand("screencap -p /sdcard/Download/whaletodo-agent-guest-after-send.png");ui.text("登录后继续");ui.click("前往账户");ui.text("注册账户");ui.click("取消");ui.desc("默认鲸鱼头像")
     }
     @Test fun chatWorkingUsageAndHistoryWithoutModifyingAgenda() {
         val t=TaskRow("agent-${UUID.randomUUID()}","只读日程验收",note="PRIVATE-NOTE-DO-NOT-SEND");db{it.dao().save(t)}

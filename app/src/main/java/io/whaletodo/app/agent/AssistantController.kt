@@ -17,7 +17,8 @@ data class AssistantState(val owner: String = "guest", val access: AgentAccess =
     val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null, val revision: EditPreview? = null)
 
 class AssistantController(private val repo: DeskRepository, private val scope: CoroutineScope,
-    private val bridge: AgentBridge = AgentBridgeHub.bridge) {
+    private val bridge: AgentBridge = AgentBridgeHub.bridge,
+    private val onDiaryReady:(String,String,String,String)->Unit={_,_,_,_->}) {
     private val mutable = MutableStateFlow(AssistantState(models=bridge.models))
     val state: StateFlow<AssistantState> = mutable.asStateFlow()
     init { scope.launch { bridge.access.collect { access ->
@@ -83,6 +84,11 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
             preview=if(canPreview)EditPreview(sent.id,sent.ownerId,source!!,reply.changes,model!!.code)else null,
             editConsent=false,revision=null,
             notice=if(reply.changes.isNotEmpty()&&!canPreview)"原提案已失效，可重新生成" else if(reply.continuation)"本次内容较长，可缩小范围后继续" else "")}
+        if(sent.mode==AgentMode.DIARY.code&&mutable.value.owner==sent.ownerId&&mutable.value.sessionId==sent.sessionId){
+            val diary=DiaryContent.fromAssistant(reply.text)
+            if(diary!=null)onDiaryReady(sent.ownerId,source?.date?.toString()?:LocalDate.now().toString(),diary,sent.id)
+            else mutable.update{it.copy(notice="日记草稿暂不可用，请缩小范围后重新生成")}
+        }
         refreshHistory()
     }
     private suspend fun failed(sent:AgentMessageRow,error:Exception,querying:Boolean=false) {
@@ -119,7 +125,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                 mutable.update{it.copy(messages=it.messages+sent,title=if(it.title=="新对话")draft.take(28)else it.title)}
                 check(bridge.access.value.userId==source.access.userId) { "账户已切换" }
                 val reply=withTimeout(60_000){bridge.reply(request)}
-                receive(sent,if(source.includeAgenda)snapshot else null,reply)
+                receive(sent,snapshot,reply)
             }catch(e:CancellationException){if(e is TimeoutCancellationException)sent?.let{failed(it,e)} else throw e}
             catch(e:Exception){sent?.let{failed(it,e)}?:mutable.update{it.copy(notice="暂时无法读取日程")}}
             finally {mutable.update{if(it.owner==source.owner&&it.sessionId==source.sessionId)it.copy(busySince=null)else it}}
@@ -161,7 +167,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
 
 /** All modes consume the same read-only copy; notes, credentials and account data are excluded. */
 internal fun agendaText(s:DeskSnapshot):String=buildString {
-    append("时区=${s.zoneId}; 日期=${s.date}; 默认可用=${s.settings.startHour}:00-${s.settings.endHour}:00\n")
+    append("时区=${s.zoneId}; 日期=${s.date}; 默认可用=${DeskOptions.defaults(s.preferences,s.settings)}; 星期时段=${DeskOptions.weekdays(s.preferences)}\n")
     val ordered=s.tasks.sortedWith(compareBy<TaskRow>{it.done}.thenBy{if(it.deadline>0)it.deadline else Long.MAX_VALUE})
     ordered.take(100).forEach {t->
         append("task id=${t.id} 标题=${t.title.replace('\n',' ')} 类型=${t.category} 工时=${t.minutes}min 截止=${if(t.deadline>0)Instant.ofEpochMilli(t.deadline)else "无"} 完成=${t.done}\n")

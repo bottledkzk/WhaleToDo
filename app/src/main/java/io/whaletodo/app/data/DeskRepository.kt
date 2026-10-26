@@ -13,6 +13,7 @@ data class DeskSnapshot(
     val workTimes: List<DailyWorkTimeRow>,
     val date: LocalDate,
     val zoneId: String,
+    val preferences: List<UiPreferenceRow> = emptyList(),
 )
 
 data class PlanPreview(val source: DeskSnapshot, val result: ScheduleResult)
@@ -36,7 +37,7 @@ class DeskRepository(private val db: DeskDatabase) {
     }
 
     /** Future manual reservations are edited atomically with their task. Past work is immutable. */
-    suspend fun saveScheduled(task: TaskRow, manual: Window?) = db.withTransaction {
+    suspend fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null) = db.withTransaction {
         val now = System.currentTimeMillis()
         val old = dao.blocks()
         val editable = old.filter { it.taskId == task.id && it.start > now && !it.done }
@@ -61,6 +62,7 @@ class DeskRepository(private val db: DeskDatabase) {
         dao.insertBlocks(retained + listOfNotNull(manual?.let {
             BlockRow(UUID.randomUUID().toString(), task.id, it.start.toEpochMilli(), it.end.toEpochMilli(), locked = true)
         }))
+        if(reminder!=null){require(reminder.taskId==task.id);saveReminder(reminder)}
     }
 
 
@@ -89,8 +91,8 @@ class DeskRepository(private val db: DeskDatabase) {
     private fun validateAgentChanges(source: DeskSnapshot, changes: List<AgentChange>) {
         val zone = ZoneId.of(source.zoneId)
         val windows = DailyWindows.build(source.date, 14, zone,
-            MinuteRange(source.settings.startHour*60, source.settings.endHour*60),
-            source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) })
+            DeskOptions.defaults(source.preferences,source.settings),
+            source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) }, DeskOptions.weekdays(source.preferences))
         AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline) },
             source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
     }
@@ -127,35 +129,42 @@ class DeskRepository(private val db: DeskDatabase) {
     }
 
     suspend fun todayWorkTime(start: Int, end: Int, date: LocalDate) {
-        require(date == LocalDate.now()) { "日期已变化，请重新选择今日时段" }
+        require(date == LocalDate.now(DeskOptions.zone(dao.deviceOptions()))) { "日期已变化，请重新选择今日时段" }
         require(start in 0..1439 && end in start..1439) { "请选择有效起止时刻" }
         dao.save(DailyWorkTimeRow(date.toString(), start, end))
     }
 
-    suspend fun snapshot() =
-        DeskSnapshot(
-            dao.tasks(),
-            dao.blocks(),
-            dao.settings() ?: SettingRow(),
-            dao.workTimes(),
-            LocalDate.now(),
-            ZoneId.systemDefault().id,
-        )
+    suspend fun snapshot():DeskSnapshot {
+        val options=dao.deviceOptions();val zone=DeskOptions.zone(options)
+        return DeskSnapshot(dao.tasks(),dao.blocks(),dao.settings()?:SettingRow(),dao.workTimes(),LocalDate.now(zone),zone.id,options)
+    }
+    suspend fun saveDiary(owner:String,date:String,content:String,expected:DiaryRow?,sourceMessageId:String?=null) = db.withTransaction {
+        require(owner.isNotBlank());LocalDate.parse(date)
+        check(dao.diary(owner,date)==expected){"日记已变化，请重新打开"}
+        dao.save(DiaryRow(owner,date,DiaryContent.validate(content),System.currentTimeMillis().coerceAtLeast((expected?.updatedAt?:0)+1),sourceMessageId))
+    }
+    suspend fun deleteDiary(row:DiaryRow) { check(dao.deleteDiary(row.ownerId,row.date,row.updatedAt)==1){"日记已变化，请重新打开"} }
+    suspend fun saveReminder(row:TaskReminderRow) {
+        require(dao.tasks().any{it.id==row.taskId}){"事项不存在"}
+        require(ReminderMethod.entries.any{it.code==row.method}&&ReminderTiming.entries.any{it.code==row.timing})
+        dao.save(row)
+    }
 
     suspend fun preview(): PlanPreview = db.withTransaction {
         val source = snapshot()
         val now = Instant.now()
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone)
+        val zone = ZoneId.of(source.zoneId)
+        val today = source.date
         val windows =
             DailyWindows.build(
                 today,
                 7,
                 zone,
-                MinuteRange(source.settings.startHour * 60, source.settings.endHour * 60),
+                DeskOptions.defaults(source.preferences,source.settings),
                 source.workTimes.associate {
                     LocalDate.parse(it.date) to MinuteRange(it.startMinute, it.endMinute)
                 },
+                DeskOptions.weekdays(source.preferences),
             )
         val tasks =
             source.tasks
