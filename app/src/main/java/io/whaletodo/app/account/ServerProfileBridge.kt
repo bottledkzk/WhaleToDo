@@ -50,7 +50,7 @@ class ServerProfileBridge(
             val seconds = ((result.retryAfterMs + 999) / 1000).coerceAtLeast(1)
             throw ProfileException("验证码发送过于频繁，请${seconds}秒后再试")
         }
-        VerificationDispatch((result.retryAfterMs / 1000).toInt().coerceIn(1, 300))
+        VerificationDispatch(60)
     }
 
     override suspend fun resetPassword(
