@@ -18,6 +18,13 @@ if ($LASTEXITCODE -eq 0) { throw 'Release already exists; inspect it instead of 
 & git -C $repo ls-remote --exit-code origin "refs/tags/$($m.tag)" *> $null
 if ($LASTEXITCODE -eq 0) { throw 'Tag already exists; inspect it instead of moving it.' }
 $files = @($apk,(Join-Path $dir 'SHA256SUMS.txt'),(Join-Path $dir 'release.json'),(Join-Path $dir 'RELEASE-NOTES.md'))
+$website = Join-Path $dir "WhaleToDo-website-$($m.tag).zip"
+if (Test-Path -LiteralPath $website) {
+    $websiteSum = "$website.sha256"
+    $expectedSiteHash = ((Get-Content -LiteralPath $websiteSum -Raw).Trim() -split '\s+')[0]
+    if ((Get-FileHash -LiteralPath $website -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedSiteHash) { throw 'Website package hash mismatch.' }
+    $files += @($website, $websiteSum)
+}
 & gh release create $m.tag @files --repo bottledkzk/WhaleToDo --target $m.source_commit --title "WhaleToDo $($m.version)" --notes-file (Join-Path $dir 'RELEASE-NOTES.md') --draft --prerelease
 if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed.' }
 $readback = Join-Path $dir 'github-readback'
