@@ -64,6 +64,29 @@ test('受限角色可完成注册：users + point_wallets + user_settings 同事
   assert.ok(slot.rows[0].demo_slot >= 1 && slot.rows[0].demo_slot <= 10);
 });
 
+test('默认昵称后缀取服务端 uuid 末 4 位：客户端 Whale-1234 不会落库', async () => {
+  const spoofed = await repo.createUser('acct_nick', PASSWORD, 'Whale-1234');
+  assert.equal(spoofed.displayName, `Whale-${spoofed.id.slice(-4)}`);
+  assert.notEqual(spoofed.displayName, 'Whale-1234');
+  const row = await owner.query('SELECT display_name FROM users WHERE id=$1', [spoofed.id]);
+  assert.equal(row.rows[0].display_name, spoofed.displayName, '落库值必须与返回一致');
+
+  const auto = await repo.createUser('acct_nick_auto', PASSWORD);
+  assert.equal(auto.displayName, `Whale-${auto.id.slice(-4)}`);
+
+  // 幂等注册（createUserWithReceipt）走另一条 INSERT，规则必须一致
+  const registered = await repo.createUserWithReceipt({
+    username: 'acct_nick_idem',
+    password: PASSWORD,
+    displayName: 'Whale-9999',
+    scope: 'register:v1:integration-nickname',
+    key: 'k-nickname',
+    fingerprint: 'b'.repeat(64),
+    buildResponse: (u) => ({ id: u.id }),
+  });
+  assert.equal(registered.displayName, `Whale-${registered.id.slice(-4)}`);
+});
+
 test('注册不会越权写 role/status，且默认值来自数据库', async () => {
   const user = await repo.createUser('acct_role', PASSWORD);
   const r = await owner.query('SELECT role, status FROM users WHERE id=$1', [user.id]);

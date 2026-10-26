@@ -2,6 +2,7 @@
 // Prisma 仓储在下一阶段接入，接口保持一致，便于替换。
 import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
+import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoUser } from './types.ts';
 import { decideMutation, batchStatus, SyncBatchConflict } from '../domain/sync.ts';
@@ -88,11 +89,13 @@ export class MemoryRepository {
   }
 
   async createUser(username: string, password: string, displayName?: string): Promise<User> {
+    const id = randomUUID();
     const user: User = {
-      id: randomUUID(),
+      id,
       username,
       passwordHash: await hashPasswordAsync(password),
-      displayName: (displayName ?? username).slice(0, 32),
+      // 默认昵称的后缀只认服务端刚分配的 id；客户端昵称仅作展示值
+      displayName: resolveDisplayName(id, displayName),
       createdAt: this.now(),
     };
     this.store.users.set(user.id, user);

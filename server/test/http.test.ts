@@ -28,10 +28,10 @@ beforeEach(async () => {
 type InjectOptions = import('light-my-request').InjectOptions;
 const inject = (opts: InjectOptions) => app.inject(opts);
 
-async function register(username = 'alice', password = 'S3cret-passw0rd') {
+async function register(username = 'alice', password = 'S3cret-passw0rd', displayName?: string) {
   return inject({
     method: 'POST', url: '/api/v1/auth/register',
-    payload: { username, password },
+    payload: { username, password, ...(displayName === undefined ? {} : { display_name: displayName }) },
   });
 }
 
@@ -70,6 +70,27 @@ describe('注册', () => {
     assert.equal(body.data.user.username, 'alice');
     assert.ok(body.data.user.id);
     assert.equal(repo.userCount, 1);
+  });
+
+  test('默认昵称后缀取服务端 id：客户端传 Whale-1234 也会被覆盖', async () => {
+    const res = await register('whale_name', 'S3cret-passw0rd', 'Whale-1234');
+    assert.equal(res.statusCode, 201);
+    const user = res.json().data.user;
+    const expected = `Whale-${String(user.id).slice(-4).toLowerCase()}`;
+    assert.equal(user.display_name, expected);
+    assert.notEqual(user.display_name, 'Whale-1234');
+
+    // 落库值必须与 /me 返回一致（内存路径也要走到 from-sync 适配器）
+    const token = (await login('whale_name')).json().data.access_token;
+    const me = await inject({ method: 'GET', url: '/api/v1/me', headers: { authorization: `Bearer ${token}` } });
+    assert.equal(me.statusCode, 200);
+    assert.equal(me.json().data.user.display_name, expected);
+  });
+
+  test('自定义昵称作为展示值原样保留', async () => {
+    const res = await register('whale_custom', 'S3cret-passw0rd', '爱丽丝');
+    assert.equal(res.statusCode, 201);
+    assert.equal(res.json().data.user.display_name, '爱丽丝');
   });
 
   test('用户名重复 → 409 CONFLICT（大小写不敏感）', async () => {

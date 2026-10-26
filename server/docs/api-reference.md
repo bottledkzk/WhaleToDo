@@ -32,6 +32,8 @@
 | GET | `/me` | 需 Bearer | **200** `{user:{id,username,display_name,created_at}}` |
 | GET | `/me/entitlements` | 需 Bearer | **200** `{vip:{active,expires_at}, balance, daily_quota}` |
 
+**默认昵称**：不传 `display_name`（或传 `Whale-1234` 这类占位名）时，服务端生成
+`Whale-<users.id 末 4 位>`；客户端自带的编号会被服务端后缀覆盖，普通自定义昵称只作展示值保存。
 **登录失败**：账号不存在与密码错误统一 `401 UNAUTHENTICATED`（不区分，避免枚举）。
 **刷新重放**：已用过的 refresh 再次使用 → `401`，且同 `family_id` 全部会话作废（整串撤销）。
 **限流**：注册按 IP、登录按失败次数；超限 `429 RATE_LIMITED`，`details.retry_after_ms` 给出等待时间；登录成功清零。

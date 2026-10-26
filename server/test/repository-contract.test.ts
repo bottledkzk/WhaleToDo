@@ -24,6 +24,16 @@ async function runContract(makeRepo: () => AccountRepository, label: string) {
       assert.equal(await repo.findUserByUsername('nobody'), null);
     });
 
+    test('默认昵称后缀取服务端 id：客户端传 Whale-1234 不能自选编号', async () => {
+      const repo = makeRepo();
+      const auto = await repo.createUser('whale_auto', PASSWORD);
+      assert.equal(auto.displayName, `Whale-${auto.id.slice(-4).toLowerCase()}`);
+
+      const spoofed = await repo.createUser('whale_spoof', PASSWORD, 'Whale-1234');
+      assert.equal(spoofed.displayName, `Whale-${spoofed.id.slice(-4).toLowerCase()}`);
+      assert.notEqual(spoofed.displayName, 'Whale-1234');
+    });
+
     test('用户名大小写不敏感，重复注册由上层判定（仓储允许取到同一条）', async () => {
       const repo = makeRepo();
       const user = await repo.createUser('Alice', PASSWORD);
