@@ -6,7 +6,7 @@ WhaleToDo 是软件工程团队项目：以 Android 应用为主要客户端，�
 
 ## 当前阶段
 
-Android 客户端进入 0.5.2-preview.1 公开签名预览准备：单事项记录、保护固定安排的排程、日程与预览日历、打卡、本地日记、资料／主题／Working 与时区设置，Room v4。独立包名 `io.whaletodo.app.preview` 与原调试体验包并存；正式附件、SHA256、签名证书和源码提交以 [Release](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1) 实际回执为准，发布流程见 [release](release/README.md)。
+本分支交付 0.5.2-preview.1 公开签名预览：单事项记录、保护固定安排的排程、日程与预览日历、打卡、本地日记、资料／主题／Working 与时区设置，Room v4。独立包名 `io.whaletodo.app.preview` 与原调试体验包并存；APK、SHA256、签名／源码信息和官网部署 ZIP 已在 [Release](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1) 公开并读回核验，发布流程见 [release](release/README.md)。生产网站仍待连接恢复后切换，详见[本轮交付与限制](doc/Bottledkzk/2026-10-26-签名预览与官网交付.md)。
 
 AI 模式、会话、读取授权、Accept／Refuse／意见重生成、Token 计费和权限策略已有代码与隔离测试。当前 APP 默认网络桥接仍未连接，不能在 APP 内登录、签到或调用在线 AI；生产网关版本升级与客户端闭环分别验收。通知、媒体导出、系统分享、邮件和支付按团队分工接入，不把页面和测试夹具视为在线服务。
 
