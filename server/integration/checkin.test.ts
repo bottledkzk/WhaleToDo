@@ -155,3 +155,33 @@ test('流水按账户隔离：另一个账户看不到', async () => {
   const bPage = await repo.listLedger!(b.id, 10);
   assert.equal(bPage.items.length, 0, 'B 不应看到 A 的流水');
 });
+
+test('超过 400 天连续记录不截断：第 406 天为 cycle_day=7、5 分', async () => {
+  const user = await repo.createUser('ck_long', PASSWORD);
+
+  // 种入 405 个连续业务日（最后一个为 2026-10-25），第 406 天 = 2026-10-26
+  const start = new Date('2025-09-16T00:00:00Z');
+  for (let i = 0; i < 405; i += 1) {
+    const d = new Date(start.getTime() + i * 86_400_000).toISOString().slice(0, 10);
+    await owner.query(
+      "INSERT INTO daily_claims (id, user_id, business_date, reward_type, points) VALUES ($1,$2,$3,'sign_in',1)",
+      [randomUUID(), user.id, d],
+    );
+  }
+
+  const res = await repo.claimDailyReward!({
+    userId: user.id, businessDate: '2026-10-26', rewardType: 'sign_in',
+    eventId: `${user.id}:2026-10-26:sign_in`, reason: 'sign-in:2026-10-26',
+  });
+  assert.equal(res.claimed, true);
+  assert.equal(res.consecutiveDays, 406, '连续天数不能被截断');
+  assert.equal(res.cycleDay, 7);
+  assert.equal(res.pointsAwarded, 5, '第 7 天应为 5 分');
+
+  // GET 冷启动也能还原
+  const st = await repo.dailyStatus!({ userId: user.id, businessDate: '2026-10-26', rewardType: 'sign_in' });
+  assert.equal(st.claimed, true);
+  assert.equal(st.consecutiveDays, 406);
+  assert.equal(st.cycleDay, 7);
+  assert.equal(st.pointsToday, 5);
+});

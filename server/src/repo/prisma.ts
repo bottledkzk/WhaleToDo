@@ -371,6 +371,40 @@ export class PrismaRepository implements AccountRepository {
   }
 
 
+  async dailyStatus(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+  }): Promise<{
+    claimed: boolean;
+    consecutiveDays: number;
+    cycleDay: number;
+    pointsToday: number | null;
+    nextPoints: number;
+  }> {
+    const rows = await this.prisma.$queryRaw<{ business_date: string; points: number }[]>`
+      SELECT to_char(business_date, 'YYYY-MM-DD') AS business_date, points
+        FROM daily_claims
+       WHERE user_id = ${input.userId}::uuid AND reward_type = ${input.rewardType}
+       ORDER BY business_date DESC`;
+    const claimedDates = new Set(rows.map((r) => r.business_date));
+    const claimed = claimedDates.has(input.businessDate);
+    const prevStreak = streakBefore(claimedDates, input.businessDate);
+    // 今日已签：进度含今天；未签：显示"下一次"会是第几天
+    const consecutiveDays = claimed ? prevStreak + 1 : prevStreak;
+    const shownDays = claimed ? consecutiveDays : prevStreak + 1;
+    const pointsToday = claimed
+      ? rows.find((r) => r.business_date === input.businessDate)?.points ?? pointsFor(consecutiveDays)
+      : null;
+    return {
+      claimed,
+      consecutiveDays,
+      cycleDay: cycleDay(Math.max(shownDays, 1)),
+      pointsToday,
+      nextPoints: pointsFor(shownDays),
+    };
+  }
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;
@@ -386,13 +420,17 @@ export class PrismaRepository implements AccountRepository {
     reserved: number;
   }> {
     return this.prisma.$transaction(async (tx) => {
-      // 1) 先算连续天数：取该用户最近若干条签到记录（含今天，若已签）
+      // 0) 同账号发奖串行化：在读取历史之前取事务级咨询锁，
+      //    这样"昨天未提交、今天先读历史"的跨业务日交错不会发生（评审 P2）
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`;
+
+      // 1) 先算连续天数：取该用户全部签到记录（含今天，若已签）。
+      //    不能加 LIMIT：截断会让长连续记录的周期错位（评审 P2，405 天场景）
       const rows = await tx.$queryRaw<{ business_date: string }[]>`
         SELECT to_char(business_date, 'YYYY-MM-DD') AS business_date
           FROM daily_claims
          WHERE user_id = ${input.userId}::uuid AND reward_type = ${input.rewardType}
-         ORDER BY business_date DESC
-         LIMIT 400`;
+         ORDER BY business_date DESC`;
       const claimedDates = new Set(rows.map((r) => r.business_date));
 
       const prevStreak = streakBefore(claimedDates, input.businessDate);

@@ -84,6 +84,18 @@ export interface AccountRepository {
    * 返回 claimed=false 表示今天已领过（不重复发奖、不写流水）。
    */
   /** 查询某业务日是否已领取（供 GET /rewards/daily 展示用） */
+  /** 签到进度（供 GET /rewards/daily；今日已签则含今日连续天数与周期） */
+  dailyStatus?(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+  }): Promise<{
+    claimed: boolean;
+    consecutiveDays: number;
+    cycleDay: number;
+    pointsToday: number | null;
+    nextPoints: number;
+  }>;
   hasClaimedDaily?(userId: string, businessDate: string, rewardType: string): Promise<boolean>;
   /** 积分流水：按 (created_at, id) 倒序的稳定复合游标 */
   listLedger?(userId: string, limit: number, cursor?: { createdAt: number; id: string }): Promise<{

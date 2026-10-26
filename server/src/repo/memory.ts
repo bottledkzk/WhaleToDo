@@ -223,6 +223,38 @@ export class MemoryRepository {
   }
 
 
+  async dailyStatus(input: {
+    userId: string;
+    businessDate: string;
+    rewardType: string;
+  }): Promise<{
+    claimed: boolean;
+    consecutiveDays: number;
+    cycleDay: number;
+    pointsToday: number | null;
+    nextPoints: number;
+  }> {
+    const claimedDates = new Set<string>();
+    let pointsToday: number | null = null;
+    for (const [key, points] of this.store.claims.entries()) {
+      const [uid, date, type] = key.split(':');
+      if (uid !== input.userId || type !== input.rewardType || !date) continue;
+      claimedDates.add(date);
+      if (date === input.businessDate) pointsToday = points;
+    }
+    const claimed = claimedDates.has(input.businessDate);
+    const prevStreak = streakBefore(claimedDates, input.businessDate);
+    const consecutiveDays = claimed ? prevStreak + 1 : prevStreak;
+    const shownDays = claimed ? consecutiveDays : prevStreak + 1;
+    return {
+      claimed,
+      consecutiveDays,
+      cycleDay: cycleDay(Math.max(shownDays, 1)),
+      pointsToday: claimed ? pointsToday : null,
+      nextPoints: pointsFor(shownDays),
+    };
+  }
+
   async claimDailyReward(input: {
     userId: string;
     businessDate: string;

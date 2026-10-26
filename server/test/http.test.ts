@@ -331,3 +331,33 @@ describe('流水游标（复合 (created_at, id)）', () => {
     assert.equal(first.json().data.next_cursor, null, '只有一条时不应给下一页游标');
   });
 });
+
+describe('签到进度（GET 可恢复 7 日条）', () => {
+  test('未签到时给出下一次的周期与分值；签到后可恢复连续天数', async () => {
+    await register('streak_user');
+    const token = (await login('streak_user')).json().data.access_token;
+    const headers = { authorization: `Bearer ${token}` };
+
+    const before = await inject({ method: 'GET', url: '/api/v1/rewards/daily', headers });
+    assert.equal(before.statusCode, 200);
+    assert.equal(before.json().data.claimed, false);
+    assert.equal(before.json().data.consecutive_days, 0);
+    assert.equal(before.json().data.cycle_day, 1);
+    assert.equal(before.json().data.next_points, 1);
+
+    const claim = await inject({ method: 'POST', url: '/api/v1/rewards/daily/claim', headers });
+    assert.equal(claim.statusCode, 201);
+    assert.equal(claim.json().data.points_awarded, 1);
+    assert.equal(claim.json().data.consecutive_days, 1);
+    assert.equal(claim.json().data.cycle_day, 1);
+
+    // 冷启动：仅凭 GET 也要能还原签到条
+    const after = await inject({ method: 'GET', url: '/api/v1/rewards/daily', headers });
+    const d = after.json().data;
+    assert.equal(d.claimed, true);
+    assert.equal(d.consecutive_days, 1);
+    assert.equal(d.cycle_day, 1);
+    assert.equal(d.points_today, 1);
+    assert.equal(d.balance.available, 1);
+  });
+});

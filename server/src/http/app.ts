@@ -317,6 +317,23 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     await requireAuth(req);
     const date = businessDate(new Date(), config.businessTimezone);
     const wallet = await repo.walletOf(req.userId!);
+
+    if (repo.dailyStatus) {
+      const st = await repo.dailyStatus({
+        userId: req.userId!, businessDate: date, rewardType: 'sign_in',
+      });
+      return ok(req.requestId, {
+        business_date: date,
+        claimed: st.claimed,
+        consecutive_days: st.consecutiveDays,
+        cycle_day: st.cycleDay,
+        points_today: st.pointsToday,
+        next_points: st.nextPoints,
+        reward: { reward_type: 'sign_in', daily_points: 1, cycle_bonus_points: 5, cycle_days: 7 },
+        balance: { available: wallet.available, reserved: wallet.reserved },
+      });
+    }
+
     const claimed = repo.hasClaimedDaily
       ? await repo.hasClaimedDaily(req.userId!, date, 'sign_in')
       : false;
