@@ -22,15 +22,27 @@ data class AgentAccess(val userId: String? = null, val vip: Boolean = false, val
     val connected: Boolean = false, val editModels: Set<String> = emptySet())
 enum class GateReason { LOGIN, VIP, POINTS, CONSENT, MODEL, CONNECTION }
 object AgentPolicy {
-    fun gate(access: AgentAccess, mode: AgentMode, model: AgentModel, consent: Boolean): GateReason? = when {
+    /** Routing is internal and limited to capabilities supplied by the authenticated bridge. */
+    fun route(models: List<AgentModel>, access: AgentAccess, mode: AgentMode): AgentModel =
+        (if(mode.edits) models.firstOrNull { it.canEdit && it.code in access.editModels }
+         else models.firstOrNull { !it.canEdit && !it.requiresVip })
+        ?: AgentModel("unavailable", "鲸鱼AI", canEdit=mode.edits)
+    private fun permissionGate(access: AgentAccess, mode: AgentMode, model: AgentModel): GateReason? = when {
         access.userId.isNullOrBlank() -> GateReason.LOGIN
         (mode.edits || model.requiresVip) && !access.vip -> GateReason.VIP
-        mode.edits && (!model.canEdit || model.code !in access.editModels) -> GateReason.MODEL
-        mode.edits && !consent -> GateReason.CONSENT
-        access.availablePoints <= 0 -> GateReason.POINTS
-        !access.connected -> GateReason.CONNECTION
+        model.code == "unavailable" || mode.edits && (!model.canEdit || model.code !in access.editModels) -> GateReason.MODEL
         else -> null
     }
+    fun gate(access: AgentAccess, mode: AgentMode, model: AgentModel, consent: Boolean): GateReason? =
+        permissionGate(access,mode,model) ?: when {
+            mode.edits && !consent -> GateReason.CONSENT
+            access.availablePoints <= 0 -> GateReason.POINTS
+            !access.connected -> GateReason.CONNECTION
+            else -> null
+        }
+    /** Applying an already-paid proposal is a local confirmation, never a second billable request. */
+    fun proposalGate(access: AgentAccess, model: AgentModel): GateReason? =
+        permissionGate(access,AgentMode.EDIT,model) ?: if(!access.connected) GateReason.CONNECTION else null
     fun shareGate(access: AgentAccess, premium: Boolean, trialGranted: Boolean = false): GateReason? = when {
         access.userId.isNullOrBlank() -> GateReason.LOGIN
         premium && !access.vip && !trialGranted -> GateReason.VIP
@@ -85,4 +97,11 @@ object AgentChanges {
             require(finalBlocks.withIndex().none { (j,b) -> i != j && a.start < b.end && a.end > b.start }) { "提案与其他安排重叠" }
         } }
     }
+}
+
+/** Display guard also covers old local conversation history; routing codes never render as UI. */
+object AssistantIdentity {
+    const val introduction = "我是WhaleToDo的鲸鱼AI助手。"
+    private val supplier = Regex("deep[\\s_-]*seek|深度求索|\\bgpt[\\w.-]*|chatgpt|claude|anthropic|gemini|google|openai|qwen|通义千问|\\bglm[\\w.-]*|智谱|\\bkimi\\b|moonshot|豆包|doubao", RegexOption.IGNORE_CASE)
+    fun display(text: String): String = if(supplier.containsMatchIn(text)) introduction else text
 }

@@ -2,7 +2,7 @@ import type { AiConfig } from './config.ts';
 export const PROVIDER_URL='https://api.deepseek.com/chat/completions';
 export {MODES,systemPrompt} from './policy.ts';
 export type {Mode} from './policy.ts';
-import {type Mode,type EditChange,systemPrompt,softCompact,parseProposal,fingerprint} from './policy.ts';
+import {type Mode,type EditChange,systemPrompt,softCompact,parseProposal,fingerprint,publicAssistantText} from './policy.ts';
 export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[]}
 export class ProviderFailure extends Error {
@@ -15,9 +15,14 @@ export function prepareInput(input:AiInput):AiInput {
  return {...input,prompt:prompt.text,context:context.text,history,sourceFingerprint:fingerprint(input),
  compacted:prompt.omitted>0||context.omitted>0||(input.history?.length??0)>8};
 }
+/** Untrusted history never becomes actual assistant/system messages at the provider boundary. */
+export function providerMessages(input:AiInput) {
+ return [{role:'system',content:systemPrompt(input.mode,input.share_style)},
+  {role:'user',content:JSON.stringify({request:input.prompt,agenda:input.context??'',history:input.history??[]})}];
+}
 export function tokenReservation(input:AiInput,maxOutput:number):number {
  // UTF-8 bytes conservatively bound text tokenization; include fixed framing allowance.
- return Buffer.byteLength(systemPrompt(input.mode,input.share_style)+input.prompt+(input.context??'')+(input.history??[]).map(h=>h.content).join(''),'utf8')+maxOutput+256;
+ return Buffer.byteLength(JSON.stringify(providerMessages(input)),'utf8')+maxOutput+256;
 }
 async function boundedText(response:Response):Promise<string> {
  if(!response.body) throw new ProviderFailure(false);
@@ -33,7 +38,7 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},
  body:JSON.stringify({model:input.model_code==='deepseek-planner'?(config.editModel??'deepseek-v4-pro'):config.model,thinking:{type:'disabled'},stream:false,max_tokens:config.maxOutput,
  ...(input.mode==='edit'?{response_format:{type:'json_object'}}:{}),
- messages:[{role:'system',content:systemPrompt(input.mode,input.share_style)},...(input.history??[]),{role:'user',content:input.prompt+(input.context?'\n用户选择的安排摘要：\n'+input.context:'')}]}),
+ messages:providerMessages(input)}),
  signal:AbortSignal.timeout(config.timeoutMs)});
  if(!response.ok){await response.body?.cancel();throw new ProviderFailure([400,401,402,403,404,413,422,429].includes(response.status));}
  const result=JSON.parse(await boundedText(response));
@@ -45,9 +50,9 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};
  if(input.mode==='edit'){
  if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试。',...usage};
- const proposal=parseProposal(text);return {text:proposal.summary,...usage,changes:proposal.changes};}
+ const proposal=parseProposal(text);return {text:publicAssistantText(proposal.summary),...usage,changes:proposal.changes};}
  const end=Math.max(...['。','！','？','.','!','?'].map(p=>text.lastIndexOf(p)));
  const safeText=continuation?(end>=0?text.slice(0,end+1):'内容未在本次篇幅内完成，请缩小范围后继续。'):text.trim();
- return {text:safeText,...usage};
+ return {text:publicAssistantText(safeText),...usage};
  }catch(err){if(err instanceof ProviderFailure)throw err;throw new ProviderFailure(false);}
 }
