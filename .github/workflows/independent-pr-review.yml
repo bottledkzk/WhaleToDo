@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - number: 23
-            revision: 66bb5df1df33cc0bd4760f2ca7e5fc8074805fa2
+            revision: c26a65bcece63eb86892da50f7cb2aa60341c022
           - number: 24
-            revision: e92442005118b63c19bc8c598b98c0c181862f5e
+            revision: f47ddf19dc88cb0e5e72ad5d1614f80ce66d2d6c
     services:
       postgres:
         image: postgres:16-alpine
@@ -56,7 +56,7 @@ jobs:
           node node_modules/prisma/build/index.js migrate deploy
           psql -h 127.0.0.1 -U postgres -d whaletodo_verify -v ON_ERROR_STOP=1 -f ../env/postgresql/grants.sql
       - name: Independent failure and concurrency probes
-        run: node review/review/pg-probes.mjs
+        run: node review/review/fix-recheck.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
