@@ -29,7 +29,13 @@ class AccountSession(
     /** 把 UI 会话切到 expected；TokenStore 已换号则拒绝。 */
     fun begin(expected: String): Boolean = synchronized(lock) {
         if (credentialSessionId() != expected) return@synchronized false
-        sessionId = expected
+        if (sessionId != expected) {
+            // 新会话不得短暂复用上一账户的邮箱、资料、VIP/积分或连接状态。
+            mutableEmail.value = null
+            mutableDetails.value = null
+            mutableAccess.value = AgentAccess()
+            sessionId = expected
+        }
         true
     }
 

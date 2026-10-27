@@ -28,7 +28,13 @@ class ServerProfileBridge(
         credentials.saveEmail(clean)
         val expected = credentials.read()?.sessionId ?: return@call
         if (!session.begin(expected)) throw ProfileException("账户已切换，请重试")
-        if (!loadAccount(clean, expected)) throw ProfileException("账户已切换，请重试")
+        try {
+            if (!loadAccount(clean, expected)) throw ProfileException("账户已切换，请重试")
+        } catch (e: ApiException) {
+            // 新会话加载遇到 401：清的是 B，不是外层 call 启动时的旧 A。
+            if (e.status == 401 || e.code == "UNAUTHENTICATED") clearIfSession(expected)
+            throw e
+        }
     }
 
     override suspend fun register(

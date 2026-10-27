@@ -38,8 +38,59 @@ class AccountSessionTest {
         assertFalse(session.clear("A"))
 
         assertEquals("B", session.currentSessionId())
-        assertEquals(5, session.access.value.availablePoints)
+        assertNull(session.email.value)
+        assertNull(session.details.value)
+        assertNull(session.access.value.userId)
+        assertEquals(0, session.access.value.availablePoints)
+        assertFalse(session.access.value.vip)
+        assertFalse(session.access.value.connected)
+    }
+
+    @Test
+    fun `begin new session clears old profile before new load`() {
+        var stored = "A"
+        val session = AccountSession { stored }
+        assertTrue(session.begin("A"))
+        val profile = AccountProfile("u1", "user", "A 用户")
+        assertTrue(session.update("A", "a@example.invalid", profile, Entitlements(true, null), 5))
         assertNotNull(session.details.value)
+
+        stored = "B"
+        assertTrue(session.begin("B"))
+        assertEquals("B", session.currentSessionId())
+        assertNull(session.email.value)
+        assertNull(session.details.value)
+        assertEquals(0, session.access.value.availablePoints)
+        assertNull(session.access.value.userId)
+    }
+
+    @Test
+    fun `begin same session preserves loaded profile`() {
+        var stored = "A"
+        val session = AccountSession { stored }
+        assertTrue(session.begin("A"))
+        val profile = AccountProfile("u1", "user", "A 用户")
+        assertTrue(session.update("A", "a@example.invalid", profile, Entitlements(true, null), 5))
+
+        assertTrue(session.begin("A"))
+        assertEquals("A", session.currentSessionId())
+        assertEquals("a@example.invalid", session.email.value)
+        assertEquals("u1", session.details.value?.userId)
+        assertEquals(5, session.access.value.availablePoints)
+    }
+
+    @Test
+    fun `new session can update after begin`() {
+        var stored = "A"
+        val session = AccountSession { stored }
+        assertTrue(session.begin("A"))
+        stored = "B"
+        assertTrue(session.begin("B"))
+        val profile = AccountProfile("u2", "user-b", "B 用户")
+        assertTrue(session.update("B", "b@example.invalid", profile, Entitlements(false, null), 3))
+        assertEquals("B", session.currentSessionId())
+        assertEquals("u2", session.access.value.userId)
+        assertEquals(3, session.access.value.availablePoints)
     }
 
     @Test
