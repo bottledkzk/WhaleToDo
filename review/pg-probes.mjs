@@ -18,6 +18,7 @@ const load=name=>import(pathToFileURL(resolve(source,name)).href);
 const {PrismaRepository}=await load('src/repo/prisma.ts');
 const {buildApp}=await load('src/http/app.ts');
 const {loadConfig}=await load('src/config.ts');
+const {hashPassword}=await load('src/lib/security.ts');
 const owner=new Pool({connectionString:process.env.VERIFY_DATABASE_URL,max:2});
 const appUrl=process.env.VERIFY_APP_URL+'?schema=whaletodo&connection_limit=2';
 const clients=[];
@@ -25,7 +26,7 @@ function client(){const c=new PrismaClient({datasourceUrl:appUrl});clients.push(
 const findings=[];const evidence={case:Number(process.env.REVIEW_CASE),postgres:16,production_accessed:false,observations:{},findings};
 async function user(){
   const id=randomUUID();
-  await owner.query('INSERT INTO users(id,username,password_hash,display_name) VALUES($1,$2,$3,$4)',[id,'rv_'+id.slice(0,8),'synthetic-only-hash','Synthetic review']);
+  await owner.query('INSERT INTO users(id,username,password_hash,display_name) VALUES($1,$2,$3,$4)',[id,'rv_'+id.slice(0,8),hashPassword('Synthetic-review-only-password'),'Synthetic review']);
   await owner.query('INSERT INTO point_wallets(user_id,available,reserved) VALUES($1,0,0)',[id]);
   return id;
 }
@@ -83,7 +84,7 @@ try {
     evidence.observations.ticket_binding_control={wrong_purpose:wrongPurpose,wrong_email:wrongEmail,correct};
     const original=repo.createEmailTicket.bind(repo);let failNext=false;const sent=[];
     repo.createEmailTicket=async input=>{if(failNext){failNext=false;throw Error('SYNTHETIC_TICKET_INSERT_FAILURE');}return original(input);};
-    const app=buildApp({repo,config:loadConfig({NODE_ENV:'test',PAYMENT_PROVIDER:'disabled',IDEMPOTENCY_SECRET:'synthetic-ci-review-only-secret'}),emailCodeSink:input=>{sent.push(input);}});
+    const app=buildApp({repo,config:loadConfig({NODE_ENV:'test',PAYMENT_PROVIDER:'disabled',IDEMPOTENCY_SECRET:'synthetic-ci-review-only-secret-20261026'}),emailCodeSink:input=>{sent.push(input);}});
     try{
       const email='fault-review@example.invalid';
       const send=await app.inject({method:'POST',url:'/api/v1/auth/email/send-code',payload:{email,purpose:'register'}});
