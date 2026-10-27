@@ -14,9 +14,9 @@ jobs:
       matrix:
         include:
           - number: 23
-            revision: c26a65bcece63eb86892da50f7cb2aa60341c022
+            revision: c1b66cf19e68a10b6cb53eeff87f6d81f01107d5
           - number: 24
-            revision: f47ddf19dc88cb0e5e72ad5d1614f80ce66d2d6c
+            revision: c1b66cf19e68a10b6cb53eeff87f6d81f01107d5
     services:
       postgres:
         image: postgres:16-alpine
