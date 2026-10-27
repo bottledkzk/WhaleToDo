@@ -50,7 +50,9 @@ class ServerProfileBridge(
             val seconds = ((result.retryAfterMs + 999) / 1000).coerceAtLeast(1)
             throw ProfileException("验证码发送过于频繁，请${seconds}秒后再试")
         }
-        VerificationDispatch(60)
+        // TODO: 接入 SMTP/投递能力后，按 retryAfterMs 返回真实 VerificationDispatch。
+        // 当前服务端只是落验证码摘要，没有投递通道，不能向用户谎称“验证码已发送”。
+        throw ProfileException("邮件投递尚未接入，验证码无法送达；请使用演示账号登录")
     }
 
     override suspend fun resetPassword(

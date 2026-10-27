@@ -13,6 +13,11 @@ import org.junit.Before
 import org.junit.Test
 import java.net.InetSocketAddress
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 用 JDK 自带 HttpServer 起一个假后端，验证客户端的真实 HTTP 行为：
@@ -22,6 +27,7 @@ class ApiClientTest {
 
     private lateinit var server: HttpServer
     private lateinit var baseUrl: String
+    private val serverExecutor = Executors.newCachedThreadPool()
 
     /** 记录收到的请求，便于断言 */
     private val calls = mutableListOf<Recorded>()
@@ -32,12 +38,13 @@ class ApiClientTest {
     fun setUp() {
         server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         baseUrl = "http://127.0.0.1:${server.address.port}/api/v1"
-        server.executor = null
+        server.executor = serverExecutor
     }
 
     @After
     fun tearDown() {
         server.stop(0)
+        serverExecutor.shutdownNow()
     }
 
     private fun handler(routes: (Recorded) -> Pair<Int, String>) {
@@ -49,7 +56,7 @@ class ApiClientTest {
                 body = exchange.requestBody.readBytes().toString(Charsets.UTF_8),
                 idem = exchange.requestHeaders.getFirst("Idempotency-Key"),
             )
-            calls += rec
+            synchronized(calls) { calls += rec }
             val (status, body) = routes(rec)
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
@@ -160,6 +167,124 @@ class ApiClientTest {
             assertEquals(401, e.status)
         }
         assertNull(store.read())
+    }
+
+    @Test
+    fun `refresh 503 保留令牌，恢复后重试成功`() {
+        var meCalls = 0
+        var refreshCalls = 0
+        handler { rec ->
+            when (rec.path) {
+                "/api/v1/me" -> {
+                    meCalls++
+                    if (meCalls <= 2) Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"过期"}}""")
+                    else Pair(200, """{"request_id":"r200","data":{"user":{"id":"u1"}}}""")
+                }
+                "/api/v1/auth/refresh" -> {
+                    refreshCalls++
+                    if (refreshCalls == 1) {
+                        Pair(503, """{"request_id":"r503","error":{"code":"UPSTREAM_UNAVAILABLE","message":"down"}}""")
+                    } else {
+                        Pair(200, """{"request_id":"r-refresh","data":{"access_token":"new-a","refresh_token":"new-r"}}""")
+                    }
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val store = InMemoryTokenStore(TokenPair("old-a", "old-r"))
+        val api = client(store)
+
+        try {
+            api.get("/me")
+            fail("应当抛出可重试错误")
+        } catch (e: ApiException) {
+            assertEquals("UPSTREAM_UNAVAILABLE", e.code)
+            assertEquals(503, e.status)
+            assertEquals("登录状态校验暂时不可用，请稍后重试", e.message)
+        }
+        assertEquals(TokenPair("old-a", "old-r"), store.read())
+
+        assertEquals(200, api.get("/me").status)
+        assertEquals(2, refreshCalls)
+        assertEquals(TokenPair("new-a", "new-r"), store.read())
+    }
+
+    @Test
+    fun `并发 401 只提交一次 refresh`() {
+        val oldTokenArrivals = CountDownLatch(2)
+        val refreshCalls = AtomicInteger(0)
+        handler { rec ->
+            when {
+                rec.path == "/api/v1/me" && rec.auth == "Bearer old-a" -> {
+                    oldTokenArrivals.countDown()
+                    oldTokenArrivals.await(3, TimeUnit.SECONDS)
+                    Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"过期"}}""")
+                }
+                rec.path == "/api/v1/me" ->
+                    Pair(200, """{"request_id":"r200","data":{"user":{"id":"u1"}}}""")
+                rec.path == "/api/v1/auth/refresh" -> {
+                    refreshCalls.incrementAndGet()
+                    Pair(200, """{"request_id":"r-refresh","data":{"access_token":"new-a","refresh_token":"new-r"}}""")
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val store = InMemoryTokenStore(TokenPair("old-a", "old-r"))
+        val api = client(store)
+        val gate = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val futures = (1..2).map {
+                pool.submit<ApiResponse> {
+                    gate.await(3, TimeUnit.SECONDS)
+                    api.get("/me")
+                }
+            }
+            gate.countDown()
+            futures.forEach { assertEquals(200, it.get(5, TimeUnit.SECONDS).status) }
+            assertEquals(1, refreshCalls.get())
+            assertEquals(TokenPair("new-a", "new-r"), store.read())
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `退出期间刷新结果不写回`() {
+        val refreshStarted = CountDownLatch(1)
+        val allowRefresh = CountDownLatch(1)
+        handler { rec ->
+            when (rec.path) {
+                "/api/v1/me" ->
+                    Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"过期"}}""")
+                "/api/v1/auth/refresh" -> {
+                    refreshStarted.countDown()
+                    allowRefresh.await(3, TimeUnit.SECONDS)
+                    Pair(200, """{"request_id":"r-refresh","data":{"access_token":"new-a","refresh_token":"new-r"}}""")
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val store = InMemoryTokenStore(TokenPair("old-a", "old-r"))
+        val api = client(store)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val future = pool.submit<ApiResponse> { api.get("/me") }
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS))
+            store.clear()
+            allowRefresh.countDown()
+            try {
+                future.get(5, TimeUnit.SECONDS)
+                fail("刷新结果被丢弃后应抛原 401")
+            } catch (e: ExecutionException) {
+                assertTrue(e.cause is ApiException)
+                assertEquals(401, (e.cause as ApiException).status)
+            }
+            assertNull(store.read())
+        } finally {
+            allowRefresh.countDown()
+            pool.shutdownNow()
+        }
     }
 
     @Test

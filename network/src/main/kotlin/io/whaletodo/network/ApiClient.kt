@@ -1,6 +1,7 @@
 package io.whaletodo.network
 
 import java.io.BufferedReader
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -23,7 +24,8 @@ data class ApiResponse(val status: Int, val body: String, val requestId: String?
  * 行为约定（与契约一致）：
  *  - 自动带上 `Authorization: Bearer <access_token>`
  *  - 访问令牌过期（401）时用 refresh_token 换一次新令牌并**重试原请求一次**
- *  - 刷新失败立即清空本地令牌（避免拿失效令牌反复请求）
+ *  - 并发 401 按 ApiClient 实例 single-flight，只提交一次 refresh
+ *  - refresh 明确无效（400/401/403）才清空令牌；临时/上游错误保留令牌并抛可重试错误
  *  - 非 2xx 一律抛 [ApiException]，携带错误码、状态码与 request_id
  *  - 写请求由调用方传 Idempotency-Key
  *
@@ -36,6 +38,10 @@ class ApiClient(
     private val tokenStore: TokenStore,
     private val timeoutMs: Int = 15_000,
 ) {
+    private val refreshLock = Any()
+
+    private enum class RefreshResult { RETRY, INVALID, DISCARDED }
+
     fun get(path: String, auth: Boolean = true): ApiResponse = request("GET", path, null, auth, null)
 
     fun post(
@@ -52,33 +58,99 @@ class ApiClient(
         auth: Boolean,
         idempotencyKey: String?,
     ): ApiResponse {
-        var response = execute(method, path, body, auth, idempotencyKey)
+        val usedAccess = if (auth) tokenStore.read()?.accessToken else null
+        var response = execute(method, path, body, auth, idempotencyKey, usedAccess)
         if (response.status == 401 && auth) {
-            val refreshed = try {
-                refreshTokens()
-            } catch (_: Exception) {
-                false
+            when (refreshAfter401(usedAccess, response.requestId)) {
+                RefreshResult.RETRY -> {
+                    response = execute(
+                        method,
+                        path,
+                        body,
+                        auth,
+                        idempotencyKey,
+                        tokenStore.read()?.accessToken,
+                    )
+                }
+                RefreshResult.INVALID, RefreshResult.DISCARDED -> Unit
             }
-            if (refreshed) {
-                response = execute(method, path, body, auth, idempotencyKey)
-            }
-            if (!refreshed || response.status == 401) tokenStore.clear()
         }
         if (!response.isSuccess) throw toException(response)
         return response
     }
 
-    /** 用 refresh_token 换新令牌；成功返回 true 并写回 TokenStore */
-    fun refreshTokens(): Boolean {
-        val current = tokenStore.read() ?: return false
-        val payload = """{"refresh_token":"${escape(current.refreshToken)}"}"""
-        val response = execute("POST", "/auth/refresh", payload, auth = false, idempotencyKey = null)
-        if (!response.isSuccess) return false
-        val access = Json.stringField(response.body, "access_token") ?: return false
-        val refresh = Json.stringField(response.body, "refresh_token") ?: return false
-        tokenStore.save(TokenPair(access, refresh))
-        return true
+    /**
+     * 401 后的单飞刷新：同实例并发 401 只提交一次 refresh。
+     * 成功返回 RETRY；明确无效清空令牌；等待者发现 access 已变则直接重试。
+     */
+    private fun refreshAfter401(usedAccess: String?, originalRequestId: String?): RefreshResult =
+        synchronized(refreshLock) {
+            val current = tokenStore.read() ?: return@synchronized RefreshResult.INVALID
+            if (current.accessToken != usedAccess) return@synchronized RefreshResult.RETRY
+
+            val response = try {
+                submitRefresh(current.refreshToken)
+            } catch (_: IOException) {
+                throw upstreamUnavailable(originalRequestId)
+            }
+
+            if (response.isSuccess) {
+                val tokens = readTokens(response)
+                if (tokens == null) {
+                    if (tokenStore.read()?.refreshToken == current.refreshToken) tokenStore.clear()
+                    return@synchronized RefreshResult.INVALID
+                }
+                // 保存前核对：期间退出或换号（refreshToken 已变）时丢弃结果。
+                if (tokenStore.read()?.refreshToken != current.refreshToken) {
+                    return@synchronized RefreshResult.DISCARDED
+                }
+                tokenStore.save(tokens)
+                return@synchronized RefreshResult.RETRY
+            }
+
+            if (response.status in INVALID_REFRESH_STATUSES) {
+                if (tokenStore.read()?.refreshToken == current.refreshToken) tokenStore.clear()
+                return@synchronized RefreshResult.INVALID
+            }
+            throw upstreamUnavailable(response.requestId ?: originalRequestId)
+        }
+
+    /**
+     * 用 refresh_token 换新令牌；成功返回 true 并写回 TokenStore。
+     * 仅作为兼容入口，401 自动刷新走 [refreshAfter401] 的单飞流程。
+     */
+    fun refreshTokens(): Boolean = synchronized(refreshLock) {
+        val current = tokenStore.read() ?: return@synchronized false
+        val response = try {
+            submitRefresh(current.refreshToken)
+        } catch (_: IOException) {
+            return@synchronized false
+        }
+        if (!response.isSuccess) return@synchronized false
+        val tokens = readTokens(response) ?: return@synchronized false
+        if (tokenStore.read()?.refreshToken != current.refreshToken) return@synchronized false
+        tokenStore.save(tokens)
+        true
     }
+
+    private fun submitRefresh(refreshToken: String): ApiResponse {
+        val payload = """{"refresh_token":"${escape(refreshToken)}"}"""
+        return execute("POST", "/auth/refresh", payload, auth = false, idempotencyKey = null, accessToken = null)
+    }
+
+    private fun readTokens(response: ApiResponse): TokenPair? {
+        val access = Json.stringField(response.body, "access_token") ?: return null
+        val refresh = Json.stringField(response.body, "refresh_token") ?: return null
+        return TokenPair(access, refresh)
+    }
+
+    private fun upstreamUnavailable(requestId: String?): ApiException =
+        ApiException(
+            "UPSTREAM_UNAVAILABLE",
+            "登录状态校验暂时不可用，请稍后重试",
+            503,
+            requestId,
+        )
 
     private fun execute(
         method: String,
@@ -86,6 +158,7 @@ class ApiClient(
         body: String?,
         auth: Boolean,
         idempotencyKey: String?,
+        accessToken: String?,
     ): ApiResponse {
         val url = java.net.URI.create(config.resolve(path)).toURL()
         val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -96,8 +169,8 @@ class ApiClient(
             setRequestProperty("Accept", "application/json")
         }
         try {
-            if (auth) {
-                tokenStore.read()?.let { conn.setRequestProperty("Authorization", "Bearer ${it.accessToken}") }
+            if (auth && accessToken != null) {
+                conn.setRequestProperty("Authorization", "Bearer $accessToken")
             }
             idempotencyKey?.let { conn.setRequestProperty("Idempotency-Key", it) }
             if (body != null) {
@@ -112,6 +185,10 @@ class ApiClient(
         } finally {
             conn.disconnect()
         }
+    }
+
+    private companion object {
+        val INVALID_REFRESH_STATUSES = setOf(400, 401, 403)
     }
 
     private fun toException(response: ApiResponse): ApiException {
