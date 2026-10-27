@@ -286,36 +286,27 @@ class ServerAgentBridge(
     /**
      * 提交语义：只有明确未接纳（连接失败/门禁/业务拒绝）才 definitive；
      * 已发出后的 5xx/IO 保留原 ID，等下一次 query 确认。
+     * 429 在提交阶段仍按明确拒绝处理（与查询不同）。
      */
-    private fun mapSubmitApi(e: ApiException, requestId: String): Exception = when {
-        e.status == 401 -> AgentGateException(GateReason.LOGIN)
-        e.status == 402 -> AgentGateException(GateReason.POINTS)
-        e.status == 403 -> when (ai.errorReason(e.body)) {
-            "VIP_REQUIRED" -> AgentGateException(GateReason.VIP)
-            "MODEL_NOT_ALLOWED" -> AgentGateException(GateReason.MODEL)
-            "CONSENT_REQUIRED" -> AgentGateException(GateReason.CONSENT)
-            else -> AgentServiceException(true)
-        }
-        e.status == 409 || e.status == 429 -> AgentServiceException(true)
-        e.status in 500..599 ->
-            if (ai.statusOf(e.body) == "failed") AgentServiceException(true)
-            else AgentPendingException(requestId)
-        else -> AgentServiceException(false)
-    }
+    private fun mapSubmitApi(e: ApiException, requestId: String): Exception =
+        AgentErrorMapping.submit(
+            status = e.status,
+            bodyStatus = ai.statusOf(e.body),
+            reason = ai.errorReason(e.body),
+            requestId = requestId,
+        )
 
     /**
-     * 查询语义：503/5xx 只说明暂时查不到，不能终结 pending；
-     * 403/明确 failed/409/429 才结束。
+     * 查询语义：503/5xx 只说明暂时查不到，429 只限制本次查询，都不能终结 pending；
+     * 只有明确 failed、403 归属拒绝、409/明确业务拒绝才结束。
      */
-    private fun mapQueryApi(e: ApiException, requestId: String): Exception = when {
-        e.status == 401 -> AgentGateException(GateReason.LOGIN)
-        e.status == 402 -> AgentGateException(GateReason.POINTS)
-        e.status == 403 || e.status == 409 || e.status == 429 -> AgentServiceException(true)
-        e.status in 500..599 -> AgentPendingException(requestId)
-        else ->
-            if (ai.statusOf(e.body) == "failed") AgentServiceException(true)
-            else AgentServiceException(false)
-    }
+    private fun mapQueryApi(e: ApiException, requestId: String): Exception =
+        AgentErrorMapping.query(
+            status = e.status,
+            code = e.code,
+            bodyStatus = ai.statusOf(e.body),
+            requestId = requestId,
+        )
 
     /**
      * 连接未建立 → CONNECTION（确定未发出）；
