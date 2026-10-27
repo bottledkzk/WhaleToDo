@@ -55,6 +55,7 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     // 邮箱验证码：默认路径也走内存实现，漏转发会让两条路由 500
     sendEmailCode: async (input) => repo.sendEmailCode(input),
     verifyEmailCode: async (input) => repo.verifyEmailCode(input),
+    verifyEmailCodeAndCreateTicket: async (input) => repo.verifyEmailCodeAndCreateTicket(input),
     createEmailTicket: async (input) => repo.createEmailTicket(input),
     consumeEmailTicket: async (input) => repo.consumeEmailTicket(input),
     // 邮箱账户：默认内存路径，漏转发会让注册/登录/重置/绑定 500

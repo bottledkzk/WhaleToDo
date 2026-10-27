@@ -81,6 +81,19 @@ describe('邮箱验证码（内存路径）', () => {
     assert.equal(sentCodes.length, 1, 'sent:false 时不得调用 emailCodeSink');
   });
 
+  test('同邮箱 register 发码后 reset 立即被跨 purpose 冷却拒绝', async () => {
+    const first = await sendCode(EMAIL, 'register');
+    assert.equal(first.statusCode, 202);
+    assert.equal(first.json().data.sent, true);
+    assert.equal(sentCodes.length, 1);
+
+    const second = await sendCode(EMAIL, 'reset');
+    assert.equal(second.statusCode, 202, second.body);
+    assert.equal(second.json().data.sent, false, '不同 purpose 也必须共享 60 秒冷却');
+    assert.ok(second.json().data.retry_after_ms > 0);
+    assert.equal(sentCodes.length, 1, 'sent:false 时不得再次投递');
+  });
+
   test('purpose 缺省 register：发码/校验都不传 purpose 也能走通', async () => {
     const sent = await inject({
       method: 'POST', url: '/api/v1/auth/email/send-code', payload: { email: EMAIL },

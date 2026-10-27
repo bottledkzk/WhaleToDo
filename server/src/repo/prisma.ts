@@ -7,7 +7,7 @@
 //  - RLS 表（tasks/plan_blocks/...）不在此接口内，后续由内容仓储在事务里 set_config 处理
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID, randomBytes, createHmac } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
 import { EmailAccountConflict, RegisterConflict } from './types.ts';
 import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
@@ -836,10 +836,15 @@ export class PrismaRepository implements AccountRepository {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        // 先判 60 秒冷却：被拒请求直接返回，不写 email_throttle（不占小时配额）
+        // 同邮箱发码按邮箱串行：冷却检查 + 插入必须原子，register/reset/bind 共享 60 秒。
+        // 前缀 email: 与账户/支付的 hashtext(userId) 区分，避免无关串行。
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('email:' || ${input.email}))`;
+
+        // 先判 60 秒冷却：被拒请求直接返回，不写 email_throttle（不占小时配额）。
+        // 冷却按邮箱（跨 purpose），否则 register/reset/bind 可各自绕过。
         const lastRows = await tx.$queryRaw<{ created_at: Date }[]>`
           SELECT created_at FROM email_verifications
-           WHERE email_normalized = ${input.email} AND purpose = ${input.purpose}
+           WHERE email_normalized = ${input.email}
            ORDER BY created_at DESC LIMIT 1`;
         const last = lastRows[0];
         if (last) {
@@ -897,40 +902,72 @@ export class PrismaRepository implements AccountRepository {
     codeDigest: string;
     now: number;
   }): Promise<{ ok: boolean; attemptsLeft: number }> {
+    return this.prisma.$transaction((tx) => this.verifyEmailCodeTx(tx, input));
+  }
+
+  /**
+   * 校验并消费验证码 + 写 ticket，必须在同一事务：
+   * ticket 插入失败时 consumed_at 一起回滚，避免 code 已消费但拿不到 ticket。
+   */
+  async verifyEmailCodeAndCreateTicket(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    ticketDigest: string;
+    now: number;
+    ticketTtlMs: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }> {
+    return this.prisma.$transaction((tx) =>
+      this.verifyEmailCodeTx(tx, input, {
+        ticketDigest: input.ticketDigest,
+        ticketTtlMs: input.ticketTtlMs,
+      }),
+    );
+  }
+
+  private async verifyEmailCodeTx(
+    tx: Prisma.TransactionClient,
+    input: { purpose: string; email: string; codeDigest: string; now: number },
+    ticket?: { ticketDigest: string; ticketTtlMs: number },
+  ): Promise<{ ok: boolean; attemptsLeft: number }> {
     const now = new Date(input.now);
+    const rows = await tx.$queryRaw<{ id: string; code_hmac: string; attempts: number; expires_at: Date }[]>`
+      SELECT id, code_hmac, attempts, expires_at FROM email_verifications
+       WHERE email_normalized = ${input.email} AND purpose = ${input.purpose} AND consumed_at IS NULL
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`;
+    const row = rows[0];
+    if (!row) return { ok: false, attemptsLeft: 0 };
 
-    return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<{ id: string; code_hmac: string; attempts: number; expires_at: Date }[]>`
-        SELECT id, code_hmac, attempts, expires_at FROM email_verifications
-         WHERE email_normalized = ${input.email} AND purpose = ${input.purpose} AND consumed_at IS NULL
-         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`;
-      const row = rows[0];
-      if (!row) return { ok: false, attemptsLeft: 0 };
+    if (row.expires_at.getTime() <= input.now) {
+      await tx.$executeRaw`
+        UPDATE email_verifications SET consumed_at = ${now}
+         WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
+      return { ok: false, attemptsLeft: 0 };
+    }
 
-      if (row.expires_at.getTime() <= input.now) {
+    if (digestEquals(row.code_hmac, input.codeDigest)) {
+      const updated = await tx.$executeRaw`
+        UPDATE email_verifications SET consumed_at = ${now}
+         WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
+      if (updated !== 1) return { ok: false, attemptsLeft: 0 };
+      if (ticket) {
         await tx.$executeRaw`
-          UPDATE email_verifications SET consumed_at = ${now}
-           WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
-        return { ok: false, attemptsLeft: 0 };
+          INSERT INTO email_verify_tickets (id, token_hmac, purpose, email_normalized, expires_at, created_at)
+          VALUES (${randomUUID()}::uuid, ${ticket.ticketDigest}, ${input.purpose}, ${input.email},
+                  ${new Date(input.now + ticket.ticketTtlMs)}, ${now})`;
       }
+      return { ok: true, attemptsLeft: 0 };
+    }
 
-      if (digestEquals(row.code_hmac, input.codeDigest)) {
-        const updated = await tx.$executeRaw`
-          UPDATE email_verifications SET consumed_at = ${now}
-           WHERE id = ${row.id}::uuid AND consumed_at IS NULL`;
-        return { ok: updated === 1, attemptsLeft: 0 };
-      }
-
-      // 失败一次；第 5 次失败即作废该码（attempts 封顶 5，绝不写 6）
-      const updated = await tx.$queryRaw<{ attempts: number }[]>`
-        UPDATE email_verifications
-           SET attempts = LEAST(attempts + 1, ${MAX_ATTEMPTS}),
-               consumed_at = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN ${now} ELSE consumed_at END
-         WHERE id = ${row.id}::uuid AND consumed_at IS NULL
-         RETURNING attempts`;
-      const attempts = updated[0]?.attempts ?? row.attempts + 1;
-      return { ok: false, attemptsLeft: Math.max(0, MAX_ATTEMPTS - attempts) };
-    });
+    // 失败一次；第 5 次失败即作废该码（attempts 封顶 5，绝不写 6）
+    const updated = await tx.$queryRaw<{ attempts: number }[]>`
+      UPDATE email_verifications
+         SET attempts = LEAST(attempts + 1, ${MAX_ATTEMPTS}),
+             consumed_at = CASE WHEN attempts + 1 >= ${MAX_ATTEMPTS} THEN ${now} ELSE consumed_at END
+       WHERE id = ${row.id}::uuid AND consumed_at IS NULL
+       RETURNING attempts`;
+    const attempts = updated[0]?.attempts ?? row.attempts + 1;
+    return { ok: false, attemptsLeft: Math.max(0, MAX_ATTEMPTS - attempts) };
   }
 
   async createEmailTicket(input: {

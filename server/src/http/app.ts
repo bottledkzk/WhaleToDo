@@ -448,22 +448,23 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const email = assertEmail(body.email);
     const code = String(body.code ?? '').trim();
     if (!/^\d{6}$/.test(code)) throw invalidCodeError();
-    if (!repo.verifyEmailCode) throw new ApiError('INTERNAL', '当前仓储未实现邮箱验证码');
+    if (!repo.verifyEmailCodeAndCreateTicket) throw new ApiError('INTERNAL', '当前仓储未实现邮箱验证码原子校验');
 
     const digest = codeDigest(config.idempotencySecret, purpose, email, code);
-    const result = await repo.verifyEmailCode({ purpose, email, codeDigest: digest, now: Date.now() });
+    const ticket = createTicketToken();
+    const now = Date.now();
+    // code 消费与 ticket 写入在同一事务；失败整体回滚，不会出现“码已用、ticket 没有”。
+    const result = await repo.verifyEmailCodeAndCreateTicket({
+      purpose,
+      email,
+      codeDigest: digest,
+      ticketDigest: ticket.digest,
+      now,
+      ticketTtlMs: TICKET_TTL_MS,
+    });
     // 错误/过期/次数用尽统一同一个 400，不暴露细节
     if (!result.ok) throw invalidCodeError();
 
-    if (!repo.createEmailTicket) throw new ApiError('INTERNAL', '当前仓储未实现邮箱 ticket');
-    const ticket = createTicketToken();
-    await repo.createEmailTicket({
-      purpose,
-      email,
-      ticketDigest: ticket.digest,
-      now: Date.now(),
-      ttlMs: TICKET_TTL_MS,
-    });
     return ok(req.requestId, { ticket: ticket.token, expires_in: Math.floor(TICKET_TTL_MS / 1000) });
   });
 

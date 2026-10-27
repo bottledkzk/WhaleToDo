@@ -576,9 +576,16 @@ export class MemoryRepository {
       return row.count;
     };
 
-    // 先判 60 秒冷却：被拒请求直接返回，不写 emailSends（不占小时配额）
-    if (existing) {
-      const elapsed = input.now - existing.createdAt;
+    // 先判 60 秒冷却：被拒请求直接返回，不写 emailSends（不占小时配额）。
+    // 冷却按该邮箱所有 purpose 的最新 createdAt，register/reset/bind 共享冷却。
+    let latest: EmailCodeRecord | null = null;
+    for (const record of this.store.emailCodes.values()) {
+      if (record.email === input.email && (!latest || record.createdAt > latest.createdAt)) {
+        latest = record;
+      }
+    }
+    if (latest) {
+      const elapsed = input.now - latest.createdAt;
       if (elapsed < RESEND_INTERVAL_MS) {
         return { sent: false, retryAfterMs: RESEND_INTERVAL_MS - elapsed };
       }
@@ -628,6 +635,29 @@ export class MemoryRepository {
       return { ok: false, attemptsLeft: 0 };
     }
     return { ok: false, attemptsLeft: MAX_ATTEMPTS - record.attempts };
+  }
+
+  async verifyEmailCodeAndCreateTicket(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    ticketDigest: string;
+    now: number;
+    ticketTtlMs: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }> {
+    // 单线程等价事务：ticket 摘要冲突必须在消费 code 之前失败。
+    if (this.store.emailTickets.has(input.ticketDigest)) throw new Error('邮箱 ticket 摘要重复');
+    const result = await this.verifyEmailCode(input);
+    if (result.ok) {
+      this.store.emailTickets.set(input.ticketDigest, {
+        purpose: input.purpose,
+        email: input.email,
+        expiresAt: input.now + input.ticketTtlMs,
+        consumedAt: null,
+        createdAt: input.now,
+      });
+    }
+    return result;
   }
 
   async createEmailTicket(input: {

@@ -163,6 +163,18 @@ export interface AccountRepository {
     codeDigest: string;
     now: number;
   }): Promise<{ ok: boolean; attemptsLeft: number }>;
+  /**
+   * 邮箱验证码：校验并创建 ticket（单事务）。
+   * code 消费与 ticket 写入必须同成同败；ticket 唯一冲突等错误继续抛出。
+   */
+  verifyEmailCodeAndCreateTicket?(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    ticketDigest: string;
+    now: number;
+    ticketTtlMs: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }>;
   /** 邮箱验证码：创建一次性 ticket（只存摘要，有效期由 ttlMs 决定） */
   createEmailTicket?(input: {
     purpose: string;
