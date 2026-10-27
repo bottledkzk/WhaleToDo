@@ -36,10 +36,11 @@ class ReminderReceiver : BroadcastReceiver() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, ReminderCenter.CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, ReminderCenter.channelFor(method))
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
             .setContentText(if (kind == "start") "开始时间到了" else "已到结束时间")
+            // Android O+ 的实际重要性由 channel 决定；保留 priority 供兼容路径使用。
             .setPriority(
                 if (method == "message") NotificationCompat.PRIORITY_DEFAULT
                 else NotificationCompat.PRIORITY_HIGH,

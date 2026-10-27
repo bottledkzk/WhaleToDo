@@ -22,7 +22,9 @@ import kotlinx.coroutines.withContext
  * Only future triggers are scheduled; previous alarms are cancelled by their stored request codes.
  */
 object ReminderCenter {
-    const val CHANNEL_ID = "task_reminders"
+    const val CHANNEL_ID_MESSAGE = "task_reminders_message"
+    const val CHANNEL_ID_ALARM = "task_reminders_alarm"
+    private const val LEGACY_CHANNEL_ID = "task_reminders"
     const val PREFS_NAME = "reminders"
     const val EXTRA_TASK_ID = "task_id"
     const val EXTRA_TITLE = "title"
@@ -41,13 +43,30 @@ object ReminderCenter {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID,
-                "待办提醒",
-                NotificationManager.IMPORTANCE_HIGH,
+                CHANNEL_ID_MESSAGE,
+                "待办提醒（消息）",
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
-                description = "事务开始与结束时的提醒"
+                description = "以普通通知提示事务开始与结束"
             },
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID_ALARM,
+                "待办提醒（闹钟）",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "以高优先级通知提示事务开始与结束"
+            },
+        )
+        // 旧的单一 HIGH channel 不再使用，删除后由新 channel 接管。
+        manager.deleteNotificationChannel(LEGACY_CHANNEL_ID)
+    }
+
+    /** message 使用普通 channel，alarm/both 使用高优先级 channel。 */
+    fun channelFor(method: String?): String = when (method) {
+        "alarm", "both" -> CHANNEL_ID_ALARM
+        else -> CHANNEL_ID_MESSAGE
     }
 
     fun notificationPermissionRequested(context: Context): Boolean =
