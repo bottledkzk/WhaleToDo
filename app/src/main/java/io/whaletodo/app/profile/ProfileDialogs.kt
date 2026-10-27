@@ -1,6 +1,11 @@
 package io.whaletodo.app.profile
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,6 +19,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.*
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import io.whaletodo.app.DeskState
 import io.whaletodo.app.data.DeskOptions
 import io.whaletodo.app.ui.WorkTimeDialog
@@ -128,10 +135,17 @@ import kotlinx.coroutines.delay
 }
 @Composable private fun ReminderDefaultsDialog(s:ProfileState,c:ProfileController){
     fun option(key:String,default:String)=s.options.find{it.key==key}?.value?:default
+    val context=LocalContext.current
+    val notificationsAllowed=NotificationManagerCompat.from(context).areNotificationsEnabled()&&
+        (Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)
     var enabled by remember{mutableStateOf(option("reminder.enabled","false")=="true")}
     var method by remember{mutableStateOf(option("reminder.method","message"))};var stars by remember{mutableIntStateOf(option("reminder.stars","0").toIntOrNull()?:0)}
     AlertDialog(onDismissRequest=c::dismiss,title={Text("自动提醒")},text={Column(Modifier.heightIn(max=440.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(6.dp)){
         Row(verticalAlignment=Alignment.CenterVertically){Text("开启提醒",Modifier.weight(1f));Switch(enabled,{enabled=it},Modifier.semantics{contentDescription="自动提醒开关"})}
+        if(!notificationsAllowed){
+            Text("通知权限未授予，提醒不会弹出",color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+            TextButton(onClick={runCatching{context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))}}){Text("去系统设置开启")}
+        }
         if(enabled){ReminderChoices(method,{method=it});Text("覆盖范围",style=MaterialTheme.typography.labelLarge)
             FilterChip(stars==0,{stars=0},{Text("全部事务")})
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){(1..5).forEach{n->FilterChip(stars==n,{stars=n},{Text("≥$n★",fontSize=11.sp)},modifier=Modifier.weight(1f),shape=RoundedCornerShape(10.dp))}}

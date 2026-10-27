@@ -18,7 +18,8 @@ data class AssistantState(val owner: String = "guest", val access: AgentAccess =
 
 class AssistantController(private val repo: DeskRepository, private val scope: CoroutineScope,
     private val bridge: AgentBridge = AgentBridgeHub.bridge,
-    private val onDiaryReady:(String,String,String,String)->Unit={_,_,_,_->}) {
+    private val onDiaryReady:(String,String,String,String)->Unit={_,_,_,_->},
+    private val onScheduleChanged:suspend ()->Unit={}) {
     private val mutable = MutableStateFlow(AssistantState(models=bridge.models))
     val state: StateFlow<AssistantState> = mutable.asStateFlow()
     init { scope.launch { bridge.access.collect { access ->
@@ -159,6 +160,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         scope.launch {try {
             check(mutable.value.owner==preview.owner) { "账户已切换" }
             repo.applyAgent(preview.id,preview.owner,preview.source,preview.changes)
+            runCatching{onScheduleChanged()}
             mutable.update {if(it.owner==preview.owner)it.copy(preview=null,notice="已应用提案")else it}
         }catch(e:Exception){mutable.update {if(it.owner==preview.owner)it.copy(preview=null,notice="提案已失效，请重新生成")else it}}
         finally{mutable.update{if(it.owner==preview.owner)it.copy(busySince=null)else it}} }

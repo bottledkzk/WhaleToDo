@@ -72,6 +72,7 @@ interface DeskDao {
     @Upsert suspend fun save(option:UiPreferenceRow)
     @Query("DELETE FROM ui_preferences WHERE ownerId=:owner AND `key`=:key") suspend fun removeOption(owner:String,key:String)
     @Query("SELECT * FROM task_reminders WHERE ownerId=:owner AND taskId=:task") suspend fun reminder(owner:String,task:String):TaskReminderRow?
+    @Query("SELECT * FROM task_reminders WHERE enabled=1") suspend fun enabledReminders(): List<TaskReminderRow>
     @Upsert suspend fun save(reminder:TaskReminderRow)
     @Query("SELECT * FROM diaries WHERE ownerId=:owner AND date=:date") suspend fun diary(owner:String,date:String):DiaryRow?
     @Upsert suspend fun save(diary:DiaryRow)
