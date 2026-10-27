@@ -24,7 +24,8 @@ data class ProfileState(val owner:String="guest",val access:AgentAccess=AgentAcc
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProfileController(private val repo:DeskRepository,private val scope:CoroutineScope,
-    private val bridge:ProfileBridge=ProfileBridgeHub.bridge,private val agent:AgentBridge=AgentBridgeHub.bridge) {
+    private val bridge:ProfileBridge=ProfileBridgeHub.bridge,private val agent:AgentBridge=AgentBridgeHub.bridge,
+    private val onRemindersChanged:suspend ()->Unit={}) {
     private val mutable=MutableStateFlow(ProfileState())
     val state:StateFlow<ProfileState> = mutable.asStateFlow()
     init {
@@ -103,12 +104,13 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
         val draft=mutable.value.zoneDraft?:return
         action("暂时无法更改时区，请重新选择") { owner->
             try{repo.changeZone(draft.choice,adjust,draft.previous,draft.from)}catch(e:IllegalArgumentException){mutable.update{if(it.owner==owner)it.copy(error=e.message?:"请检查日程时间")else it};return@action}
+            runCatching{onRemindersChanged()}
             dismissAfter(owner,"时区已更新")
             mutable.update{if(it.owner==owner)it.copy(zoneDraft=null)else it}
         }
     }
     fun saveReminderDefaults(enabled:Boolean,method:String,stars:Int){require(stars in 0..5);require(ReminderMethod.entries.any{it.code==method})
-        action{owner->repo.dao.saveOptions(listOf("reminder.enabled" to enabled.toString(),"reminder.method" to method,"reminder.stars" to stars.toString()).map{(key,value)->UiPreferenceRow(owner,key,value)});dismissAfter(owner,"提醒偏好已保存")}}
+        action{owner->repo.dao.saveOptions(listOf("reminder.enabled" to enabled.toString(),"reminder.method" to method,"reminder.stars" to stars.toString()).map{(key,value)->UiPreferenceRow(owner,key,value)});runCatching{onRemindersChanged()};dismissAfter(owner,"提醒偏好已保存")}}
     fun offerDiary(owner:String,date:String,text:String,messageId:String){
         val clean=DiaryContent.fromAssistant(text)?:return
         mutable.update{if(it.owner==owner)it.copy(pendingDiary=DiaryOffer(owner,date,clean,messageId))else it}

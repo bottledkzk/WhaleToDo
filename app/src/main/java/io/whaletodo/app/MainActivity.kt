@@ -1,10 +1,15 @@
 package io.whaletodo.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,10 +28,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.whaletodo.app.data.*
 import io.whaletodo.app.account.installAccount
+import io.whaletodo.app.reminder.ReminderCenter
 import io.whaletodo.app.ui.*
 import io.whaletodo.core.*
 import io.whaletodo.app.agent.*
@@ -51,6 +58,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         installAccount(this)
+        ReminderCenter.init(this)
         enableEdgeToEdge()
         setContent {
             val prefs = remember { getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
@@ -121,6 +129,20 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;edit=null;capture=false;rating=null }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        if (ReminderCenter.notificationPermissionRequested(context)) return
+        ReminderCenter.markNotificationPermissionRequested(context)
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    LaunchedEffect(Unit) {
+        val scheduled = runCatching { ReminderCenter.resyncAll(context) }.getOrDefault(0)
+        if (scheduled > 0) requestNotificationPermissionIfNeeded()
+    }
     LaunchedEffect(message) {
         if (message.isNotEmpty()) {
             snackbar.showSnackbar(message)
@@ -228,7 +250,10 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             },
             repo=vm.repository,owner=assistant.owner,
             onDetailedSave = { task, manual, reminder ->
-                vm.saveScheduled(task, manual, reminder, onRejected = { saveError = it }) { capture = false }
+                vm.saveScheduled(task, manual, reminder, onRejected = { saveError = it }) {
+                    capture = false
+                    if (reminder.enabled) requestNotificationPermissionIfNeeded()
+                }
             },
             saveError = saveError,
         )
@@ -238,7 +263,10 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             onDismiss = { edit = null },
             repo=vm.repository,owner=assistant.owner,
             onSave = { updated, manual, reminder ->
-                vm.saveScheduled(updated, manual, reminder, onRejected = { saveError = it }) { edit = null }
+                vm.saveScheduled(updated, manual, reminder, onRejected = { saveError = it }) {
+                    edit = null
+                    if (reminder.enabled) requestNotificationPermissionIfNeeded()
+                }
             },
             externalError = saveError,
             manual = state.blocks.firstOrNull { it.taskId == task.id && it.locked && !it.done && it.start > state.now },

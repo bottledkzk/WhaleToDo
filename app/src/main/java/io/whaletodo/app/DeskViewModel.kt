@@ -11,6 +11,7 @@ import java.time.ZoneId
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.whaletodo.app.data.*
+import io.whaletodo.app.reminder.ReminderCenter
 import java.time.LocalDate
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -30,9 +31,11 @@ data class DeskState(
 
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     internal val repository = DeskRepository(DeskDatabase.open(app))
-    val profile by lazy { io.whaletodo.app.profile.ProfileController(repository,viewModelScope) }
+    val profile by lazy { io.whaletodo.app.profile.ProfileController(repository,viewModelScope,
+        onRemindersChanged={ ReminderCenter.resyncAll(getApplication()) }) }
     val assistant by lazy { io.whaletodo.app.agent.AssistantController(repository, viewModelScope,
-        onDiaryReady={owner,date,text,id -> profile.offerDiary(owner,date,text,id)}) }
+        onDiaryReady={owner,date,text,id -> profile.offerDiary(owner,date,text,id)},
+        onScheduleChanged={ ReminderCenter.resyncAll(getApplication()) }) }
     private data class ClockState(val date: LocalDate, val zone: String, val now: Long)
     private fun clockState(): ClockState {
         val zone = ZoneId.systemDefault()
@@ -104,6 +107,7 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
     fun save(task: TaskRow) = run {
         repository.save(task)
         message.value = "已保存"
+        runCatching { ReminderCenter.resyncAll(getApplication()) }
     }
 
     fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
@@ -111,6 +115,7 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
         message.value = "已保存安排"
         onSaved()
+        runCatching { ReminderCenter.resyncAll(getApplication()) }
     }
 
     override fun onCleared() {
@@ -122,9 +127,13 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
     fun complete(task: TaskRow, rating: Int) = run {
         repository.complete(task, rating)
         message.value = "今天又前进了一点"
+        runCatching { ReminderCenter.resyncAll(getApplication()) }
     }
 
-    fun reopen(task: TaskRow) = run { repository.reopen(task) }
+    fun reopen(task: TaskRow) = run {
+        repository.reopen(task)
+        runCatching { ReminderCenter.resyncAll(getApplication()) }
+    }
 
     fun arrange() = run { preview.value = repository.preview() }
 
@@ -133,6 +142,7 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
             repository.apply(it)
             preview.value = null
             message.value = "计划已更新"
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
         }
     }
 
