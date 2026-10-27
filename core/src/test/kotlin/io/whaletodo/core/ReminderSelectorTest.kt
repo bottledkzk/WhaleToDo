@@ -35,6 +35,18 @@ class ReminderSelectorTest {
     }
 
     @Test
+    fun `blank item owner is guest`() {
+        val withBlank = items + ReminderOwnerItem("   ", "blank-1")
+        assertEquals(
+            listOf(
+                ReminderOwnerItem("guest", "guest-1"),
+                ReminderOwnerItem("   ", "blank-1"),
+            ),
+            ReminderSelector.select(withBlank, "guest"),
+        )
+    }
+
+    @Test
     fun `blank active owner is guest and does not include A`() {
         assertEquals(
             listOf(ReminderOwnerItem("guest", "guest-1")),

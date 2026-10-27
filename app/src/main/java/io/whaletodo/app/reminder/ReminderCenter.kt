@@ -43,6 +43,7 @@ object ReminderCenter {
     private const val PI_FLAGS = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     private val mutex = Mutex()
+    private val ownerSwitch = OwnerSwitch()
 
     fun init(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -92,11 +93,15 @@ object ReminderCenter {
      * 与当前 owner 相同时不重复 resync。
      */
     suspend fun setActiveOwner(context: Context, owner: String) {
-        val normalized = owner.trim().ifEmpty { GUEST }
         val app = context.applicationContext
-        if (activeOwner(app) == normalized) return
-        prefs(app).edit().putString(KEY_ACTIVE_OWNER, normalized).commit()
-        resyncAll(app)
+        ownerSwitch.switch(
+            owner = owner,
+            current = { activeOwner(app) },
+            write = { normalized ->
+                prefs(app).edit().putString(KEY_ACTIVE_OWNER, normalized).commit()
+            },
+            resync = { resyncAll(app) },
+        )
     }
 
     /** Opens the database for callers that do not already own one (activity/view model startup). */

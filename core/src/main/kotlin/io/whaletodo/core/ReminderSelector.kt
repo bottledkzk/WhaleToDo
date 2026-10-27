@@ -7,6 +7,6 @@ object ReminderSelector {
     /** Keep only the active owner's reminders; blank/unknown active owner means guest. */
     fun select(items: List<ReminderOwnerItem>, activeOwner: String): List<ReminderOwnerItem> {
         val owner = activeOwner.trim().ifEmpty { "guest" }
-        return items.filter { it.ownerId == owner }
+        return items.filter { it.ownerId.trim().ifEmpty { "guest" } == owner }
     }
 }
