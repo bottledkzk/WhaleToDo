@@ -12,6 +12,7 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
@@ -619,5 +620,48 @@ class ApiClientTest {
         assertEquals("2026-10-26", api.dailyReward().businessDate)
         assertEquals("Bearer a", calls.first().auth)
         assertEquals("idem-1", calls.first { it.path.endsWith("/claim") }.idem)
+    }
+
+    /* ---------------- 传输异常 ---------------- */
+
+    @Test
+    fun `连接拒绝标记请求未发出`() {
+        val port = ServerSocket(0).use { it.localPort }
+        val api = ApiClient(
+            ApiConfig("http://127.0.0.1:$port/api/v1", allowInsecureHttp = true),
+            InMemoryTokenStore(TokenPair("a", "r")),
+        )
+        val error = runCatching { api.post("/ai/requests", """{"prompt":"x"}""") }.exceptionOrNull()
+        assertTrue(error is ApiTransportException)
+        assertFalse((error as ApiTransportException).requestSent)
+    }
+
+    @Test
+    fun `请求写出后断连标记 requestSent`() {
+        val serverSocket = ServerSocket(0)
+        val port = serverSocket.localPort
+        val worker = Thread {
+            runCatching {
+                serverSocket.accept().use { socket ->
+                    val buffer = ByteArray(4096)
+                    socket.getInputStream().read(buffer)
+                    // 不写响应直接断开：模拟服务端读完请求后 reset。
+                    Thread.sleep(100)
+                }
+            }
+        }
+        worker.start()
+        try {
+            val api = ApiClient(
+                ApiConfig("http://127.0.0.1:$port/api/v1", allowInsecureHttp = true),
+                InMemoryTokenStore(TokenPair("a", "r")),
+            )
+            val error = runCatching { api.post("/ai/requests", """{"prompt":"x"}""") }.exceptionOrNull()
+            assertTrue(error is ApiTransportException)
+            assertTrue((error as ApiTransportException).requestSent)
+        } finally {
+            serverSocket.close()
+            worker.join(3000)
+        }
     }
 }

@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -72,7 +73,7 @@ class AiApiTest {
         handler {
             Pair(200, """{"request_id":"r","data":{"prompt_version":"agent-v1","tokens_per_point":1000,"items":[{"code":"deepseek-default","title":"鲸鱼AI","can_edit":false},{"code":"deepseek-planner","title":"日程编辑","can_edit":true,"requires_vip":true}]}}""")
         }
-        val models = api().models()
+        val models = api().models("S")
         assertEquals("agent-v1", models.promptVersion)
         assertEquals(2, models.items.size)
         assertTrue(models.items[1].canEdit)
@@ -84,7 +85,7 @@ class AiApiTest {
         handler {
             Pair(200, """{"request_id":"r","data":{"requests":3,"completed":2,"pending":1,"total_tokens":1234,"input_tokens":1000,"output_tokens":234,"charged_points":2,"available_points":8,"reserved_points":1,"usage_k":"1.2k","tokens_per_point":1000}}""")
         }
-        val usage = api().usage()
+        val usage = api().usage("S")
         assertEquals(3, usage.requests)
         assertEquals(1234, usage.totalTokens)
         assertEquals(8, usage.availablePoints)
@@ -96,7 +97,7 @@ class AiApiTest {
         handler {
             Pair(200, """{"request_id":"r","data":{"id":"00000000-0000-4000-a000-000000000001","status":"succeeded","mode":"edit","text":"建议先做一件小事。","usage_tokens":12,"usage_k":"0.1k","input_tokens":8,"output_tokens":4,"points_reserved":1,"points_charged":1,"continuation":false,"context_compacted":false,"proposal":{"changes":[{"type":"rename_task","target_id":"t1","title":"新标题"},{"type":"set_category","target_id":"t2","category":"work"},{"type":"move_block","target_id":"b1","start_ms":1000,"end_ms":2000}]},"error_code":null,"created_at":"2026-10-27T00:00:00.000Z"}}""")
         }
-        val view = api().submit(submit())
+        val view = api().submit(submit(), "S")
         assertEquals("succeeded", view.status)
         assertEquals("建议先做一件小事。", view.text)
         assertEquals(12, view.usageTokens)
@@ -118,7 +119,7 @@ class AiApiTest {
         handler {
             Pair(202, """{"request_id":"r","data":{"id":"00000000-0000-4000-a000-000000000001","status":"unknown","mode":"chat","text":null,"error_code":"REQUEST_PENDING"}}""")
         }
-        val view = api().submit(submit())
+        val view = api().submit(submit(), "S")
         assertEquals("unknown", view.status)
         assertEquals("REQUEST_PENDING", view.errorCode)
     }
@@ -128,7 +129,7 @@ class AiApiTest {
         handler {
             Pair(402, """{"request_id":"r","error":{"code":"INSUFFICIENT_POINTS","message":"no points","details":{"required_points":1}}}""")
         }
-        val e = runCatching { api().usage() }.exceptionOrNull() as ApiException
+        val e = runCatching { api().usage("S") }.exceptionOrNull() as ApiException
         assertEquals(402, e.status)
         assertEquals("INSUFFICIENT_POINTS", e.code)
         assertTrue(e.body.contains("required_points"))
@@ -143,7 +144,7 @@ class AiApiTest {
         val api = api()
         listOf("VIP_REQUIRED", "MODEL_NOT_ALLOWED", "CONSENT_REQUIRED").forEach { expected ->
             reason = expected
-            val e = runCatching { api.usage() }.exceptionOrNull() as ApiException
+            val e = runCatching { api.usage("S") }.exceptionOrNull() as ApiException
             assertEquals(403, e.status)
             assertEquals(expected, api.errorReason(e.body))
         }
@@ -158,7 +159,7 @@ class AiApiTest {
         val api = api()
         listOf(409, 429, 503).forEach { expected ->
             status = expected
-            val e = runCatching { api.usage() }.exceptionOrNull() as ApiException
+            val e = runCatching { api.usage("S") }.exceptionOrNull() as ApiException
             assertEquals(expected, e.status)
         }
     }
@@ -168,7 +169,7 @@ class AiApiTest {
         handler {
             Pair(200, """{"request_id":"r","data":{"id":"00000000-0000-4000-a000-000000000001","status":"succeeded","text":"done","usage_tokens":3}}""")
         }
-        val view = api().query("00000000-0000-4000-a000-000000000001")
+        val view = api().query("00000000-0000-4000-a000-000000000001", "S")
         assertEquals("done", view.text)
         val call = calls.single()
         assertEquals("GET", call.method)
@@ -180,7 +181,7 @@ class AiApiTest {
         handler {
             Pair(403, """{"request_id":"r","error":{"code":"FORBIDDEN","message":"无法访问此请求"}}""")
         }
-        val e = runCatching { api().query("00000000-0000-4000-a000-000000000001") }.exceptionOrNull() as ApiException
+        val e = runCatching { api().query("00000000-0000-4000-a000-000000000001", "S") }.exceptionOrNull() as ApiException
         assertEquals(403, e.status)
         assertEquals("FORBIDDEN", e.code)
     }
@@ -204,11 +205,59 @@ class AiApiTest {
             }
         }
         val store = InMemoryTokenStore(TokenPair("a", "r", "S"))
-        val models = api(store).models()
+        val models = api(store).models("S")
         assertEquals(1, refreshCalls.get())
         assertEquals(2, modelCalls.get())
         assertEquals("鲸鱼AI", models.items.single().title)
         assertEquals("b", store.read()?.accessToken)
         assertNotNull(store.read()?.sessionId)
+    }
+
+    @Test
+    fun `TokenStore 已是 B 时 A 的 submit 不发 HTTP`() {
+        handler { Pair(200, """{"request_id":"r","data":{"id":"x","status":"succeeded","text":"ok"}}""") }
+        val store = InMemoryTokenStore(TokenPair("b", "rb", "B"))
+        val api = api(store)
+        val e = runCatching { api.submit(submit(), "A") }.exceptionOrNull() as ApiException
+        assertEquals(401, e.status)
+        assertTrue(e.message.contains("账户已切换"))
+        assertEquals(0, calls.size)
+    }
+
+    @Test
+    fun `TokenStore 已是 B 时 A 的 query 不发 HTTP`() {
+        handler { Pair(200, """{"request_id":"r","data":{"id":"00000000-0000-4000-a000-000000000001","status":"succeeded","text":"ok"}}""") }
+        val store = InMemoryTokenStore(TokenPair("b", "rb", "B"))
+        val api = api(store)
+        val e = runCatching {
+            api.query("00000000-0000-4000-a000-000000000001", "A")
+        }.exceptionOrNull() as ApiException
+        assertEquals(401, e.status)
+        assertTrue(e.message.contains("账户已切换"))
+        assertEquals(0, calls.size)
+    }
+
+    @Test
+    fun `503 有 failed 回执与无 failed 可区分`() {
+        var body = """{"request_id":"r","data":{"id":"x","status":"failed"}}"""
+        handler { Pair(503, body) }
+        val api = api()
+        val failed = runCatching { api.submit(submit(), "S") }.exceptionOrNull() as ApiException
+        assertEquals(503, failed.status)
+        assertEquals("failed", api.statusOf(failed.body))
+
+        body = """{"request_id":"r","error":{"code":"UPSTREAM_UNAVAILABLE","message":"down"}}"""
+        val unknown = runCatching { api.submit(submit(), "S") }.exceptionOrNull() as ApiException
+        assertEquals(503, unknown.status)
+        assertNull(api.statusOf(unknown.body))
+    }
+
+    @Test
+    fun `statusOf 只把明确 failed 的回执当作失败`() {
+        handler { Pair(500, """{"request_id":"r","error":{"code":"INTERNAL","message":"boom"}}""") }
+        val api = api()
+        assertEquals("failed", api.statusOf("""{"request_id":"r","data":{"id":"x","status":"failed"}}"""))
+        assertNull(api.statusOf("""{"request_id":"r","error":{"code":"UPSTREAM_UNAVAILABLE","message":"down"}}"""))
+        assertNull(api.statusOf("not-json"))
     }
 }

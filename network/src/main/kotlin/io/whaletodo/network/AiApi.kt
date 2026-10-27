@@ -20,8 +20,8 @@ import kotlinx.serialization.json.put
  */
 class AiApi(private val client: ApiClient) {
 
-    fun models(): AiModels {
-        val data = data(client.get("/ai/models"))
+    fun models(sessionId: String): AiModels {
+        val data = data(client.getAsSession("/ai/models", sessionId))
         return AiModels(
             promptVersion = data.string("prompt_version"),
             tokensPerPoint = data.int("tokens_per_point") ?: 1000,
@@ -38,8 +38,8 @@ class AiApi(private val client: ApiClient) {
         )
     }
 
-    fun usage(): AiUsage {
-        val data = data(client.get("/ai/usage"))
+    fun usage(sessionId: String): AiUsage {
+        val data = data(client.getAsSession("/ai/usage", sessionId))
         return AiUsage(
             requests = data.int("requests") ?: 0,
             completed = data.int("completed") ?: 0,
@@ -55,7 +55,7 @@ class AiApi(private val client: ApiClient) {
         )
     }
 
-    fun submit(request: AiSubmit): AiRequestView {
+    fun submit(request: AiSubmit, sessionId: String): AiRequestView {
         val payload = buildJsonObject {
             put("client_request_id", request.clientRequestId)
             put("mode", request.mode)
@@ -73,13 +73,20 @@ class AiApi(private val client: ApiClient) {
                 }
             })
         }
-        val response = client.post("/ai/requests", payload.toString())
+        val response = client.postAsSession("/ai/requests", payload.toString(), sessionId)
         return parseRequest(response)
     }
 
     /** 只查询原请求 ID；调用方不得用此方法提交新请求。 */
-    fun query(requestId: String): AiRequestView =
-        parseRequest(client.get("/ai/requests/$requestId"))
+    fun query(requestId: String, sessionId: String): AiRequestView =
+        parseRequest(client.getAsSession("/ai/requests/$requestId", sessionId))
+
+    /** 错误响应里 data.status；503 只有 failed 才是服务端明确拒绝。 */
+    fun statusOf(body: String): String? = runCatching {
+        Json.parseToJsonElement(body).jsonObject
+            .obj("data")
+            ?.string("status")
+    }.getOrNull()
 
     /** 403 details.reason；服务端不返回该字段时为空。 */
     fun errorReason(body: String): String? = runCatching {

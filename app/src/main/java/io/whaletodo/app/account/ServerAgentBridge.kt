@@ -16,27 +16,38 @@ import io.whaletodo.network.AiHistory
 import io.whaletodo.network.AiRequestView
 import io.whaletodo.network.AiSubmit
 import io.whaletodo.network.ApiException
+import io.whaletodo.network.ApiTransportException
 import io.whaletodo.network.AuthApi
 import java.io.IOException
+import java.net.ConnectException
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
 
 /**
  * 真实 AI 网关桥：只发自有服务端，不直连供应商。
  * access 的 userId/vip/points 来自 AccountSession；connected/editModels 只由 models 成功更新。
+ * 所有 HTTP 都在 [io] 上执行；reply/query 绑定调用开始时的 sessionId，
+ * 返回后若代次已变则丢弃结果，避免 A 的上下文以 B 的令牌发出或写回。
  */
 class ServerAgentBridge(
     private val ai: AiApi,
     private val auth: AuthApi,
     private val session: AccountSession,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : AgentBridge {
     private val mutableAccess = MutableStateFlow(
         session.access.value.copy(connected = false, editModels = emptySet()),
@@ -47,48 +58,75 @@ class ServerAgentBridge(
     private var modelList: List<AgentModel> = emptyList()
     override val models: List<AgentModel> get() = modelList
 
+    @Volatile
+    private var refreshJob: Job? = null
+
     init {
         scope.launch {
             var lastOwner: String? = null
             session.access.collect { base ->
                 val owner = base.userId
-                if (owner == null) {
-                    lastOwner = null
-                    modelList = emptyList()
-                    mutableAccess.value = AgentAccess()
-                } else if (owner != lastOwner) {
-                    lastOwner = owner
-                    // 换号时先断开旧 owner 的模型/编辑能力，再刷新新 owner。
-                    mutableAccess.value = base.copy(connected = false, editModels = emptySet())
-                    refresh()
-                } else {
-                    // 签到/订单/VIP/余额变化：只同步 userId/vip/points，保留已建立的连接与编辑模型。
-                    mutableAccess.value = base.copy(
-                        connected = mutableAccess.value.connected,
-                        editModels = mutableAccess.value.editModels,
-                    )
+                when {
+                    owner == null -> {
+                        lastOwner = null
+                        refreshJob?.cancel()
+                        refreshJob = null
+                        modelList = emptyList()
+                        mutableAccess.value = AgentAccess()
+                    }
+                    owner != lastOwner -> {
+                        lastOwner = owner
+                        refreshJob?.cancel()
+                        modelList = emptyList()
+                        // 换号先立即断开旧 owner 的能力；网络刷新放到独立 Job，不阻塞 collect。
+                        mutableAccess.value = base.copy(connected = false, editModels = emptySet())
+                        val expectedSession = session.currentSessionId()
+                        refreshJob = scope.launch {
+                            if (expectedSession != null) refresh(base, expectedSession)
+                        }
+                    }
+                    else -> {
+                        // 签到/订单/VIP/余额变化：只同步 userId/vip/points，保留连接与编辑模型。
+                        mutableAccess.value = base.copy(
+                            connected = mutableAccess.value.connected,
+                            editModels = mutableAccess.value.editModels,
+                        )
+                    }
                 }
             }
         }
     }
 
     /** 拉 models + usage + 钱包；models 成功才 connected。 */
-    suspend fun refresh() {
-        val owner = session.access.value.userId ?: run {
+    suspend fun refresh() = withContext(io) {
+        val expectedSession = session.currentSessionId()
+        val base = session.access.value
+        if (expectedSession == null || base.userId == null) {
             modelList = emptyList()
             mutableAccess.value = AgentAccess()
-            return
+            return@withContext
         }
+        refreshJob?.cancel()
+        refresh(base, expectedSession)
+    }
+
+    private suspend fun refresh(base: AgentAccess, expectedSession: String) = withContext(io) {
+        val owner = base.userId ?: return@withContext
+        fun current() = session.currentSessionId() == expectedSession &&
+            session.access.value.userId == owner
+
         val models = try {
-            ai.models()
+            ai.models(expectedSession)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            if (session.access.value.userId == owner) {
+            if (current()) {
                 mutableAccess.value = session.access.value.copy(connected = false)
             }
-            return
+            return@withContext
         }
+        if (!current()) return@withContext
+
         val mapped = models.items.map {
             AgentModel(
                 code = it.code,
@@ -97,30 +135,52 @@ class ServerAgentBridge(
                 requiresVip = it.requiresVip,
             )
         }
-        if (session.access.value.userId != owner) return
         modelList = mapped
         val editModels = mapped.filter { it.canEdit }.map { it.code }.toSet()
         mutableAccess.value = session.access.value.copy(connected = true, editModels = editModels)
 
-        runCatching { ai.usage() }
-        val entitlements = runCatching { auth.entitlements() }.getOrNull()
-        val wallet = runCatching { auth.wallet() }.getOrNull()
-        if (session.access.value.userId == owner) {
-            if (entitlements != null && wallet != null) {
-                session.updateBalance(
-                    session.currentSessionId() ?: return,
-                    owner,
-                    entitlements,
-                    wallet.available,
+        try {
+            ai.usage(expectedSession)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // usage 只用于展示；失败不影响 connected 与编辑能力。
+        }
+        if (!current()) return@withContext
+
+        val entitlements = try {
+            auth.entitlements()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (!current()) return@withContext
+        val wallet = try {
+            auth.wallet()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (!current()) return@withContext
+
+        if (entitlements != null && wallet != null &&
+            session.updateBalance(expectedSession, owner, entitlements, wallet.available)
+        ) {
+            if (current()) {
+                mutableAccess.value = session.access.value.copy(
+                    connected = true,
+                    editModels = editModels,
                 )
-            }
-            if (session.access.value.userId == owner) {
-                mutableAccess.value = session.access.value.copy(connected = true, editModels = editModels)
             }
         }
     }
 
-    override suspend fun reply(request: AssistantRequest): AssistantReply {
+    override suspend fun reply(request: AssistantRequest): AssistantReply = withContext(io) {
+        // 冻结本次调用所属代次；后续 HTTP 必须用它做 bound，返回后也要用它核对。
+        val expectedSession = session.currentSessionId()
+            ?: throw AgentGateException(GateReason.LOGIN)
         val owner = requireOwner()
         if (request.ownerId != owner) throw AgentGateException(GateReason.LOGIN)
         try {
@@ -139,51 +199,60 @@ class ServerAgentBridge(
                         editConsent = request.editConsent,
                         shareStyle = request.shareStyle,
                     ),
+                    expectedSession,
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: ApiException) {
-                throw mapApi(e)
+                throw mapSubmitApi(e, request.id)
             } catch (e: IOException) {
                 throw mapIo(e, request.id)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 throw AgentServiceException(false)
             }
-            return when (view.status) {
+            if (!sameSession(expectedSession, owner)) throw AgentGateException(GateReason.LOGIN)
+            when (view.status) {
                 "succeeded" -> toReply(view)
                 "failed" -> throw AgentServiceException(true)
                 else -> throw AgentPendingException(request.id)
             }
         } finally {
-            refreshAfterCall(owner)
+            // 超时/取消时 job 已不活跃，不再补一次最长 55s 的刷新，保证取消能及时传播。
+            if (currentCoroutineContext().isActive) refreshAfterCall(expectedSession)
         }
     }
 
-    override suspend fun query(requestId: String): AssistantReply {
+    override suspend fun query(requestId: String): AssistantReply = withContext(io) {
+        val expectedSession = session.currentSessionId()
+            ?: throw AgentGateException(GateReason.LOGIN)
         val owner = requireOwner()
         try {
             val view = try {
-                ai.query(requestId)
+                ai.query(requestId, expectedSession)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: ApiException) {
-                throw mapApi(e)
+                throw mapQueryApi(e, requestId)
             } catch (e: IOException) {
                 throw mapIo(e, requestId)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 throw AgentServiceException(false)
             }
-            return when (view.status) {
+            if (!sameSession(expectedSession, owner)) throw AgentGateException(GateReason.LOGIN)
+            when (view.status) {
                 "succeeded" -> toReply(view)
                 "failed" -> throw AgentServiceException(true)
                 else -> throw AgentPendingException(requestId)
             }
         } finally {
-            refreshAfterCall(owner)
+            if (currentCoroutineContext().isActive) refreshAfterCall(expectedSession)
         }
     }
 
     override suspend fun authorizeTemplateTrial(template: String): Boolean = false
+
+    private fun sameSession(expectedSession: String, owner: String): Boolean =
+        session.currentSessionId() == expectedSession && session.access.value.userId == owner
 
     private fun requireOwner(): String =
         session.access.value.userId?.takeIf { it.isNotBlank() }
@@ -214,7 +283,11 @@ class ServerAgentBridge(
         else -> null
     }
 
-    private fun mapApi(e: ApiException): Exception = when {
+    /**
+     * 提交语义：只有明确未接纳（连接失败/门禁/业务拒绝）才 definitive；
+     * 已发出后的 5xx/IO 保留原 ID，等下一次 query 确认。
+     */
+    private fun mapSubmitApi(e: ApiException, requestId: String): Exception = when {
         e.status == 401 -> AgentGateException(GateReason.LOGIN)
         e.status == 402 -> AgentGateException(GateReason.POINTS)
         e.status == 403 -> when (ai.errorReason(e.body)) {
@@ -223,46 +296,83 @@ class ServerAgentBridge(
             "CONSENT_REQUIRED" -> AgentGateException(GateReason.CONSENT)
             else -> AgentServiceException(true)
         }
-        e.status == 409 || e.status == 429 || e.status == 503 ->
-            AgentServiceException(true)
+        e.status == 409 || e.status == 429 -> AgentServiceException(true)
+        e.status in 500..599 ->
+            if (ai.statusOf(e.body) == "failed") AgentServiceException(true)
+            else AgentPendingException(requestId)
         else -> AgentServiceException(false)
     }
 
     /**
-     * 连接失败 → CONNECTION；请求已发出后的读超时 → 原 ID pending。
-     * 这里用异常类型/消息区分连接超时与读超时；其他 IOException 按未连接处理。
+     * 查询语义：503/5xx 只说明暂时查不到，不能终结 pending；
+     * 403/明确 failed/409/429 才结束。
+     */
+    private fun mapQueryApi(e: ApiException, requestId: String): Exception = when {
+        e.status == 401 -> AgentGateException(GateReason.LOGIN)
+        e.status == 402 -> AgentGateException(GateReason.POINTS)
+        e.status == 403 || e.status == 409 || e.status == 429 -> AgentServiceException(true)
+        e.status in 500..599 -> AgentPendingException(requestId)
+        else ->
+            if (ai.statusOf(e.body) == "failed") AgentServiceException(true)
+            else AgentServiceException(false)
+    }
+
+    /**
+     * 连接未建立 → CONNECTION（确定未发出）；
+     * 已写出后的读超时/EOF/reset → pending（服务端可能已接收）。
      */
     private fun mapIo(e: IOException, requestId: String): Exception {
-        val connectTimeout = e is SocketTimeoutException &&
-            e.message?.contains("connect", ignoreCase = true) == true
-        return if (e is SocketTimeoutException && !connectTimeout) {
-            AgentPendingException(requestId)
-        } else {
-            AgentGateException(GateReason.CONNECTION)
+        if (e is ApiTransportException) {
+            return if (e.requestSent) {
+                AgentPendingException(requestId)
+            } else {
+                AgentGateException(GateReason.CONNECTION)
+            }
+        }
+        return when {
+            e is ConnectException || e is UnknownHostException ->
+                AgentGateException(GateReason.CONNECTION)
+            e is SocketTimeoutException -> {
+                val connectTimeout = e.message?.contains("connect", ignoreCase = true) == true
+                if (connectTimeout) AgentGateException(GateReason.CONNECTION)
+                else AgentPendingException(requestId)
+            }
+            else -> AgentGateException(GateReason.CONNECTION)
         }
     }
 
-    /** 成功/失败都刷新钱包与当日 usage；不根据客户端字符串修改积分。 */
-    private suspend fun refreshAfterCall(owner: String) {
-        if (session.access.value.userId != owner) return
-        runCatching {
+    /** 成功/失败都刷新钱包与当日 usage；只在会话代次未变时写回。 */
+    private suspend fun refreshAfterCall(expectedSession: String) = withContext(io) {
+        val owner = session.access.value.userId ?: return@withContext
+        fun current() = session.currentSessionId() == expectedSession &&
+            session.access.value.userId == owner
+        if (!current()) return@withContext
+
+        try {
             val entitlements = auth.entitlements()
+            if (!current()) return@withContext
             val wallet = auth.wallet()
-            if (session.access.value.userId == owner) {
-                if (session.updateBalance(
-                        session.currentSessionId() ?: return,
-                        owner,
-                        entitlements,
-                        wallet.available,
-                    )
-                ) {
+            if (!current()) return@withContext
+            if (session.updateBalance(expectedSession, owner, entitlements, wallet.available)) {
+                if (current()) {
                     mutableAccess.value = session.access.value.copy(
                         connected = mutableAccess.value.connected,
                         editModels = modelList.filter { it.canEdit }.map { it.code }.toSet(),
                     )
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 钱包刷新失败不影响本次回复结果。
         }
-        runCatching { ai.usage() }
+        if (!current()) return@withContext
+        try {
+            ai.usage(expectedSession)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // usage 刷新失败不影响本次回复结果。
+        }
     }
 }
