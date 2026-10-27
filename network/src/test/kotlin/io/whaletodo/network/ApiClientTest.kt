@@ -384,6 +384,52 @@ class ApiClientTest {
     }
 
     @Test
+    fun `A 无效 refresh 延迟后切 B 不清 B`() {
+        val refreshStarted = CountDownLatch(1)
+        val allowRefresh = CountDownLatch(1)
+        val meCalls = AtomicInteger(0)
+        handler { rec ->
+            when (rec.path) {
+                "/api/v1/me" -> {
+                    meCalls.incrementAndGet()
+                    Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"A expired"}}""")
+                }
+                "/api/v1/auth/refresh" -> {
+                    refreshStarted.countDown()
+                    allowRefresh.await(3, TimeUnit.SECONDS)
+                    Pair(401, """{"request_id":"r-refresh","error":{"code":"UNAUTHENTICATED","message":"A expired"}}""")
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val a = TokenPair("a", "ra", "A")
+        val b = TokenPair("b", "rb", "B")
+        val store = InMemoryTokenStore(a)
+        val api = client(store)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val future = pool.submit<ApiResponse> { api.get("/me") }
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS))
+            store.save(b)
+            allowRefresh.countDown()
+            try {
+                future.get(5, TimeUnit.SECONDS)
+                fail("A 的无效 refresh 不应清 B")
+            } catch (e: ExecutionException) {
+                assertTrue(e.cause is ApiException)
+                val ex = e.cause as ApiException
+                assertEquals("UNAUTHENTICATED", ex.code)
+                assertTrue(ex.message.contains("账户已切换"))
+            }
+            assertEquals(1, meCalls.get())
+            assertEquals(b, store.read())
+        } finally {
+            allowRefresh.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun `登录成功保存令牌`() {
         handler { Pair(200, """{"request_id":"r","data":{"access_token":"acc","refresh_token":"ref"}}""") }
         val store = InMemoryTokenStore()
@@ -404,6 +450,19 @@ class ApiClientTest {
             // 预期
         }
         assertNull(store.read())
+    }
+
+    @Test
+    fun `退出登录 expected A 在切 B 后不清 B`() {
+        handler { Pair(500, """{"request_id":"r","error":{"code":"INTERNAL","message":"boom"}}""") }
+        val b = TokenPair("b", "rb", "B")
+        val store = InMemoryTokenStore(b)
+        try {
+            AuthApi(client(store), store).logout("A")
+        } catch (_: ApiException) {
+            // 预期
+        }
+        assertEquals(b, store.read())
     }
 
     /* ---------------- 错误映射 ---------------- */

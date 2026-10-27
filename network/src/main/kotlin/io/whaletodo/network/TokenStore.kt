@@ -18,14 +18,53 @@ interface TokenStore {
     fun read(): TokenPair?
     fun save(tokens: TokenPair)
     fun clear()
+
+    /** 仅当当前仍是 expectedSession/expectedRefresh 时原子写入；返回是否写入。 */
+    fun saveIfCurrent(expectedSessionId: String, expectedRefreshToken: String, tokens: TokenPair): Boolean
+
+    /** 仅当当前 sessionId == expected 时原子清空；返回是否清空。 */
+    fun clearIfCurrent(expectedSessionId: String): Boolean
 }
 
 /** 内存实现：测试与临时联调用；不做持久化 */
 class InMemoryTokenStore(initial: TokenPair? = null) : TokenStore {
-    @Volatile
+    private val lock = Any()
     private var tokens: TokenPair? = initial
 
-    override fun read(): TokenPair? = tokens
-    override fun save(tokens: TokenPair) { this.tokens = tokens }
-    override fun clear() { tokens = null }
+    override fun read(): TokenPair? = synchronized(lock) { tokens }
+
+    override fun save(tokens: TokenPair) = synchronized(lock) {
+        this.tokens = tokens
+    }
+
+    override fun clear() = synchronized(lock) {
+        tokens = null
+    }
+
+    override fun saveIfCurrent(
+        expectedSessionId: String,
+        expectedRefreshToken: String,
+        tokens: TokenPair,
+    ): Boolean = synchronized(lock) {
+        val current = this.tokens
+        if (current != null &&
+            current.sessionId == expectedSessionId &&
+            current.refreshToken == expectedRefreshToken
+        ) {
+            this.tokens = tokens
+            true
+        } else {
+            false
+        }
+    }
+
+    override fun clearIfCurrent(expectedSessionId: String): Boolean = synchronized(lock) {
+        val current = tokens
+        if (current != null && current.sessionId == expectedSessionId) {
+            tokens = null
+            true
+        } else {
+            false
+        }
+    }
 }

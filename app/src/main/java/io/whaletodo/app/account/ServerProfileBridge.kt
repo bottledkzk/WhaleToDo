@@ -82,17 +82,30 @@ class ServerProfileBridge(
     }
 
     override suspend fun signIn(): Unit = call {
-        if (session.details.value == null) throw ProfileException("请先登录")
+        val expectedSession = credentials.read()?.sessionId ?: throw ProfileException("请先登录")
+        val expectedUser = session.access.value.userId ?: throw ProfileException("请先登录")
+        fun current() = credentials.read()?.sessionId == expectedSession &&
+            session.access.value.userId == expectedUser
+
         val businessDate = try {
             auth.claimDailyReward(UUID.randomUUID().toString()).businessDate
         } catch (e: ApiException) {
             if (e.code != "CONFLICT") throw e
             auth.dailyReward().businessDate
         }
+        if (!current()) throw ProfileException("账户已切换，请重试")
         val entitlements = auth.entitlements()
+        if (!current()) throw ProfileException("账户已切换，请重试")
         val wallet = auth.wallet()
-        session.updateBalance(entitlements, wallet.available)
-        parseDate(businessDate)?.let(session::markSignedIn)
+        if (!current()) throw ProfileException("账户已切换，请重试")
+        if (!session.updateBalance(expectedUser, entitlements, wallet.available)) {
+            throw ProfileException("账户已切换，请重试")
+        }
+        parseDate(businessDate)?.let { date ->
+            if (!session.markSignedIn(expectedUser, date)) {
+                throw ProfileException("账户已切换，请重试")
+            }
+        }
         Unit
     }
 
@@ -143,11 +156,8 @@ class ServerProfileBridge(
      * 期间切到 B 时不动 B 的 TokenStore/AccountSession。
      */
     private fun clearIfSession(expected: String?) {
-        val current = credentials.read()?.sessionId
-        if (current == expected || current == null) {
-            credentials.clear()
-            session.clear()
-        }
+        val cleared = expected != null && credentials.clearIfCurrent(expected)
+        if (cleared || credentials.read() == null) session.clear()
     }
 
     private fun friendly(e: ApiException): String = when (e.code) {

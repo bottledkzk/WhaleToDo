@@ -108,24 +108,28 @@ class ApiClient(
         if (response.isSuccess) {
             val tokens = readTokens(response, current.sessionId)
             if (tokens == null) {
-                if (tokenStore.read()?.sessionId == current.sessionId) tokenStore.clear()
-                return@synchronized RefreshResult.INVALID
+                return@synchronized if (tokenStore.clearIfCurrent(current.sessionId)) {
+                    RefreshResult.INVALID
+                } else {
+                    RefreshResult.SWITCHED
+                }
             }
-            // 保存前核对：期间退出或换号（session/refresh 已变）时丢弃结果。
-            val latest = tokenStore.read()
-            if (latest == null ||
-                latest.sessionId != current.sessionId ||
-                latest.refreshToken != current.refreshToken
+            // 比较与写入在 TokenStore 同一把锁内完成；期间换号则丢弃。
+            return@synchronized if (
+                tokenStore.saveIfCurrent(current.sessionId, current.refreshToken, tokens)
             ) {
-                return@synchronized RefreshResult.DISCARDED
+                RefreshResult.RETRY
+            } else {
+                RefreshResult.DISCARDED
             }
-            tokenStore.save(tokens)
-            return@synchronized RefreshResult.RETRY
         }
 
         if (response.status in INVALID_REFRESH_STATUSES) {
-            if (tokenStore.read()?.sessionId == current.sessionId) tokenStore.clear()
-            return@synchronized RefreshResult.INVALID
+            return@synchronized if (tokenStore.clearIfCurrent(current.sessionId)) {
+                RefreshResult.INVALID
+            } else {
+                RefreshResult.SWITCHED
+            }
         }
         throw upstreamUnavailable(response.requestId ?: originalRequestId)
     }
@@ -143,13 +147,7 @@ class ApiClient(
         }
         if (!response.isSuccess) return@synchronized false
         val tokens = readTokens(response, current.sessionId) ?: return@synchronized false
-        val latest = tokenStore.read()
-        if (latest == null ||
-            latest.sessionId != current.sessionId ||
-            latest.refreshToken != current.refreshToken
-        ) return@synchronized false
-        tokenStore.save(tokens)
-        true
+        tokenStore.saveIfCurrent(current.sessionId, current.refreshToken, tokens)
     }
 
     private fun submitRefresh(refreshToken: String): ApiResponse {

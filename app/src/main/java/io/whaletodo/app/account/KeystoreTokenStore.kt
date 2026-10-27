@@ -27,7 +27,40 @@ class KeystoreTokenStore(context: Context) : AccountCredentials {
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val lock = Any()
 
-    override fun read(): TokenPair? = synchronized(lock) {
+    override fun read(): TokenPair? = synchronized(lock) { readLocked() }
+
+    override fun save(tokens: TokenPair) = synchronized(lock) {
+        writeTokenLocked(tokens)
+    }
+
+    override fun saveIfCurrent(
+        expectedSessionId: String,
+        expectedRefreshToken: String,
+        tokens: TokenPair,
+    ): Boolean = synchronized(lock) {
+        val current = readLocked()
+        if (current != null &&
+            current.sessionId == expectedSessionId &&
+            current.refreshToken == expectedRefreshToken
+        ) {
+            writeTokenLocked(tokens)
+            true
+        } else {
+            false
+        }
+    }
+
+    override fun clearIfCurrent(expectedSessionId: String): Boolean = synchronized(lock) {
+        val current = readLocked()
+        if (current != null && current.sessionId == expectedSessionId) {
+            clearLocked()
+            true
+        } else {
+            false
+        }
+    }
+
+    private fun readLocked(): TokenPair? {
         val plain = decrypt(KEY_TOKENS) ?: return null
         val parts = plain.split('\n', limit = 3)
         if (parts.size !in 2..3 || parts[0].isBlank() || parts[1].isBlank()) {
@@ -35,10 +68,10 @@ class KeystoreTokenStore(context: Context) : AccountCredentials {
             return null
         }
         // 旧版本只有 access/refresh 两段，sessionId 按空串兼容。
-        TokenPair(parts[0], parts[1], parts.getOrElse(2) { "" })
+        return TokenPair(parts[0], parts[1], parts.getOrElse(2) { "" })
     }
 
-    override fun save(tokens: TokenPair) = synchronized(lock) {
+    private fun writeTokenLocked(tokens: TokenPair) {
         require(tokens.accessToken.isNotBlank() && tokens.refreshToken.isNotBlank()) {
             "令牌不能为空"
         }

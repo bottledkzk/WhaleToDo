@@ -100,7 +100,6 @@ class AuthApi(
         )
     }
 
-    /** 退出登录：先通知服务端撤销，再清本地令牌（服务端失败也要清） */
     /**
      * 退出登录：先通知服务端撤销，再清本地令牌（服务端失败也要清）。
      * expectedSessionId 非空时只清理同一会话，避免退出期间的新登录被清掉。
@@ -109,8 +108,10 @@ class AuthApi(
         try {
             client.post("/auth/logout")
         } finally {
-            if (expectedSessionId == null || tokenStore.read()?.sessionId == expectedSessionId) {
+            if (expectedSessionId == null) {
                 tokenStore.clear()
+            } else {
+                tokenStore.clearIfCurrent(expectedSessionId)
             }
         }
     }
