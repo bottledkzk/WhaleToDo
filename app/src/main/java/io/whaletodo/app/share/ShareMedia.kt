@@ -23,12 +23,18 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 /** Local-only image IO for F07. User photos never leave the device except through the system share sheet. */
 internal object ShareMedia {
-    private const val SHARE_PREFIX = "whaletodo-share-"
+    internal const val SHARE_PREFIX = "whaletodo-share-"
+    /** Hard retention floor: files younger than this are never deleted, even over the soft caps. */
+    internal const val SHARE_RETENTION_MS = 24L * 60 * 60 * 1000
+    /** Soft cache targets; fresh files may exceed them until they age out. */
+    internal const val SHARE_MAX_FILES = 20
+    internal const val SHARE_MAX_BYTES = 50L * 1024 * 1024
     private const val CAMERA_PREFIX = "whaletodo-camera-"
     private const val MAX_DECODE_EDGE = 1600
     private const val MIME_PNG = "image/png"
@@ -37,6 +43,50 @@ internal object ShareMedia {
 
     fun shareDir(context: Context): File =
         File(context.cacheDir, "shared").apply { if (!exists() && !mkdirs()) throw IOException("share cache unavailable") }
+
+    internal fun shareFiles(dir: File): List<File> =
+        dir.listFiles()?.filter { it.isFile && it.name.startsWith(SHARE_PREFIX) && it.name.endsWith(".png") } ?: emptyList()
+
+    /**
+     * Creates a fresh, never-reused share file. The timestamp is for operators; UUID guarantees
+     * uniqueness even when two exports happen in the same millisecond.
+     */
+    internal fun newShareFile(dir: File, now: Long = System.currentTimeMillis()): File {
+        if (!dir.exists() && !dir.mkdirs()) throw IOException("share cache unavailable")
+        val base = SharePlan.shareFileName(now).removeSuffix(".png")
+        repeat(8) {
+            val candidate = File(dir, "$base-${UUID.randomUUID()}.png")
+            if (candidate.createNewFile()) return candidate
+        }
+        throw IOException("share file unavailable")
+    }
+
+    /**
+     * Writes a new unique file and only returns after [writer] succeeds. A failed/partial
+     * write is deleted; no previously shared file is touched.
+     */
+    internal fun writeNewShareFile(dir: File, now: Long = System.currentTimeMillis(), writer: (File) -> Unit): File {
+        val file = newShareFile(dir, now)
+        try {
+            writer(file)
+            return file
+        } catch (t: Throwable) {
+            file.delete()
+            throw t
+        }
+    }
+
+    /**
+     * Deletes only expired `cache/shared/whaletodo-share-*.png` files, oldest first.
+     * Files inside the 24h retention window are never deleted, so the soft 20-file/50MB
+     * targets may be temporarily exceeded; they are re-evaluated after the window.
+     */
+    internal fun cleanupShareFiles(dir: File, now: Long = System.currentTimeMillis()) {
+        shareFiles(dir)
+            .filter { now - it.lastModified() > SHARE_RETENTION_MS }
+            .sortedBy { it.lastModified() }
+            .forEach { it.delete() }
+    }
 
     fun createCameraTarget(context: Context): CameraTarget {
         val dir = shareDir(context)
@@ -133,16 +183,14 @@ internal object ShareMedia {
 
     fun writeSharePng(context: Context, bitmap: Bitmap): File {
         val dir = shareDir(context)
-        dir.listFiles()?.filter { it.isFile && it.name.startsWith(SHARE_PREFIX) }?.forEach { it.delete() }
-        val file = File(dir, SharePlan.shareFileName(System.currentTimeMillis()))
-        try {
-            FileOutputStream(file).use { out ->
+        val file = writeNewShareFile(dir) { target ->
+            FileOutputStream(target).use { out ->
                 if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) throw IOException("png encode failed")
+                out.fd.sync()
             }
-        } catch (t: Throwable) {
-            file.delete()
-            throw t
         }
+        // Only sweep after the new share is complete; a failed write above returns before this line.
+        runCatching { cleanupShareFiles(dir) }
         return file
     }
 
