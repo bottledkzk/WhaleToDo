@@ -19,6 +19,7 @@ class ServerProfileBridge(
     private val session: AccountSession,
     private val credentials: AccountCredentials,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val onOwnerChanged: (String?) -> Unit = {},
 ) : ProfileBridge {
     override val details = session.details
 
@@ -30,6 +31,7 @@ class ServerProfileBridge(
         if (!session.begin(expected)) throw ProfileException("账户已切换，请重试")
         try {
             if (!loadAccount(clean, expected)) throw ProfileException("账户已切换，请重试")
+            onOwnerChanged(session.access.value.userId)
         } catch (e: ApiException) {
             // 新会话加载遇到 401：清的是 B，不是外层 call 启动时的旧 A。
             if (e.status == 401 || e.code == "UNAUTHENTICATED") clearIfSession(expected)
@@ -125,7 +127,9 @@ class ServerProfileBridge(
         if (!session.begin(expected)) return
         withContext(io) {
             try {
-                loadAccount(email, expected)
+                if (loadAccount(email, expected)) {
+                    onOwnerChanged(session.access.value.userId)
+                }
             } catch (e: ApiException) {
                 if (e.status == 401 || e.code == "UNAUTHENTICATED") {
                     clearIfSession(expected)
@@ -167,7 +171,9 @@ class ServerProfileBridge(
     private fun clearIfSession(expected: String?) {
         val cleared = expected != null && credentials.clearIfCurrent(expected)
         if (cleared || credentials.read() == null) {
-            session.clear(expected ?: session.currentSessionId() ?: "")
+            val current = session.currentSessionId()
+            val uiCleared = current == null || session.clear(expected ?: current)
+            if (uiCleared) onOwnerChanged(null)
         }
     }
 

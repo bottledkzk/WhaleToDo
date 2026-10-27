@@ -4,6 +4,7 @@ import android.content.Context
 import io.whaletodo.app.BuildConfig
 import io.whaletodo.app.agent.AgentBridgeHub
 import io.whaletodo.app.profile.ProfileBridgeHub
+import io.whaletodo.app.reminder.ReminderCenter
 import io.whaletodo.network.ApiClient
 import io.whaletodo.network.ApiConfig
 import io.whaletodo.network.AuthApi
@@ -31,7 +32,11 @@ fun installAccount(context: Context) {
         )
         val auth = AuthApi(ApiClient(config, credentials), credentials)
         val session = AccountSession { credentials.read()?.sessionId }
-        val profile = ServerProfileBridge(auth, session, credentials)
+        val profile = ServerProfileBridge(auth, session, credentials) { owner ->
+            accountScope.launch {
+                ReminderCenter.setActiveOwner(context.applicationContext, owner ?: "guest")
+            }
+        }
         val originalAgent = AgentBridgeHub.bridge
         ProfileBridgeHub.bridge = profile
         AgentBridgeHub.bridge = AccountAgentBridge(originalAgent, session)

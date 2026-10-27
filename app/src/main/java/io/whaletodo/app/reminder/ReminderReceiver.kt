@@ -11,10 +11,40 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.whaletodo.app.MainActivity
+import io.whaletodo.app.data.DeskDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
-/** Shows the task reminder once the system fires its alarm. */
+/** Shows a reminder only if its owner is still active and the reminder/task are still valid. */
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val owner = intent.getStringExtra(ReminderCenter.EXTRA_OWNER) ?: return
+        if (owner != ReminderCenter.activeOwner(context)) return
+        val taskId = intent.getStringExtra(ReminderCenter.EXTRA_TASK_ID) ?: return
+
+        val pending = goAsync()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            var db: DeskDatabase? = null
+            try {
+                db = DeskDatabase.open(context)
+                val reminder = db.dao().reminder(owner, taskId)
+                if (reminder?.enabled != true) return@launch
+                val task = db.dao().tasks().firstOrNull { it.id == taskId }
+                if (task == null || task.done) return@launch
+                if (owner != ReminderCenter.activeOwner(context)) return@launch
+                notify(context, intent)
+            } catch (_: Exception) {
+                // DB 打不开/数据竞争时放弃本次通知；下一次 resync 会纠正状态。
+            } finally {
+                runCatching { db?.close() }
+                pending.finish()
+            }
+        }
+    }
+
+    private fun notify(context: Context, intent: Intent) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED

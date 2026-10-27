@@ -9,7 +9,9 @@ import android.content.Intent
 import android.os.Build
 import io.whaletodo.app.data.DeskDao
 import io.whaletodo.app.data.DeskDatabase
+import io.whaletodo.core.ReminderOwnerItem
 import io.whaletodo.core.ReminderPlanner
+import io.whaletodo.core.ReminderSelector
 import io.whaletodo.core.Window
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
@@ -32,9 +34,12 @@ object ReminderCenter {
     const val EXTRA_METHOD = "method"
     const val EXTRA_TRIGGER_AT = "trigger_at"
     const val EXTRA_REQUEST_CODE = "request_code"
+    const val EXTRA_OWNER = "owner"
 
     private const val KEY_SCHEDULED = "scheduled"
     private const val KEY_NOTIFICATION_REQUESTED = "notification.requested"
+    private const val KEY_ACTIVE_OWNER = "active_owner"
+    private const val GUEST = "guest"
     private const val PI_FLAGS = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
     private val mutex = Mutex()
@@ -76,6 +81,24 @@ object ReminderCenter {
         prefs(context).edit().putBoolean(KEY_NOTIFICATION_REQUESTED, true).apply()
     }
 
+    /** 当前调度 owner；未登录/冷启动无值时默认 guest。 */
+    fun activeOwner(context: Context): String {
+        val stored = prefs(context).getString(KEY_ACTIVE_OWNER, GUEST).orEmpty()
+        return stored.trim().ifEmpty { GUEST }
+    }
+
+    /**
+     * 切换 owner 并重建 Alarm：旧 owner 的请求码会先被取消，再只排程新 owner。
+     * 与当前 owner 相同时不重复 resync。
+     */
+    suspend fun setActiveOwner(context: Context, owner: String) {
+        val normalized = owner.trim().ifEmpty { GUEST }
+        val app = context.applicationContext
+        if (activeOwner(app) == normalized) return
+        prefs(app).edit().putString(KEY_ACTIVE_OWNER, normalized).commit()
+        resyncAll(app)
+    }
+
     /** Opens the database for callers that do not already own one (activity/view model startup). */
     suspend fun resyncAll(context: Context): Int = withContext(Dispatchers.IO) {
         val db = DeskDatabase.open(context)
@@ -92,16 +115,23 @@ object ReminderCenter {
             init(context)
             val app = context.applicationContext
             val prefs = prefs(app)
+            val active = activeOwner(app)
             val alarmManager = app.getSystemService(AlarmManager::class.java)
             cancelScheduled(app, prefs, alarmManager)
 
             val tasks = dao.tasks().filterNot { it.done }.associateBy { it.id }
             val blocksByTask = dao.blocks().filterNot { it.done }.groupBy { it.taskId }
+            val enabled = dao.enabledReminders()
+            val selected = ReminderSelector.select(
+                enabled.map { ReminderOwnerItem(it.ownerId, it.taskId) },
+                active,
+            ).toSet()
             val scheduled = mutableSetOf<String>()
             val now = System.currentTimeMillis()
             var count = 0
             try {
-                for (reminder in dao.enabledReminders()) {
+                for (reminder in enabled) {
+                    if (ReminderOwnerItem(reminder.ownerId, reminder.taskId) !in selected) continue
                     val task = tasks[reminder.taskId] ?: continue
                     val windows = blocksByTask[task.id].orEmpty().mapNotNull { block ->
                         runCatching {
@@ -122,6 +152,7 @@ object ReminderCenter {
                             putExtra(EXTRA_METHOD, reminder.method)
                             putExtra(EXTRA_TRIGGER_AT, trigger.atMillis)
                             putExtra(EXTRA_REQUEST_CODE, requestCode)
+                            putExtra(EXTRA_OWNER, reminder.ownerId)
                         }
                         val pending = PendingIntent.getBroadcast(app, requestCode, intent, PI_FLAGS)
                         schedule(alarmManager, trigger.atMillis, pending)
