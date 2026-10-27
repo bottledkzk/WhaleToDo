@@ -20,6 +20,12 @@ $env:JAVA_HOME = '<JDK21安装目录>'
 
 当前Windows验证环境的宿主GPU曾在弹窗绘制时阻塞，`start-emulator.ps1`默认使用官方SwiftShader软件渲染并关闭Vulkan；WHPX处理器加速仍保留。其他机器可传 `-Gpu auto` 对比，不要因渲染卡顿清空AVD数据。
 
+## 发布与线上验收
+
+`prepare-ai-release.py --profile full`从干净提交打包六条迁移和账户/AI运行配置；默认`gateway`仍为仅五迁移的网关包，不能用于发布账户服务。`test-release-package.py`离线核对边界、校验值、源码冻结与打包可重复性。
+
+`server/tools/online-acceptance.ts`默认仅做零模型POST预检；显式`--execute`最多提交两次固定合成日记/配文，`--resume`只查询已尝试的原ID。回执保留在私有目录，不保存令牌/邮箱/输出正文。详见[生产发布与在线验收](../doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)。
+
 ## 数据库管理
 
 见[数据库管理入口](../env/postgresql/README.md)。新增SQL参数化/迁移门禁、原子备份、仅临时库恢复演练和分批到期清理。`test-database-isolated.sh`只使用自己创建的PG16实例；正式库禁止运行集成测试。

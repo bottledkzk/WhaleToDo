@@ -1,0 +1,33 @@
+[Unit]
+Description=WhaleToDo PostgreSQL account API
+After=network-online.target postgresql@16-main.service
+Wants=network-online.target
+Requires=postgresql@16-main.service
+[Service]
+Type=simple
+User=whaletodo-api
+Group=whaletodo-api
+WorkingDirectory=/opt/whaletodo/api-current/server
+ExecStart=/opt/whaletodo-runtime/node-v24.15.0-linux-x64/bin/node --max-old-space-size=128 src/ops/api-main.ts
+Environment=NODE_ENV=production
+Environment=BUSINESS_TIMEZONE=Asia/Shanghai
+LoadCredential=database.url:/etc/whaletodo/whaletodo_app.url
+LoadCredential=idempotency.secret:/etc/whaletodo/idempotency.secret
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+MemoryMax=224M
+TasksMax=48
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+[Install]
+WantedBy=multi-user.target

@@ -21,10 +21,10 @@ $secret = ConvertTo-SecureString ((Get-Content -LiteralPath $PasswordFile -Raw).
 $env:WHALETODO_SIGN_PASSWORD = [System.Net.NetworkCredential]::new('', $secret).Password
 Push-Location $repo
 try {
-    $buildArgs = @(':core:test', ':app:assemblePublicPreview', '--console=plain')
+    $buildArgs = @(':core:test', ':network:test', ':app:testDebugUnitTest', ':app:assemblePublicPreview', '--console=plain')
     if ($Offline) { $buildArgs += '--offline' }
     & ./gradlew.bat @buildArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Preview build or core tests failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Preview build or module tests failed.' }
     $unsigned = Join-Path $repo 'build/output/app/outputs/apk/publicPreview/app-publicPreview-unsigned.apk'
     $badging = (& $aapt dump badging $unsigned) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $badging -notmatch "package: name='io.whaletodo.app.preview' versionCode='([0-9]+)' versionName='([^']+)'") { throw 'Unexpected preview package metadata.' }
@@ -40,7 +40,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $verification -notmatch 'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)' -or $Matches[1].ToLowerInvariant() -ne $expected) { throw 'Signature verification or certificate pin failed.' }
     $hash = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $asset" | Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
-    $manifest = [ordered]@{version=$version;version_code=$code;tag="v$version";package='io.whaletodo.app.preview';min_android='8.0';min_sdk=26;target_sdk=36;debuggable=$false;asset=$asset;bytes=(Get-Item -LiteralPath $apk).Length;sha256=$hash;certificate_sha256=$expected;source_commit=$source;built_at_utc=[DateTime]::UtcNow.ToString('o');channel='preview';capabilities=@('offline_tasks','protected_scheduling','calendar_preview','local_diary');online_account_agent='pending_network_bridge'}
+    $manifest = [ordered]@{version=$version;version_code=$code;tag="v$version";package='io.whaletodo.app.preview';min_android='8.0';min_sdk=26;target_sdk=36;debuggable=$false;asset=$asset;bytes=(Get-Item -LiteralPath $apk).Length;sha256=$hash;certificate_sha256=$expected;source_commit=$source;built_at_utc=[DateTime]::UtcNow.ToString('o');channel='preview';capabilities=@('offline_tasks','protected_scheduling','calendar_preview','local_diary','account_transport','ai_gateway_transport');online_account_agent='client_integrated_production_acceptance_pending';online_acceptance_passed=$false;email_delivery_integrated=$false;production_deployed=$false}
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $out 'release.json') -Encoding utf8
     Copy-Item -LiteralPath (Join-Path $repo "release/$version.md") -Destination (Join-Path $out 'RELEASE-NOTES.md')
     Write-Host "Signed preview ready: $apk"

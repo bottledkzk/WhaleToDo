@@ -1,5 +1,5 @@
 """Build the static site with exactly the four verified preview attachments."""
-import argparse, hashlib, json, subprocess, zipfile
+import argparse, hashlib, json, re, subprocess, zipfile
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -10,7 +10,10 @@ def git(*args):return subprocess.check_output(['git','-C',str(repo),*args])
 if git('status','--porcelain','--untracked-files=normal'):raise SystemExit('COMMIT_SOURCE_FIRST')
 artifact=args.artifact_directory.resolve()
 meta=json.loads((artifact/'release.json').read_text(encoding='utf-8-sig'))
-if meta['tag']!='v'+meta['version'] or meta['package']!='io.whaletodo.app.preview':raise SystemExit('INVALID_PREVIEW_MANIFEST')
+if (not re.fullmatch(r'\d+\.\d+\.\d+-preview\.\d+',meta['version']) or meta['tag']!='v'+meta['version'] or
+    meta['package']!='io.whaletodo.app.preview' or meta['asset']!='WhaleToDo-'+meta['version']+'.apk' or
+    not re.fullmatch(r'[a-f0-9]{40}',meta['source_commit']) or not re.fullmatch(r'[a-f0-9]{64}',meta['sha256']) or
+    type(meta['version_code']) is not int or meta['version_code']<1):raise SystemExit('INVALID_PREVIEW_MANIFEST')
 apk=artifact/meta['asset']
 if hashlib.sha256(apk.read_bytes()).hexdigest()!=meta['sha256']:raise SystemExit('APK_HASH_MISMATCH')
 dest=artifact/('WhaleToDo-website-'+meta['tag']+'.zip')
@@ -20,6 +23,19 @@ files={}
 for name in git('ls-tree','-r','--name-only','HEAD','web').decode().splitlines():
     if name.startswith('web/') and not name.startswith(('web/downloads/','web/dist/')):
         files[name[4:]]=git('show','HEAD:'+name)
+# The checked-in page keeps pointing at the existing public release. Only the staged
+# website package is rendered for this newly signed artifact, avoiding nonexistent live links.
+template=files['index.html'].decode('utf-8')
+versions=set(re.findall(r'\d+\.\d+\.\d+-preview\.\d+',template))
+if len(versions)!=1:raise SystemExit('WEBSITE_TEMPLATE_VERSION_AMBIGUOUS')
+old_version=versions.pop()
+for name in ['index.html','app.js']:
+    text=files[name].decode('utf-8').replace(old_version,meta['version'])
+    if name=='index.html':
+        text=re.sub(r' · code \d+', ' · code '+str(meta['version_code']),text)
+        if meta.get('online_account_agent')=='client_integrated_production_acceptance_pending':
+            text=text.replace('APP 账户与在线 AI 尚待接入。','客户端已接入账户与 AI，生产联调尚待验收。')
+    files[name]=text.encode('utf-8')
 for name in [meta['asset'],'SHA256SUMS.txt','release.json','RELEASE-NOTES.md']:
     files['downloads/'+meta['tag']+'/'+name]=(artifact/name).read_bytes()
 manifest={'website_source_commit':git('rev-parse','HEAD').decode().strip(),
