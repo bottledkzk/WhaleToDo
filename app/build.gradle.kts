@@ -4,17 +4,41 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
+val configuredApiBase = providers.gradleProperty("apiBase").orNull
+fun buildConfigString(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+val debugApiBase = configuredApiBase ?: "http://10.0.2.2:8080/api/v1"
+// release 固定 https 占位，避免默认 http 在 ApiConfig 初始化时崩溃；显式 https 覆盖仍生效。
+val releaseApiBase = configuredApiBase
+    ?.takeIf { it.startsWith("https://") }
+    ?: "https://api.whaletodo.top:8443/api/v1"
 android {
     namespace = "io.whaletodo.app"
     compileSdk = 36
-    defaultConfig { applicationId = "io.whaletodo.app"; manifestPlaceholders["appLabel"] = "WhaleToDo"; minSdk = 26; targetSdk = 36; versionCode = 9; versionName = "0.5.2"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig {
+        applicationId = "io.whaletodo.app"
+        manifestPlaceholders["appLabel"] = "WhaleToDo"
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
+        minSdk = 26
+        targetSdk = 36
+        versionCode = 9
+        versionName = "0.5.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "API_BASE_URL", buildConfigString(debugApiBase))
+    }
     buildTypes {
-        release { isMinifyEnabled = false }
+        release {
+            isMinifyEnabled = false
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
+            buildConfigField("String", "API_BASE_URL", buildConfigString(releaseApiBase))
+        }
         create("publicPreview") {
             initWith(getByName("release"))
             applicationIdSuffix = ".preview"
             versionNameSuffix = "-preview.1"
             manifestPlaceholders["appLabel"] = "WhaleToDo 预览"
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
+            buildConfigField("String", "API_BASE_URL", buildConfigString(releaseApiBase))
             matchingFallbacks += listOf("release")
         }
         create("verification") {
@@ -27,12 +51,13 @@ android {
     testBuildType = "verification"
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 dependencies {
     implementation(project(":core"))
+    implementation(project(":network"))
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.compose.material3:material3")
