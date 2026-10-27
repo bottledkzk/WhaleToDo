@@ -464,6 +464,10 @@ export class PrismaRepository implements AccountRepository {
         // orders / payment_events 的 RLS 都依赖 app.user_id：第一步设置认证用户
         await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
 
+        // VIP 叠加的读-改-写必须按用户串行，即使本商品 points=0（不会更新钱包）。
+        // 与签到使用同一个 hashtext(userId) key；只锁当前用户，不锁全表。
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`;
+
         const rows = await tx.$queryRaw<OrderRow[]>`
           SELECT id, user_id, product_id, amount_minor, currency, status, environment,
                  product_snapshot, created_at, paid_at

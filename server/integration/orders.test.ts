@@ -244,6 +244,49 @@ test('VIP 叠加：两单到期 = 首单 + 30 天，entitlement 2 行', async ()
   assert.equal(diff, 30 * 86_400_000);
 });
 
+test('并发支付两笔零积分 VIP 订单：按用户串行，VIP 叠加 14 天', async () => {
+  const user = await createUser('ord_vip_concurrent');
+  await owner.query(`
+    INSERT INTO products (product_id, title, price_minor, currency, vip_days, points, active)
+    VALUES ('vip_7d', 'VIP 7 天', 100, 'CNY', 7, 0, true)`);
+
+  const first = await createOrder(user.id, 'vip_7d');
+  const second = await createOrder(user.id, 'vip_7d');
+  assert.notEqual(first.id, second.id);
+
+  const results = await Promise.all([
+    pay(user.id, first.id, 'evt-vip-concurrent-a', 100),
+    pay(user.id, second.id, 'evt-vip-concurrent-b', 100),
+  ]);
+  assert.deepEqual(results, ['applied', 'applied']);
+
+  const orders = await owner.query(
+    'SELECT status FROM orders WHERE id IN ($1::uuid, $2::uuid)',
+    [first.id, second.id],
+  );
+  assert.equal(orders.rowCount, 2);
+  assert.ok(orders.rows.every((row) => row.status === 'PAID'), '两单都必须 PAID');
+
+  const events = await owner.query(
+    'SELECT count(*)::int AS n FROM payment_events WHERE order_id IN ($1::uuid, $2::uuid)',
+    [first.id, second.id],
+  );
+  assert.equal(events.rows[0].n, 2);
+
+  const entitlements = await owner.query(
+    "SELECT expires_at FROM entitlements WHERE user_id=$1 AND kind='vip' ORDER BY expires_at",
+    [user.id],
+  );
+  assert.equal(entitlements.rowCount, 2);
+  const earliest = entitlements.rows[0].expires_at.getTime();
+  const latest = entitlements.rows[1].expires_at.getTime();
+  assert.equal(latest - earliest, 7 * 86_400_000);
+  assert.ok(latest > Date.now() + 13 * 86_400_000, '两笔 7 天必须叠到约 14 天');
+
+  const wallet = await owner.query('SELECT available FROM point_wallets WHERE user_id=$1', [user.id]);
+  assert.equal(wallet.rows[0].available, 0);
+});
+
 test('原子性：钱包溢出 → 整事务回滚，订单仍 PENDING 且无事件/流水/权益', async () => {
   const user = await createUser('ord_atomic');
   await owner.query('UPDATE point_wallets SET available=999999 WHERE user_id=$1', [user.id]);
