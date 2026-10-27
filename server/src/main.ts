@@ -1,6 +1,7 @@
 // 本地启动入口：node src/main.ts（Node 24 直接跑 TypeScript）
 // 配置来源：先加载 server/.env（存在则加载），再由环境变量覆盖。
 import { loadConfig, loadDotEnv } from './config.ts';
+import { demoSeedFromEnv, hasDemoEnv, maskEmail } from './domain/demo.ts';
 import { MemoryRepository } from './repo/memory.ts';
 import { fromSync } from './repo/from-sync.ts';
 import { PrismaRepository } from './repo/prisma.ts';
@@ -13,25 +14,44 @@ import { buildApp } from './http/app.ts';
 const dotenvLoaded = loadDotEnv(new URL('../.env', import.meta.url));
 
 const config = loadConfig();
+if (config.nodeEnv === 'production' && hasDemoEnv(process.env)) {
+  throw new Error('生产环境禁止设置 DEMO_* 演示变量');
+}
+const demoSeed = demoSeedFromEnv(process.env);
+
 /**
  * 仓储选择：
  *  - 配置了 DATABASE_URL → Prisma（生产唯一允许的方式）
  *  - 生产环境未配置 → 拒绝启动（内存仓储重启即清空，不能当账户存储）
  *  - 开发/测试 → 内存仓储（包一层异步适配器）
  */
-function createRepository(): { repo: AccountRepository; mode: string } {
+function createRepository(): {
+  repo: AccountRepository;
+  mode: string;
+  memory: MemoryRepository | null;
+} {
   const databaseUrl = (process.env.DATABASE_URL ?? '').trim();
   if (databaseUrl) {
     const prisma = new PrismaClient();
-    return { repo: new PrismaRepository(prisma), mode: 'postgres(prisma)' };
+    return { repo: new PrismaRepository(prisma), mode: 'postgres(prisma)', memory: null };
   }
   if (config.nodeEnv === 'production') {
     throw new Error('生产环境必须配置 DATABASE_URL：内存仓储只用于本地联调，不能作为账户存储');
   }
-  return { repo: fromSync(new MemoryRepository()), mode: 'memory(dev only)' };
+  const memory = new MemoryRepository();
+  return { repo: fromSync(memory), mode: 'memory(dev only)', memory };
 }
 
-const { repo, mode: storageMode } = createRepository();
+const { repo, mode: storageMode, memory } = createRepository();
+let seededDemoEmail: string | null = null;
+if (demoSeed && memory) {
+  const seeded = await memory.seedEmailAccount(
+    demoSeed.email,
+    demoSeed.password,
+    demoSeed.displayName,
+  );
+  seededDemoEmail = seeded.email ?? demoSeed.email;
+}
 const app = buildApp({ config, repo, logger: true });
 
 const shutdown = async (signal: string) => {
@@ -50,4 +70,6 @@ app.log.info({
   business_timezone: config.businessTimezone,
   payment_provider: config.paymentProvider,
   storage: storageMode,
+  demo_seed: seededDemoEmail !== null,
+  ...(seededDemoEmail === null ? {} : { email: maskEmail(seededDemoEmail) }),
 }, 'whaletodo-api ready');
