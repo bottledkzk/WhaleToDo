@@ -10,14 +10,28 @@ import kotlinx.coroutines.sync.withLock
 internal class OwnerSwitch {
     private val mutex = Mutex()
 
+    /**
+     * expectedSession 非空时，回调必须仍属于该会话代次：
+     * - 旧代次（例如登录 B 后迟到）的 restore/login 回调直接丢弃；
+     * - 会话已被同代次清空（登出/401）时 currentSession 为 null，
+     *   只允许 guest 清理落地，避免旧 owner 重新激活，也避免误清刚登录的 B。
+     */
     suspend fun switch(
         owner: String,
-        current: () -> String,
+        expectedSession: String? = null,
+        currentSession: () -> String? = { null },
+        currentOwner: () -> String,
         write: (String) -> Unit,
         resync: suspend () -> Unit,
     ): Boolean = mutex.withLock {
         val normalized = owner.trim().ifEmpty { "guest" }
-        if (current() == normalized) return@withLock false
+        if (expectedSession != null) {
+            val current = currentSession()
+            if (current != expectedSession && (current != null || normalized != "guest")) {
+                return@withLock false
+            }
+        }
+        if (currentOwner() == normalized) return@withLock false
         write(normalized)
         resync()
         true

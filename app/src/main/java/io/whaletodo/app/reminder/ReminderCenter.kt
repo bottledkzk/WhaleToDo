@@ -90,13 +90,21 @@ object ReminderCenter {
 
     /**
      * 切换 owner 并重建 Alarm：旧 owner 的请求码会先被取消，再只排程新 owner。
-     * 与当前 owner 相同时不重复 resync。
+     * 与当前 owner 相同时不重复 resync；expectedSession 非空时在锁内校验回调所属代次，
+     * 旧代次回调在写入前就被丢弃。
      */
-    suspend fun setActiveOwner(context: Context, owner: String) {
+    suspend fun setActiveOwner(
+        context: Context,
+        owner: String,
+        expectedSession: String? = null,
+        currentSession: () -> String? = { null },
+    ) {
         val app = context.applicationContext
         ownerSwitch.switch(
             owner = owner,
-            current = { activeOwner(app) },
+            expectedSession = expectedSession,
+            currentSession = currentSession,
+            currentOwner = { activeOwner(app) },
             write = { normalized ->
                 prefs(app).edit().putString(KEY_ACTIVE_OWNER, normalized).commit()
             },

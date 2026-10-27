@@ -32,9 +32,21 @@ fun installAccount(context: Context) {
         )
         val auth = AuthApi(ApiClient(config, credentials), credentials)
         val session = AccountSession { credentials.read()?.sessionId }
-        val profile = ServerProfileBridge(auth, session, credentials) { owner ->
-            accountScope.launch {
-                ReminderCenter.setActiveOwner(context.applicationContext, owner ?: "guest")
+        val profile = ServerProfileBridge(auth, session, credentials) { owner, sessionId ->
+            // begin 之后的立即取消（owner=null）时 currentSessionId 仍是新代次；
+            // 登出/401 清空后 currentSessionId 已为 null，此时只允许 guest 清理落地。
+            val current = session.currentSessionId()
+            val applies = sessionId == null || current == sessionId ||
+                (owner == null && current == null)
+            if (applies) {
+                // 提醒重建失败不应反过来让登录/退出失败。
+                runCatching {
+                    ReminderCenter.setActiveOwner(
+                        context.applicationContext,
+                        owner ?: "guest",
+                        sessionId,
+                    ) { session.currentSessionId() }
+                }
             }
         }
         val originalAgent = AgentBridgeHub.bridge

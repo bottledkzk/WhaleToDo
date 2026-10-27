@@ -19,7 +19,12 @@ class ServerProfileBridge(
     private val session: AccountSession,
     private val credentials: AccountCredentials,
     private val io: CoroutineDispatcher = Dispatchers.IO,
-    private val onOwnerChanged: (String?) -> Unit = {},
+    /**
+     * 提醒 owner 跟随会话代次：callback 必须带上触发它的 sessionId。
+     * 用 suspend 让 login 内的“先取消旧 owner、再加载、再启用新 owner”严格按顺序执行，
+     * 避免异步 launch 的 guest 回调迟到后把刚加载好的新 owner 又取消掉。
+     */
+    private val onOwnerChanged: suspend (owner: String?, sessionId: String?) -> Unit = { _, _ -> },
 ) : ProfileBridge {
     override val details = session.details
 
@@ -29,9 +34,11 @@ class ServerProfileBridge(
         credentials.saveEmail(clean)
         val expected = credentials.read()?.sessionId ?: return@call
         if (!session.begin(expected)) throw ProfileException("账户已切换，请重试")
+        // 新代次尚未就绪：立即取消旧 owner，避免 B 的 /me 失败时提醒仍按 A 排程。
+        onOwnerChanged(null, expected)
         try {
             if (!loadAccount(clean, expected)) throw ProfileException("账户已切换，请重试")
-            onOwnerChanged(session.access.value.userId)
+            onOwnerChanged(session.access.value.userId, expected)
         } catch (e: ApiException) {
             // 新会话加载遇到 401：清的是 B，不是外层 call 启动时的旧 A。
             if (e.status == 401 || e.code == "UNAUTHENTICATED") clearIfSession(expected)
@@ -125,17 +132,18 @@ class ServerProfileBridge(
         val expected = stored.sessionId
         val email = credentials.readEmail().orEmpty()
         if (!session.begin(expected)) return
+        // 冷启动/离线时故意不在 begin 阶段回调：保留持久化 owner，离线仍按上次账户排程。
         withContext(io) {
             try {
                 if (loadAccount(email, expected)) {
-                    onOwnerChanged(session.access.value.userId)
+                    onOwnerChanged(session.access.value.userId, expected)
                 }
             } catch (e: ApiException) {
                 if (e.status == 401 || e.code == "UNAUTHENTICATED") {
                     clearIfSession(expected)
                 }
             } catch (_: IOException) {
-                // 离线启动保留令牌，下次启动再试。
+                // 离线启动保留令牌与持久化 owner，下次启动再试。
             }
         }
     }
@@ -168,12 +176,16 @@ class ServerProfileBridge(
      * 只有当前会话仍是发起操作时的会话（或令牌已被同一会话的刷新失败清空）才清。
      * 期间切到 B 时不动 B 的 TokenStore/AccountSession。
      */
-    private fun clearIfSession(expected: String?) {
+    private suspend fun clearIfSession(expected: String?) {
         val cleared = expected != null && credentials.clearIfCurrent(expected)
         if (cleared || credentials.read() == null) {
             val current = session.currentSessionId()
             val uiCleared = current == null || session.clear(expected ?: current)
-            if (uiCleared) onOwnerChanged(null)
+            if (uiCleared) {
+                // 这里可能已经 session.clear 成 null；callback 仍带上被清的代次，
+                // 由 OwnerSwitch 在锁内判断“代次已清空时只允许 guest 落地”。
+                onOwnerChanged(null, expected ?: session.currentSessionId())
+            }
         }
     }
 
