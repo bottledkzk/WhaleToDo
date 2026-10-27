@@ -30,7 +30,7 @@ fun installAccount(context: Context) {
             allowInsecureHttp = BuildConfig.DEBUG,
         )
         val auth = AuthApi(ApiClient(config, credentials), credentials)
-        val session = AccountSession()
+        val session = AccountSession { credentials.read()?.sessionId }
         val profile = ServerProfileBridge(auth, session, credentials)
         val originalAgent = AgentBridgeHub.bridge
         ProfileBridgeHub.bridge = profile

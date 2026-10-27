@@ -27,7 +27,8 @@ class ServerProfileBridge(
         auth.loginWithEmail(clean, password)
         credentials.saveEmail(clean)
         val expected = credentials.read()?.sessionId ?: return@call
-        loadAccount(clean, expected)
+        if (!session.begin(expected)) throw ProfileException("账户已切换，请重试")
+        if (!loadAccount(clean, expected)) throw ProfileException("账户已切换，请重试")
     }
 
     override suspend fun register(
@@ -82,9 +83,10 @@ class ServerProfileBridge(
     }
 
     override suspend fun signIn(): Unit = call {
-        val expectedSession = credentials.read()?.sessionId ?: throw ProfileException("请先登录")
+        val expectedSession = session.currentSessionId() ?: throw ProfileException("请先登录")
         val expectedUser = session.access.value.userId ?: throw ProfileException("请先登录")
         fun current() = credentials.read()?.sessionId == expectedSession &&
+            session.currentSessionId() == expectedSession &&
             session.access.value.userId == expectedUser
 
         val businessDate = try {
@@ -98,11 +100,11 @@ class ServerProfileBridge(
         if (!current()) throw ProfileException("账户已切换，请重试")
         val wallet = auth.wallet()
         if (!current()) throw ProfileException("账户已切换，请重试")
-        if (!session.updateBalance(expectedUser, entitlements, wallet.available)) {
+        if (!session.updateBalance(expectedSession, expectedUser, entitlements, wallet.available)) {
             throw ProfileException("账户已切换，请重试")
         }
         parseDate(businessDate)?.let { date ->
-            if (!session.markSignedIn(expectedUser, date)) {
+            if (!session.markSignedIn(expectedSession, expectedUser, date)) {
                 throw ProfileException("账户已切换，请重试")
             }
         }
@@ -114,6 +116,7 @@ class ServerProfileBridge(
         val stored = credentials.read() ?: return
         val expected = stored.sessionId
         val email = credentials.readEmail().orEmpty()
+        if (!session.begin(expected)) return
         withContext(io) {
             try {
                 loadAccount(email, expected)
@@ -127,14 +130,14 @@ class ServerProfileBridge(
         }
     }
 
-    private suspend fun loadAccount(email: String, expectedSession: String) {
+    private suspend fun loadAccount(email: String, expectedSession: String): Boolean {
         val profile = auth.me()
-        if (credentials.read()?.sessionId != expectedSession) return
+        if (credentials.read()?.sessionId != expectedSession) return false
         val entitlements = auth.entitlements()
-        if (credentials.read()?.sessionId != expectedSession) return
+        if (credentials.read()?.sessionId != expectedSession) return false
         val wallet = auth.wallet()
-        if (credentials.read()?.sessionId != expectedSession) return
-        session.update(email, profile, entitlements, wallet.available)
+        if (credentials.read()?.sessionId != expectedSession) return false
+        return session.update(expectedSession, email, profile, entitlements, wallet.available)
     }
 
     private suspend fun <T> call(block: suspend () -> T): T = withContext(io) {
@@ -157,7 +160,9 @@ class ServerProfileBridge(
      */
     private fun clearIfSession(expected: String?) {
         val cleared = expected != null && credentials.clearIfCurrent(expected)
-        if (cleared || credentials.read() == null) session.clear()
+        if (cleared || credentials.read() == null) {
+            session.clear(expected ?: session.currentSessionId() ?: "")
+        }
     }
 
     private fun friendly(e: ApiException): String = when (e.code) {

@@ -106,7 +106,11 @@ class AuthApi(
      */
     fun logout(expectedSessionId: String? = null) {
         try {
-            client.post("/auth/logout")
+            if (expectedSessionId == null) {
+                client.post("/auth/logout")
+            } else {
+                client.postAsSession("/auth/logout", null, expectedSessionId)
+            }
         } finally {
             if (expectedSessionId == null) {
                 tokenStore.clear()

@@ -453,16 +453,28 @@ class ApiClientTest {
     }
 
     @Test
-    fun `退出登录 expected A 在切 B 后不清 B`() {
-        handler { Pair(500, """{"request_id":"r","error":{"code":"INTERNAL","message":"boom"}}""") }
+    fun `退出登录 expected A 在切 B 后不发请求也不清 B`() {
+        handler { Pair(200, """{"request_id":"r","data":{}}""") }
         val b = TokenPair("b", "rb", "B")
         val store = InMemoryTokenStore(b)
         try {
             AuthApi(client(store), store).logout("A")
         } catch (_: ApiException) {
-            // 预期
+            // 预期：绑定会话不匹配，不发 HTTP
         }
+        assertEquals(0, calls.size)
         assertEquals(b, store.read())
+    }
+
+    @Test
+    fun `退出登录 expected A 在当前 A 时发一次 Bearer A 并清空`() {
+        handler { Pair(200, """{"request_id":"r","data":{}}""") }
+        val a = TokenPair("a", "ra", "A")
+        val store = InMemoryTokenStore(a)
+        AuthApi(client(store), store).logout("A")
+        assertEquals(1, calls.size)
+        assertEquals("Bearer a", calls.single().auth)
+        assertNull(store.read())
     }
 
     /* ---------------- 错误映射 ---------------- */

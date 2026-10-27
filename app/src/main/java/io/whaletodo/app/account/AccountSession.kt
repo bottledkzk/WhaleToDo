@@ -10,8 +10,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** 登录态的唯一真源：AgentAccess 与 ProfileBridge.details 都由这里同步更新。 */
-class AccountSession {
+class AccountSession(
+    private val credentialSessionId: () -> String? = { null },
+) {
     private val lock = Any()
+    private var sessionId: String? = null
     private val mutableAccess = MutableStateFlow(AgentAccess())
     val access: StateFlow<AgentAccess> = mutableAccess.asStateFlow()
 
@@ -21,12 +24,23 @@ class AccountSession {
     private val mutableEmail = MutableStateFlow<String?>(null)
     val email: StateFlow<String?> = mutableEmail.asStateFlow()
 
+    fun currentSessionId(): String? = synchronized(lock) { sessionId }
+
+    /** 把 UI 会话切到 expected；TokenStore 已换号则拒绝。 */
+    fun begin(expected: String): Boolean = synchronized(lock) {
+        if (credentialSessionId() != expected) return@synchronized false
+        sessionId = expected
+        true
+    }
+
     fun update(
+        expectedSession: String,
         email: String,
         profile: AccountProfile,
         entitlements: Entitlements,
         availablePoints: Int,
-    ) = synchronized(lock) {
+    ): Boolean = synchronized(lock) {
+        if (!sameGeneration(expectedSession)) return@synchronized false
         val previous = mutableDetails.value?.takeIf { it.userId == profile.id }
         mutableEmail.value = email
         mutableDetails.value = ProfileDetails(
@@ -44,14 +58,17 @@ class AccountSession {
             availablePoints = availablePoints,
             connected = true,
         )
+        true
     }
 
-    /** 只有当前仍是 expectedUserId 时写余额/VIP；返回是否写入。 */
+    /** 只有当前仍是 expectedSession/expectedUserId 时写余额/VIP；返回是否写入。 */
     fun updateBalance(
+        expectedSession: String,
         expectedUserId: String,
         entitlements: Entitlements,
         availablePoints: Int,
     ): Boolean = synchronized(lock) {
+        if (!sameGeneration(expectedSession)) return@synchronized false
         val current = mutableAccess.value
         if (current.userId != expectedUserId) return@synchronized false
         mutableAccess.value = current.copy(
@@ -64,8 +81,13 @@ class AccountSession {
         true
     }
 
-    /** 只有当前仍是 expectedUserId 时标记签到；返回是否写入。 */
-    fun markSignedIn(expectedUserId: String, date: LocalDate): Boolean = synchronized(lock) {
+    /** 只有当前仍是 expectedSession/expectedUserId 时标记签到；返回是否写入。 */
+    fun markSignedIn(
+        expectedSession: String,
+        expectedUserId: String,
+        date: LocalDate,
+    ): Boolean = synchronized(lock) {
+        if (!sameGeneration(expectedSession)) return@synchronized false
         val current = mutableDetails.value
         if (current?.userId != expectedUserId) return@synchronized false
         mutableDetails.value = current.copy(
@@ -75,9 +97,17 @@ class AccountSession {
         true
     }
 
-    fun clear() = synchronized(lock) {
+    /** 只有 UI 会话仍匹配时才清空；返回是否清空。 */
+    fun clear(expectedSession: String): Boolean = synchronized(lock) {
+        if (sessionId != expectedSession) return@synchronized false
         mutableEmail.value = null
         mutableDetails.value = null
         mutableAccess.value = AgentAccess()
+        sessionId = null
+        true
     }
+
+    /** UI 代次与 TokenStore 都必须仍是 expected，避免 B 已保存令牌但尚未 begin 时写 A。 */
+    private fun sameGeneration(expected: String): Boolean =
+        sessionId == expected && credentialSessionId() == expected
 }
