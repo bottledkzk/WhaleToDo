@@ -8,12 +8,16 @@
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID, createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
-import type { AccountRepository, CreatedSession, IdempotencyHit, RepoSession, RepoUser } from './types.ts';
-import { RegisterConflict } from './types.ts';
+import type {
+  AccountRepository, CreatedSession, IdempotencyHit, RepoOrder, RepoProduct, RepoSession, RepoUser,
+} from './types.ts';
+import { OrderConflict, RegisterConflict } from './types.ts';
 import { decideMutation, batchStatus, isObjectType, isSyncOp, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
+import { amountsMatch, snapshotOf, vipExpiryAfter } from '../domain/orders.ts';
+import type { PaymentOutcome } from '../domain/orders.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 
@@ -32,6 +36,34 @@ function toRepoUser(u: UserRow): RepoUser {
     username: u.username,
     displayName: u.display_name,
     createdAt: u.created_at.getTime(),
+  };
+}
+
+interface OrderRow {
+  id: string;
+  user_id: string;
+  product_id: string;
+  amount_minor: number;
+  currency: string;
+  status: string;
+  environment: string;
+  product_snapshot: RepoOrder['snapshot'];
+  created_at: Date;
+  paid_at: Date | null;
+}
+
+function toRepoOrder(o: OrderRow): RepoOrder {
+  return {
+    id: o.id,
+    userId: o.user_id,
+    productId: o.product_id,
+    amountMinor: o.amount_minor,
+    currency: o.currency,
+    status: o.status as RepoOrder['status'],
+    environment: o.environment as RepoOrder['environment'],
+    snapshot: o.product_snapshot,
+    createdAt: o.created_at.getTime(),
+    paidAt: o.paid_at ? o.paid_at.getTime() : null,
   };
 }
 
@@ -296,6 +328,248 @@ export class PrismaRepository implements AccountRepository {
       }
       return toRepoUser(user);
     });
+  }
+
+  /* ---------------- 商品与订单 ---------------- */
+
+  async listProducts(): Promise<RepoProduct[]> {
+    const rows = await this.prisma.products.findMany({
+      where: { active: true },
+      orderBy: { product_id: 'asc' },
+    });
+    return rows.map((p) => ({
+      productId: p.product_id,
+      title: p.title,
+      priceMinor: p.price_minor,
+      currency: p.currency,
+      vipDays: p.vip_days,
+      points: p.points,
+      active: p.active,
+    }));
+  }
+
+  async createOrder(input: {
+    userId: string;
+    productId: string;
+    environment: 'mock' | 'production';
+    receipt?: {
+      scope: string;
+      key: string;
+      fingerprint: string;
+      buildResponse: (order: RepoOrder) => unknown;
+    };
+  }): Promise<RepoOrder> {
+    const now = this.now();
+    const nowDate = new Date(now);
+    const expiresAt = new Date(now + IDEMPOTENCY_TTL_MS);
+
+    return this.prisma.$transaction(async (tx) => {
+      // orders 启用 owner_scope RLS：必须在事务内先设置认证用户
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
+
+      let claimedExpired = false;
+      if (input.receipt) {
+        const existing = await tx.idempotency_receipts.findUnique({
+          where: { scope_key: { scope: input.receipt.scope, key: input.receipt.key } },
+        });
+        if (existing) {
+          if (existing.expires_at.getTime() > now) throw new OrderConflict('IDEMPOTENT_REPLAY');
+          const updated = await tx.$executeRaw`
+            UPDATE idempotency_receipts
+               SET fingerprint = ${input.receipt.fingerprint}, expires_at = ${expiresAt}
+             WHERE scope = ${input.receipt.scope} AND key = ${input.receipt.key} AND expires_at <= now()`;
+          if (updated !== 1) throw new OrderConflict('IDEMPOTENCY_RACE');
+          claimedExpired = true;
+        }
+      }
+
+      const product = await tx.products.findUnique({ where: { product_id: input.productId } });
+      if (!product) throw new OrderConflict('PRODUCT_NOT_FOUND');
+      if (!product.active) throw new OrderConflict('PRODUCT_INACTIVE');
+
+      const snapshot = snapshotOf({
+        productId: product.product_id,
+        title: product.title,
+        priceMinor: product.price_minor,
+        currency: product.currency,
+        vipDays: product.vip_days,
+        points: product.points,
+        active: product.active,
+      });
+      const rows = await tx.$queryRaw<OrderRow[]>`
+        INSERT INTO orders
+          (id, user_id, product_id, amount_minor, currency, status, environment, product_snapshot, created_at)
+        VALUES
+          (${randomUUID()}::uuid, ${input.userId}::uuid, ${product.product_id},
+           ${product.price_minor}, ${product.currency}, 'PENDING', ${input.environment},
+           ${JSON.stringify(snapshot)}::jsonb, ${nowDate})
+        RETURNING id, user_id, product_id, amount_minor, currency, status, environment,
+                  product_snapshot, created_at, paid_at`;
+      const row = rows[0];
+      if (!row) throw new Error('创建订单后回读失败');
+      const order = toRepoOrder(row);
+
+      if (input.receipt) {
+        const responseJson = JSON.stringify(input.receipt.buildResponse(order));
+        if (claimedExpired) {
+          await tx.$executeRaw`
+            UPDATE idempotency_receipts
+               SET fingerprint = ${input.receipt.fingerprint}, response = ${responseJson}::jsonb,
+                   expires_at = ${expiresAt}
+             WHERE scope = ${input.receipt.scope} AND key = ${input.receipt.key}`;
+        } else {
+          try {
+            await tx.$executeRaw`
+              INSERT INTO idempotency_receipts (scope, key, fingerprint, response, expires_at)
+              VALUES (${input.receipt.scope}, ${input.receipt.key}, ${input.receipt.fingerprint},
+                      ${responseJson}::jsonb, ${expiresAt})`;
+          } catch (err) {
+            if (isUniqueViolation(err)) throw new OrderConflict('IDEMPOTENCY_RACE');
+            throw err;
+          }
+        }
+      }
+      return order;
+    });
+  }
+
+  async getOrder(userId: string, orderId: string): Promise<RepoOrder | null> {
+    const rows = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
+      return tx.$queryRaw<OrderRow[]>`
+        SELECT id, user_id, product_id, amount_minor, currency, status, environment,
+               product_snapshot, created_at, paid_at
+          FROM orders
+         WHERE id = ${orderId}::uuid AND user_id = ${userId}::uuid
+         LIMIT 1`;
+    });
+    return rows[0] ? toRepoOrder(rows[0]) : null;
+  }
+
+  async applyPayment(input: {
+    userId: string;
+    provider: 'mock';
+    eventId: string;
+    orderId: string;
+    amountMinor: number;
+    currency: string;
+    payloadHash: string;
+    now: number;
+  }): Promise<PaymentOutcome> {
+    const nowDate = new Date(input.now);
+    const currency = input.currency.trim().toUpperCase();
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // orders / payment_events 的 RLS 都依赖 app.user_id：第一步设置认证用户
+        await tx.$executeRaw`SELECT set_config('app.user_id', ${input.userId}, true)`;
+
+        // VIP 叠加的读-改-写必须按用户串行，即使本商品 points=0（不会更新钱包）。
+        // 与签到使用同一个 hashtext(userId) key；只锁当前用户，不锁全表。
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`;
+
+        const rows = await tx.$queryRaw<OrderRow[]>`
+          SELECT id, user_id, product_id, amount_minor, currency, status, environment,
+                 product_snapshot, created_at, paid_at
+            FROM orders
+           WHERE id = ${input.orderId}::uuid
+           FOR UPDATE`;
+        const row = rows[0];
+        if (!row) return 'not_found';
+        const order = toRepoOrder(row);
+
+        if (order.environment !== 'mock') return 'environment_mismatch';
+        if (!amountsMatch(
+          { amount_minor: order.amountMinor, currency: order.currency },
+          { amount_minor: input.amountMinor, currency },
+        )) return 'amount_mismatch';
+
+        // 先查 event_id 归属：同单 replay；异单 event_conflict。
+        // 注意 RLS 会隐藏他人订单的 payment_events，跨用户冲突走下面 INSERT 的 23505 兜底。
+        const existing = await tx.$queryRaw<{ order_id: string }[]>`
+          SELECT order_id FROM payment_events
+           WHERE provider = ${input.provider} AND event_id = ${input.eventId}
+           LIMIT 1`;
+        const eventOrderId = existing[0]?.order_id ?? null;
+        if (eventOrderId !== null) {
+          return eventOrderId === order.id ? 'replay' : 'event_conflict';
+        }
+
+        if (order.status === 'PAID') return 'state_conflict';
+        if (order.status !== 'PENDING') return 'state_conflict';
+
+        // 状态机唯一性：必须命中 1 行
+        const updated = await tx.$executeRaw`
+          UPDATE orders SET status = 'PAID', paid_at = ${nowDate}
+           WHERE id = ${order.id}::uuid AND status = 'PENDING'`;
+        if (updated !== 1) {
+          // 并发回调：另一个请求已把订单改成 PAID
+          const raced = await tx.$queryRaw<{ order_id: string }[]>`
+            SELECT order_id FROM payment_events
+             WHERE provider = ${input.provider} AND event_id = ${input.eventId}
+             LIMIT 1`;
+          const racedOrderId = raced[0]?.order_id ?? null;
+          if (racedOrderId === null) return 'state_conflict';
+          return racedOrderId === order.id ? 'replay' : 'event_conflict';
+        }
+
+        await tx.$executeRaw`
+          INSERT INTO payment_events
+            (id, provider, event_id, order_id, status, amount_minor, currency, payload_hash, received_at)
+          VALUES
+            (${randomUUID()}::uuid, ${input.provider}, ${input.eventId}, ${order.id}::uuid,
+             'succeeded', ${input.amountMinor}, ${currency}, ${input.payloadHash}, ${nowDate})`;
+
+        // 发积分：只读订单快照，绝不读 products
+        const points = order.snapshot.points;
+        if (points > 0) {
+          const wallets = await tx.$queryRaw<{ available: number; reserved: number }[]>`
+            UPDATE point_wallets
+               SET available = available + ${points}, updated_at = ${nowDate}
+             WHERE user_id = ${order.userId}::uuid
+             RETURNING available, reserved`;
+          const wallet = wallets[0];
+          if (!wallet) throw new Error('订单用户钱包不存在');
+          await tx.$executeRaw`
+            INSERT INTO point_ledger
+              (id, user_id, event_id, type, available_delta, reserved_delta,
+               balance_after, reserved_after, reason)
+            VALUES
+              (${randomUUID()}::uuid, ${order.userId}::uuid, ${`order:${order.id}`}, 'award',
+               ${points}, 0, ${wallet.available}, ${wallet.reserved}, ${`order:${order.id}`})`;
+        }
+
+        // 发 VIP：同样只读订单快照；叠加 max(now, 现有有效到期) + vip_days
+        const vipDays = order.snapshot.vip_days;
+        if (vipDays > 0) {
+          const currentRows = await tx.$queryRaw<{ expires_at: Date | null }[]>`
+            SELECT max(expires_at) AS expires_at
+              FROM entitlements
+             WHERE user_id = ${order.userId}::uuid AND kind = 'vip' AND expires_at > ${nowDate}`;
+          const current = currentRows[0]?.expires_at ? currentRows[0].expires_at.getTime() : null;
+          await tx.$executeRaw`
+            INSERT INTO entitlements (id, user_id, kind, expires_at, source_order_id, created_at)
+            VALUES (${randomUUID()}::uuid, ${order.userId}::uuid, 'vip',
+                    ${new Date(vipExpiryAfter(current, input.now, vipDays))},
+                    ${order.id}::uuid, ${nowDate})`;
+        }
+
+        return 'applied';
+      });
+    } catch (err) {
+      // 跨用户复用 event_id 时 RLS 看不到他人事件，INSERT 会撞 (provider,event_id) 唯一键；
+      // 只把 payment_events 的 23505 映射成 event_conflict，其他错误继续抛。
+      if (isPaymentEventUniqueViolation(err)) return 'event_conflict';
+      throw err;
+    }
+  }
+
+  async vipExpiresAt(userId: string): Promise<number | null> {
+    const rows = await this.prisma.$queryRaw<{ expires_at: Date | null }[]>`
+      SELECT max(expires_at) AS expires_at
+        FROM entitlements
+       WHERE user_id = ${userId}::uuid AND kind = 'vip' AND expires_at > now()`;
+    return rows[0]?.expires_at ? rows[0].expires_at.getTime() : null;
   }
 
   /* ---------------- 钱包 ---------------- */
@@ -841,6 +1115,19 @@ function isUniqueViolation(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string } };
   if (e.code === 'P2002') return true;
   return e.code === 'P2010' && e.meta?.code === '23505';
+}
+
+/**
+ * 只识别 payment_events 的唯一冲突（(provider,event_id) 跨订单复用）。
+ * applyPayment 内能撞唯一键的写只有 payment_events；point_ledger 的唯一键
+ * 由订单锁与状态机先行拦截。Prisma 部分版本的 P2010 meta.message 不含表名，
+ * 所以不能只靠字符串判断；含 point_ledger 的冲突仍继续抛出。
+ */
+function isPaymentEventUniqueViolation(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const e = err as { meta?: { message?: string }; message?: string };
+  const message = e.meta?.message ?? e.message ?? '';
+  return !message.includes('point_ledger');
 }
 
 /**

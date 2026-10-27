@@ -4,9 +4,11 @@ import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
 import { randomUUID } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
+import { amountsMatch, snapshotOf, vipExpiryAfter } from '../domain/orders.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
-import type { RepoUser } from './types.ts';
+import type { RepoOrder, RepoProduct, RepoUser } from './types.ts';
+import { OrderConflict } from './types.ts';
 import { decideMutation, batchStatus, SyncBatchConflict } from '../domain/sync.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
 
@@ -49,6 +51,15 @@ export interface EmailTicketRecord {
   createdAt: number;
 }
 
+export interface EntitlementRecord {
+  id: string;
+  userId: string;
+  kind: string;
+  expiresAt: number;
+  sourceOrderId: string | null;
+  createdAt: number;
+}
+
 export interface MemoryStore {
   users: Map<string, User>;
   usernameIndex: Map<string, string>;
@@ -77,6 +88,14 @@ export interface MemoryStore {
   emailSends: Map<string, { windowStart: number; count: number }>;
   /** 邮箱一次性 ticket：key=token 摘要 */
   emailTickets: Map<string, EmailTicketRecord>;
+  /** 商品（测试可直接塞） */
+  products: Map<string, RepoProduct>;
+  /** 订单：id -> RepoOrder */
+  orders: Map<string, RepoOrder>;
+  /** 支付回调：key=`${provider}:${eventId}` */
+  paymentEvents: Map<string, { provider: string; eventId: string; orderId: string }>;
+  /** VIP 权益行（保留每次发放，供叠加与审计） */
+  entitlements: EntitlementRecord[];
 }
 
 export function createMemoryStore(): MemoryStore {
@@ -95,6 +114,10 @@ export function createMemoryStore(): MemoryStore {
     emailCodes: new Map(),
     emailSends: new Map(),
     emailTickets: new Map(),
+    products: new Map(),
+    orders: new Map(),
+    paymentEvents: new Map(),
+    entitlements: [],
   };
 }
 
@@ -432,6 +455,143 @@ export class MemoryRepository {
       available: next.available,
       reserved: next.reserved,
     };
+  }
+
+  /* ---------------- 商品与订单（内存实现） ---------------- */
+
+  async listProducts(): Promise<RepoProduct[]> {
+    return [...this.store.products.values()]
+      .filter((p) => p.active)
+      .sort((a, b) => a.productId.localeCompare(b.productId));
+  }
+
+  async createOrder(input: {
+    userId: string;
+    productId: string;
+    environment: 'mock' | 'production';
+    receipt?: {
+      scope: string;
+      key: string;
+      fingerprint: string;
+      buildResponse: (order: RepoOrder) => unknown;
+    };
+  }): Promise<RepoOrder> {
+    if (input.receipt) {
+      const hit = this.getIdempotent(input.receipt.scope, input.receipt.key);
+      if (hit) throw new OrderConflict('IDEMPOTENT_REPLAY');
+    }
+    const product = this.store.products.get(input.productId);
+    if (!product) throw new OrderConflict('PRODUCT_NOT_FOUND');
+    if (!product.active) throw new OrderConflict('PRODUCT_INACTIVE');
+
+    const order: RepoOrder = {
+      id: randomUUID(),
+      userId: input.userId,
+      productId: product.productId,
+      amountMinor: product.priceMinor,
+      currency: product.currency,
+      status: 'PENDING',
+      environment: input.environment,
+      snapshot: snapshotOf(product),
+      createdAt: this.now(),
+      paidAt: null,
+    };
+    this.store.orders.set(order.id, order);
+
+    if (input.receipt) {
+      this.saveIdempotent(
+        input.receipt.scope,
+        input.receipt.key,
+        input.receipt.fingerprint,
+        input.receipt.buildResponse(order),
+      );
+    }
+    return order;
+  }
+
+  async getOrder(userId: string, orderId: string): Promise<RepoOrder | null> {
+    const order = this.store.orders.get(orderId);
+    return order && order.userId === userId ? order : null;
+  }
+
+  async applyPayment(input: {
+    userId: string;
+    provider: 'mock';
+    eventId: string;
+    orderId: string;
+    amountMinor: number;
+    currency: string;
+    payloadHash: string;
+    now: number;
+  }): Promise<'applied' | 'replay' | 'not_found' | 'amount_mismatch' | 'state_conflict' | 'environment_mismatch' | 'event_conflict'> {
+    const order = this.store.orders.get(input.orderId);
+    if (!order || order.userId !== input.userId) return 'not_found';
+    if (order.environment !== 'mock') return 'environment_mismatch';
+    if (!amountsMatch(
+      { amount_minor: order.amountMinor, currency: order.currency },
+      { amount_minor: input.amountMinor, currency: input.currency },
+    )) return 'amount_mismatch';
+
+    // 先查 event 归属：同单 replay，异单 event_conflict；不能覆盖已有映射
+    const eventKey = `${input.provider}:${input.eventId}`;
+    const existingEvent = this.store.paymentEvents.get(eventKey);
+    if (existingEvent) {
+      return existingEvent.orderId === order.id ? 'replay' : 'event_conflict';
+    }
+    if (order.status === 'PAID') return 'state_conflict';
+    if (order.status !== 'PENDING') return 'state_conflict';
+
+    order.status = 'PAID';
+    order.paidAt = input.now;
+    this.store.paymentEvents.set(eventKey, {
+      provider: input.provider, eventId: input.eventId, orderId: order.id,
+    });
+
+    const points = order.snapshot.points;
+    if (points > 0) {
+      const wallet = this.walletOf(order.userId);
+      const next = { available: wallet.available + points, reserved: wallet.reserved };
+      this.setWallet(order.userId, next);
+      this.store.ledger.unshift({
+        id: randomUUID(),
+        userId: order.userId,
+        eventId: `order:${order.id}`,
+        type: 'award',
+        delta: points,
+        balanceAfter: next.available,
+        reservedAfter: next.reserved,
+        requestId: null,
+        createdAt: input.now,
+      });
+    }
+
+    const vipDays = order.snapshot.vip_days;
+    if (vipDays > 0) {
+      const current = this.vipExpiryAt(order.userId);
+      this.store.entitlements.push({
+        id: randomUUID(),
+        userId: order.userId,
+        kind: 'vip',
+        expiresAt: vipExpiryAfter(current, input.now, vipDays),
+        sourceOrderId: order.id,
+        createdAt: input.now,
+      });
+    }
+    return 'applied';
+  }
+
+  private vipExpiryAt(userId: string): number | null {
+    let max: number | null = null;
+    for (const e of this.store.entitlements) {
+      if (e.userId === userId && e.kind === 'vip' && e.expiresAt > this.now()) {
+        max = Math.max(max ?? 0, e.expiresAt);
+      }
+    }
+    return max;
+  }
+
+  async vipExpiresAt(userId: string): Promise<number | null> {
+    return this.vipExpiryAt(userId);
   }
 
   /* ---------------- 邮箱验证码（内存实现） ---------------- */

@@ -3,6 +3,7 @@
 // 对任何实现跑同一套断言。
 import type { Wallet } from '../domain/ledger.ts';
 import type { SyncMutationInput, SyncMutationResult } from '../domain/sync.ts';
+import type { PaymentOutcome } from '../domain/orders.ts';
 
 export interface RepoUser {
   id: string;
@@ -38,6 +39,45 @@ export interface CreatedSession {
     accessExpiresAt: number;
     refreshExpiresAt: number;
   };
+}
+
+export interface RepoProduct {
+  productId: string;
+  title: string;
+  priceMinor: number;
+  currency: string;
+  vipDays: number;
+  points: number;
+  active: boolean;
+}
+
+export interface RepoOrder {
+  id: string;
+  userId: string;
+  productId: string;
+  amountMinor: number;
+  currency: string;
+  status: 'PENDING' | 'PAID' | 'CLOSED' | 'REFUNDED';
+  environment: 'mock' | 'production';
+  snapshot: {
+    title: string;
+    price_minor: number;
+    currency: string;
+    points: number;
+    vip_days: number;
+  };
+  createdAt: number;
+  paidAt: number | null;
+}
+
+/** 订单创建中的可识别业务冲突（路由映射 400/409/200，不变成 500） */
+export class OrderConflict extends Error {
+  readonly kind: 'PRODUCT_NOT_FOUND' | 'PRODUCT_INACTIVE' | 'IDEMPOTENT_REPLAY' | 'IDEMPOTENCY_RACE';
+  constructor(kind: 'PRODUCT_NOT_FOUND' | 'PRODUCT_INACTIVE' | 'IDEMPOTENT_REPLAY' | 'IDEMPOTENCY_RACE') {
+    super(kind);
+    this.name = 'OrderConflict';
+    this.kind = kind;
+  }
 }
 
 /**
@@ -173,6 +213,42 @@ export interface AccountRepository {
   }): Promise<void>;
   /** 邮箱 ticket：条件消费（未消费 + 未过期），并发只允许一个调用成功 */
   consumeEmailTicket?(input: { ticketDigest: string; now: number }): Promise<boolean>;
+  /** 商品列表（只返回 active，按 product_id 升序） */
+  listProducts?(): Promise<RepoProduct[]>;
+  /**
+   * 下单（单事务）：先 set_config('app.user_id') 满足 orders RLS，
+   * 金额/币种/权益只取服务端商品快照；receipt 存在时同时写幂等回执。
+   */
+  createOrder?(input: {
+    userId: string;
+    productId: string;
+    environment: 'mock' | 'production';
+    receipt?: {
+      scope: string;
+      key: string;
+      fingerprint: string;
+      buildResponse: (order: RepoOrder) => unknown;
+    };
+  }): Promise<RepoOrder>;
+  /** 查自己的订单；不存在/非本人统一返回 null（路由映射 403） */
+  getOrder?(userId: string, orderId: string): Promise<RepoOrder | null>;
+  /**
+   * mock 支付成功（单事务，先 set_config）：
+   * 订单 PAID（条件 UPDATE 1 行）→ payment_events → 积分 → VIP。
+   * 只读订单 product_snapshot，绝不读 products。
+   */
+  applyPayment?(input: {
+    userId: string;
+    provider: 'mock';
+    eventId: string;
+    orderId: string;
+    amountMinor: number;
+    currency: string;
+    payloadHash: string;
+    now: number;
+  }): Promise<PaymentOutcome>;
+  /** 当前有效 VIP 到期时间（max(expires_at) 且 > now），无则 null */
+  vipExpiresAt?(userId: string): Promise<number | null>;
   claimDailyReward?(input: {
     userId: string;
     businessDate: string;

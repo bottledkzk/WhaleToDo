@@ -11,8 +11,11 @@ import {
 } from '../domain/email.ts';
 import { FixedWindowLimiter } from '../lib/rateLimit.ts';
 import { registerScope } from '../lib/idempotency.ts';
-import type { AccountRepository } from '../repo/types.ts';
-import { RegisterConflict } from '../repo/types.ts';
+import type { AccountRepository, RepoOrder } from '../repo/types.ts';
+import { OrderConflict, RegisterConflict } from '../repo/types.ts';
+import {
+  environmentForProvider, ORDER_ID_RE, paymentPayloadHash, PRODUCT_ID_RE,
+} from '../domain/orders.ts';
 import type { ServerConfig } from '../config.ts';
 
 declare module 'fastify' {
@@ -52,6 +55,21 @@ function fingerprintOf(secret: string, body: unknown): string {
   return createHmac('sha256', `${secret}:idempotency-fingerprint`)
     .update(JSON.stringify(body ?? null))
     .digest('hex');
+}
+
+/** 订单 HTTP 形状（内部 camelCase → 对外 snake_case） */
+function orderJson(o: RepoOrder) {
+  return {
+    id: o.id,
+    product_id: o.productId,
+    amount_minor: o.amountMinor,
+    currency: o.currency,
+    status: o.status,
+    environment: o.environment,
+    product_snapshot: o.snapshot,
+    created_at: new Date(o.createdAt).toISOString(),
+    paid_at: o.paidAt === null ? null : new Date(o.paidAt).toISOString(),
+  };
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -406,16 +424,161 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
   });
 
-  /* ---------- 权益（VIP 权益未冻结，只返回身份与到期时间占位） ---------- */
+  /* ---------- 权益（VIP 从 entitlements 读真实到期时间） ---------- */
   app.get('/api/v1/me/entitlements', async (req) => {
     await requireAuth(req);
     const wallet = await repo.walletOf(req.userId!);
+    const expiresAt = repo.vipExpiresAt ? await repo.vipExpiresAt(req.userId!) : null;
     return ok(req.requestId, {
-      vip: { active: false, expires_at: null },      // 具体权益待定，不默认无限调用
+      vip: expiresAt === null
+        ? { active: false, expires_at: null }
+        : { active: true, expires_at: new Date(expiresAt).toISOString() },
       balance: { available: wallet.available, reserved: wallet.reserved },
       daily_quota: { claimed_today: false, points: 0, reward_points: 0 },
     });
   });
+
+  /* ---------- 商品与订单 ---------- */
+  app.get('/api/v1/products', async (req) => {
+    if (!repo.listProducts) throw new ApiError('INTERNAL', '当前仓储未实现商品列表');
+    const products = await repo.listProducts();
+    return ok(req.requestId, {
+      products: products.map((p) => ({
+        product_id: p.productId,
+        title: p.title,
+        price_minor: p.priceMinor,
+        currency: p.currency,
+        vip_days: p.vipDays,
+        points: p.points,
+      })),
+    });
+  });
+
+  app.post('/api/v1/orders', async (req, reply) => {
+    await requireAuth(req);
+    const environment = environmentForProvider(config.paymentProvider);
+    if (environment === null) throw new ApiError('UPSTREAM_UNAVAILABLE', '支付未启用');
+    if (!repo.createOrder) throw new ApiError('INTERNAL', '当前仓储未实现下单');
+
+    const body = (req.body ?? {}) as { product_id?: string };
+    const productId = String(body.product_id ?? '').trim();
+    if (!PRODUCT_ID_RE.test(productId)) {
+      throw new ApiError('VALIDATION_ERROR', 'product_id 不合法');
+    }
+
+    const idemKey = String(req.headers['idempotency-key'] ?? '').trim();
+    const scope = `v1:order:${req.userId!}`;
+    const fingerprint = fingerprintOf(config.idempotencySecret, { product_id: productId });
+    if (idemKey) {
+      const hit = await repo.getIdempotent(scope, idemKey);
+      if (hit) {
+        if (hit.fingerprint !== fingerprint) {
+          throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
+        }
+        return reply.code(200).send(hit.response);
+      }
+    }
+
+    let order: RepoOrder;
+    try {
+      order = await repo.createOrder({
+        userId: req.userId!,
+        productId,
+        environment,
+        ...(idemKey
+          ? {
+              receipt: {
+                scope,
+                key: idemKey,
+                fingerprint,
+                buildResponse: (o: RepoOrder) => ok(req.requestId, { order: orderJson(o) }),
+              },
+            }
+          : {}),
+      });
+    } catch (err) {
+      if (!(err instanceof OrderConflict)) throw err;
+      if (err.kind === 'PRODUCT_NOT_FOUND' || err.kind === 'PRODUCT_INACTIVE') {
+        throw new ApiError('VALIDATION_ERROR', '商品不存在或已下架');
+      }
+      if (err.kind === 'IDEMPOTENT_REPLAY') {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const existing = await repo.getIdempotent(scope, idemKey);
+          if (existing) {
+            if (existing.fingerprint !== fingerprint) {
+              throw new ApiError('CONFLICT', '相同 Idempotency-Key 的请求体不一致');
+            }
+            return reply.code(200).send(existing.response);
+          }
+          if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      }
+      throw new ApiError('CONFLICT', '同一请求正在处理，请稍后重试');
+    }
+
+    return reply.code(201).send(ok(req.requestId, { order: orderJson(order) }));
+  });
+
+  app.get('/api/v1/orders/:id', async (req) => {
+    await requireAuth(req);
+    if (!repo.getOrder) throw new ApiError('INTERNAL', '当前仓储未实现订单查询');
+    const id = String((req.params as { id?: string }).id ?? '');
+    // 非法 uuid、不存在、非本人统一 403，避免枚举
+    if (!ORDER_ID_RE.test(id)) throw new ApiError('FORBIDDEN', '订单不存在');
+    const order = await repo.getOrder(req.userId!, id);
+    if (!order) throw new ApiError('FORBIDDEN', '订单不存在');
+    return ok(req.requestId, { order: orderJson(order) });
+  });
+
+  if (config.paymentProvider === 'mock') {
+    app.post('/api/v1/payments/mock/webhook', async (req) => {
+      await requireAuth(req);
+      if (!repo.applyPayment) throw new ApiError('INTERNAL', '当前仓储未实现支付回调');
+
+      const body = (req.body ?? {}) as {
+        event_id?: string; order_id?: string; status?: string;
+        amount_minor?: number; currency?: string;
+      };
+      const eventId = String(body.event_id ?? '').trim();
+      const orderId = String(body.order_id ?? '').trim();
+      const status = String(body.status ?? '');
+      const amountMinor = Number(body.amount_minor);
+      const currency = String(body.currency ?? '').trim().toUpperCase();
+      if (!eventId || eventId.length > 64 || !ORDER_ID_RE.test(orderId)
+          || status !== 'succeeded' || !Number.isInteger(amountMinor) || amountMinor < 0
+          || !/^[A-Z]{3}$/.test(currency)) {
+        throw new ApiError('VALIDATION_ERROR', '支付回调参数不合法');
+      }
+
+      const outcome = await repo.applyPayment({
+        userId: req.userId!,
+        provider: 'mock',
+        eventId,
+        orderId,
+        amountMinor,
+        currency,
+        payloadHash: paymentPayloadHash(body),
+        now: Date.now(),
+      });
+
+      if (outcome === 'applied' || outcome === 'replay') {
+        return ok(req.requestId, { ok: true, replay: outcome === 'replay' });
+      }
+      if (outcome === 'amount_mismatch') {
+        throw new ApiError('VALIDATION_ERROR', '金额或币种与订单不一致');
+      }
+      if (outcome === 'not_found') {
+        throw new ApiError('VALIDATION_ERROR', '订单不存在');
+      }
+      if (outcome === 'environment_mismatch') {
+        throw new ApiError('VALIDATION_ERROR', '订单环境不匹配');
+      }
+      if (outcome === 'event_conflict') {
+        throw new ApiError('CONFLICT', '支付事件已被其他订单使用');
+      }
+      throw new ApiError('CONFLICT', '订单状态不允许本次支付');
+    });
+  }
 
   /* ---------- 签到与积分（发奖走真实 daily_claims + point_ledger） ---------- */
 
