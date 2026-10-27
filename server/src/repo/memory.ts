@@ -5,6 +5,7 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
 import { amountsMatch, snapshotOf, vipExpiryAfter } from '../domain/orders.ts';
+import { normalizeDemoDisplayName, normalizeDemoEmail, validateDemoPassword } from '../domain/demo.ts';
 import { resolveDisplayName } from '../domain/profile.ts';
 import type { Wallet } from '../domain/ledger.ts';
 import type { RepoOrder, RepoProduct, RepoUser } from './types.ts';
@@ -163,6 +164,28 @@ export class MemoryRepository {
     this.store.users.set(user.id, user);
     this.store.usernameIndex.set(username.toLowerCase(), user.id);
     this.store.wallets.set(user.id, { available: 0, reserved: 0 });
+    return user;
+  }
+
+  /**
+   * 演示/测试辅助：直接种一个已验证邮箱的账号。
+   * 不经过邮箱 ticket；邮箱已存在时按幂等返回已有用户，不重复建号。
+   */
+  async seedEmailAccount(email: string, password: string, displayName?: string): Promise<User> {
+    const normalized = normalizeDemoEmail(email);
+    const safePassword = validateDemoPassword(password);
+    const safeDisplayName = normalizeDemoDisplayName(displayName);
+    const existing = this.findUserByEmail(normalized);
+    if (existing) return existing;
+
+    let username = '';
+    do {
+      username = `demo_${randomBytes(4).toString('hex')}`;
+    } while (this.store.usernameIndex.has(username.toLowerCase()));
+
+    const user = await this.createUser(username, safePassword, safeDisplayName);
+    user.email = normalized;
+    this.store.emailIndex.set(normalized, user.id);
     return user;
   }
 
@@ -574,6 +597,45 @@ export class MemoryRepository {
   }
 
   /* ---------------- 商品与订单（内存实现） ---------------- */
+
+  /** 演示商品：仅在 demo + 内存模式由 main.ts 调用；已存在则跳过。 */
+  seedDemoProducts(): number {
+    const products: RepoProduct[] = [
+      {
+        productId: 'vip_7d',
+        title: 'VIP 7 天',
+        priceMinor: 700,
+        currency: 'CNY',
+        vipDays: 7,
+        points: 0,
+        active: true,
+      },
+      {
+        productId: 'vip_30d',
+        title: 'VIP 30 天',
+        priceMinor: 1800,
+        currency: 'CNY',
+        vipDays: 30,
+        points: 0,
+        active: true,
+      },
+      {
+        productId: 'points_100',
+        title: '100 积分',
+        priceMinor: 600,
+        currency: 'CNY',
+        vipDays: 0,
+        points: 100,
+        active: true,
+      },
+    ];
+    for (const product of products) {
+      if (!this.store.products.has(product.productId)) {
+        this.store.products.set(product.productId, product);
+      }
+    }
+    return products.length;
+  }
 
   async listProducts(): Promise<RepoProduct[]> {
     return [...this.store.products.values()]
