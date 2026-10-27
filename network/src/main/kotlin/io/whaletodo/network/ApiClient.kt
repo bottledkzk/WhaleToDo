@@ -11,7 +11,17 @@ class ApiException(
     override val message: String,
     val status: Int,
     val requestId: String?,
+    val body: String = "",
 ) : Exception(message)
+
+/**
+ * 传输层失败。[requestSent] 为 false 表示连接尚未建立、服务端不可能收到；
+ * 为 true 表示连接已建立/请求体已写出，服务端可能已经接收，调用方不能当作明确失败。
+ */
+class ApiTransportException(
+    ioCause: IOException,
+    val requestSent: Boolean,
+) : IOException(ioCause.message, ioCause)
 
 /** 原始响应：成功时 body 为 `{request_id, data:{...}}` */
 data class ApiResponse(val status: Int, val body: String, val requestId: String?) {
@@ -54,6 +64,10 @@ class ApiClient(
     /** 以指定会话发送 POST；TokenStore 已换号时不发 HTTP。 */
     fun postAsSession(path: String, body: String?, sessionId: String): ApiResponse =
         request("POST", path, body, auth = true, idempotencyKey = null, boundSessionId = sessionId)
+
+    /** 以指定会话发送 GET；TokenStore 已换号时不发 HTTP。 */
+    fun getAsSession(path: String, sessionId: String): ApiResponse =
+        request("GET", path, null, auth = true, idempotencyKey = null, boundSessionId = sessionId)
 
     private fun request(
         method: String,
@@ -192,10 +206,11 @@ class ApiClient(
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = timeoutMs
-            readTimeout = timeoutMs
+            readTimeout = if (path.startsWith("/ai/")) AI_READ_TIMEOUT_MS else timeoutMs
             instanceFollowRedirects = false
             setRequestProperty("Accept", "application/json")
         }
+        var sent = false
         try {
             if (auth && accessToken != null) {
                 conn.setRequestProperty("Authorization", "Bearer $accessToken")
@@ -204,12 +219,20 @@ class ApiClient(
             if (body != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val output = conn.outputStream
+                // 连接已建立；即使随后写失败/被 reset，服务端也可能已收到请求。
+                sent = true
+                output.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            } else {
+                conn.connect()
+                sent = true
             }
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.use { s -> BufferedReader(s.reader(Charsets.UTF_8)).readText() } ?: ""
             return ApiResponse(status, text, conn.getHeaderField("x-request-id"))
+        } catch (e: IOException) {
+            throw ApiTransportException(e, sent)
         } finally {
             conn.disconnect()
         }
@@ -217,12 +240,15 @@ class ApiClient(
 
     private companion object {
         val INVALID_REFRESH_STATUSES = setOf(400, 401, 403)
+
+        /** AI 服务端单次调用最长 45s，客户端读超时需覆盖它；账户请求仍用 15s。 */
+        const val AI_READ_TIMEOUT_MS = 55_000
     }
 
     private fun toException(response: ApiResponse): ApiException {
         val code = Json.stringField(response.body, "code") ?: "INTERNAL"
         val message = Json.stringField(response.body, "message") ?: "请求失败（HTTP ${response.status}）"
-        return ApiException(code, message, response.status, response.requestId)
+        return ApiException(code, message, response.status, response.requestId, response.body)
     }
 
     private fun escape(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
