@@ -33,13 +33,13 @@ const CODE = '123456';
 // 固定中午，避免测试跨小时导致 email_throttle 窗口分裂
 const FIXED_NOW = Date.UTC(2026, 5, 1, 12, 0, 0);
 
-const digestFor = (email: string, code: string) => codeDigest(SECRET, PURPOSE, email, code);
+const digestFor = (email: string, code: string, purpose = PURPOSE) => codeDigest(SECRET, purpose, email, code);
 
-function send(email = EMAIL, code = CODE, now = Date.now()) {
+function send(email = EMAIL, code = CODE, now = Date.now(), purpose = PURPOSE) {
   return repo.sendEmailCode!({
-    purpose: PURPOSE,
+    purpose,
     email,
-    codeDigest: digestFor(email, code),
+    codeDigest: digestFor(email, code, purpose),
     now,
     ttlMs: CODE_TTL_MS,
     scopeSecret: SECRET,
@@ -186,6 +186,92 @@ test('连续 5 次错码 → 该码作废，第 6 次正确码也失败', async 
   assert.notEqual(rows.rows[0].consumed_at, null);
 });
 
+test('同邮箱 register/reset 并发：恰好一个 sent:true，只新增 1 行', async () => {
+  const now = FIXED_NOW;
+  const results = await Promise.all([
+    send(EMAIL, '111111', now, 'register'),
+    send(EMAIL, '222222', now, 'reset'),
+  ]);
+  assert.equal(results.filter((r) => r.sent).length, 1, '跨 purpose 只能有一个真实发码');
+  assert.equal(results.filter((r) => !r.sent).length, 1, '另一个必须按冷却返回 false');
+
+  const rows = await owner.query(
+    'SELECT count(*)::int AS n FROM email_verifications WHERE email_normalized=$1',
+    [EMAIL],
+  );
+  assert.equal(rows.rows[0].n, 1, '并发 register/reset 只能新增 1 条码');
+});
+
+test('同邮箱 60 秒冷却跨 purpose：register 后 reset 被拒，61 秒后可发', async () => {
+  const now = FIXED_NOW;
+  assert.equal((await send(EMAIL, CODE, now, 'register')).sent, true);
+
+  const blocked = await send(EMAIL, CODE, now + 1_000, 'reset');
+  assert.equal(blocked.sent, false);
+  assert.ok(blocked.retryAfterMs > 0);
+
+  const later = await send(EMAIL, CODE, now + 61_000, 'reset');
+  assert.equal(later.sent, true);
+  const rows = await owner.query(
+    'SELECT purpose FROM email_verifications ORDER BY created_at',
+  );
+  assert.equal(rows.rowCount, 2);
+  assert.deepEqual(rows.rows.map((row: { purpose: string }) => row.purpose), ['register', 'reset']);
+});
+
+test('verify→ticket 原子：ticket 摘要冲突回滚 code 消费，换 digest 重试成功', async () => {
+  const now = Date.now();
+  assert.equal((await send(EMAIL, CODE, now)).sent, true);
+
+  const occupied = createTicketToken();
+  await repo.createEmailTicket!({
+    purpose: PURPOSE,
+    email: EMAIL,
+    ticketDigest: occupied.digest,
+    now,
+    ttlMs: TICKET_TTL_MS,
+  });
+
+  await assert.rejects(
+    repo.verifyEmailCodeAndCreateTicket!({
+      purpose: PURPOSE,
+      email: EMAIL,
+      codeDigest: digestFor(EMAIL, CODE),
+      ticketDigest: occupied.digest,
+      now: now + 1,
+      ticketTtlMs: TICKET_TTL_MS,
+    }),
+  );
+
+  const failedCode = await owner.query(
+    'SELECT consumed_at, attempts FROM email_verifications WHERE email_normalized=$1 AND purpose=$2',
+    [EMAIL, PURPOSE],
+  );
+  assert.equal(failedCode.rowCount, 1);
+  assert.equal(failedCode.rows[0].consumed_at, null, 'ticket 写入失败必须回滚 code 消费');
+  assert.equal(failedCode.rows[0].attempts, 0);
+  const ticketsAfterFailure = await owner.query('SELECT count(*)::int AS n FROM email_verify_tickets');
+  assert.equal(ticketsAfterFailure.rows[0].n, 1, '失败事务不能留下新 ticket');
+
+  const retry = createTicketToken();
+  const result = await repo.verifyEmailCodeAndCreateTicket!({
+    purpose: PURPOSE,
+    email: EMAIL,
+    codeDigest: digestFor(EMAIL, CODE),
+    ticketDigest: retry.digest,
+    now: now + 2,
+    ticketTtlMs: TICKET_TTL_MS,
+  });
+  assert.equal(result.ok, true);
+  const consumedCode = await owner.query(
+    'SELECT consumed_at FROM email_verifications WHERE email_normalized=$1 AND purpose=$2',
+    [EMAIL, PURPOSE],
+  );
+  assert.notEqual(consumedCode.rows[0].consumed_at, null, '成功后 code 应被消费');
+  const tickets = await owner.query('SELECT count(*)::int AS n FROM email_verify_tickets');
+  assert.equal(tickets.rows[0].n, 2, '成功重试应写入新 ticket');
+});
+
 test('ticket 只存摘要，并发消费只成功一次', async () => {
   // ticket 用真实时间，确保 expires_at 在未来（消费 SQL 用数据库 now()）
   const now = Date.now();
@@ -206,12 +292,12 @@ test('ticket 只存摘要，并发消费只成功一次', async () => {
   assert.equal(rows.rows[0].email_normalized, EMAIL);
 
   const results = await Promise.all([
-    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
-    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now }),
+    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now }),
+    repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now }),
   ]);
   assert.equal(results.filter(Boolean).length, 1, '并发消费只能成功一次');
   assert.equal(
-    await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, now: now + 1 }),
+    await repo.consumeEmailTicket!({ ticketDigest: ticket.digest, purpose: PURPOSE, email: EMAIL, now: now + 1 }),
     false,
     '已消费的 ticket 不能重放',
   );

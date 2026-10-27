@@ -55,8 +55,21 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     // 邮箱验证码：默认路径也走内存实现，漏转发会让两条路由 500
     sendEmailCode: async (input) => repo.sendEmailCode(input),
     verifyEmailCode: async (input) => repo.verifyEmailCode(input),
+    verifyEmailCodeAndCreateTicket: async (input) => repo.verifyEmailCodeAndCreateTicket(input),
     createEmailTicket: async (input) => repo.createEmailTicket(input),
     consumeEmailTicket: async (input) => repo.consumeEmailTicket(input),
+    // 邮箱账户：默认内存路径，漏转发会让注册/登录/重置/绑定 500
+    findUserByEmail: async (email) => {
+      const u = repo.findUserByEmail(email);
+      return u ? toRepoUser(u) : null;
+    },
+    createUserWithEmail: async (input) => toRepoUser(await repo.createUserWithEmail(input)),
+    authenticateByEmail: async (email, password) => {
+      const u = await repo.authenticateByEmail(email, password);
+      return u ? toRepoUser(u) : null;
+    },
+    resetPasswordWithTicket: async (input) => repo.resetPasswordWithTicket(input),
+    bindEmailWithTicket: async (input) => repo.bindEmailWithTicket(input),
     // 订单/支付：默认内存路径；漏转发会让 /products /orders /webhook 500
     listProducts: async () => repo.listProducts(),
     createOrder: async (input) => repo.createOrder(input),

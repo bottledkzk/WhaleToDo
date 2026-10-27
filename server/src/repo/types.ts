@@ -203,6 +203,18 @@ export interface AccountRepository {
     codeDigest: string;
     now: number;
   }): Promise<{ ok: boolean; attemptsLeft: number }>;
+  /**
+   * 邮箱验证码：校验并创建 ticket（单事务）。
+   * code 消费与 ticket 写入必须同成同败；ticket 唯一冲突等错误继续抛出。
+   */
+  verifyEmailCodeAndCreateTicket?(input: {
+    purpose: string;
+    email: string;
+    codeDigest: string;
+    ticketDigest: string;
+    now: number;
+    ticketTtlMs: number;
+  }): Promise<{ ok: boolean; attemptsLeft: number }>;
   /** 邮箱验证码：创建一次性 ticket（只存摘要，有效期由 ttlMs 决定） */
   createEmailTicket?(input: {
     purpose: string;
@@ -211,8 +223,51 @@ export interface AccountRepository {
     now: number;
     ttlMs: number;
   }): Promise<void>;
-  /** 邮箱 ticket：条件消费（未消费 + 未过期），并发只允许一个调用成功 */
-  consumeEmailTicket?(input: { ticketDigest: string; now: number }): Promise<boolean>;
+  /** 邮箱 ticket：条件消费（token + purpose + email + 未消费 + 未过期） */
+  consumeEmailTicket?(input: {
+    ticketDigest: string;
+    purpose: string;
+    email: string;
+    now: number;
+  }): Promise<boolean>;
+
+  /* ---------------- 邮箱账户（T15） ---------------- */
+
+  /** 按规范化邮箱查 active 用户；不存在返回 null */
+  findUserByEmail?(email: string): Promise<RepoUser | null>;
+  /**
+   * 邮箱注册（单事务）：消费 register ticket → 建用户（含 email）→ 设置/钱包。
+   * ticket 失败抛 EmailAccountConflict('TICKET_INVALID')；邮箱冲突抛 EMAIL_TAKEN。
+   */
+  createUserWithEmail?(input: {
+    email: string;
+    password: string;
+    displayName?: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<RepoUser>;
+  /** 邮箱登录；不存在与密码错误统一 null（内部保留 dummy hash 时序保护） */
+  authenticateByEmail?(email: string, password: string): Promise<RepoUser | null>;
+  /**
+   * 重置密码（单事务）：消费 reset ticket → 改 password_hash → 撤销该用户全部会话。
+   * ok=false 表示 ticket 无效；邮箱无账号时 ok=true 且不写任何数据。
+   */
+  resetPasswordWithTicket?(input: {
+    email: string;
+    password: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<{ ok: boolean }>;
+  /**
+   * 绑定邮箱（单事务）：消费 bind ticket → 更新 users.email。
+   * 邮箱已被占用时事务回滚（ticket 不消费），返回 email_taken。
+   */
+  bindEmailWithTicket?(input: {
+    userId: string;
+    email: string;
+    ticketDigest: string;
+    now: number;
+  }): Promise<'ok' | 'ticket_invalid' | 'email_taken'>;
   /** 商品列表（只返回 active，按 product_id 升序） */
   listProducts?(): Promise<RepoProduct[]>;
   /**
@@ -275,6 +330,16 @@ export class RegisterConflict extends Error {
   constructor(kind: 'IDEMPOTENT_REPLAY' | 'IDEMPOTENCY_RACE' | 'USERNAME_TAKEN') {
     super(kind);
     this.name = 'RegisterConflict';
+    this.kind = kind;
+  }
+}
+
+/** 邮箱账户流程中的可识别冲突：路由映射成 400/409，不变成 500 */
+export class EmailAccountConflict extends Error {
+  readonly kind: 'TICKET_INVALID' | 'EMAIL_TAKEN';
+  constructor(kind: 'TICKET_INVALID' | 'EMAIL_TAKEN') {
+    super(kind);
+    this.name = 'EmailAccountConflict';
     this.kind = kind;
   }
 }
