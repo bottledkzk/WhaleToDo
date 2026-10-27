@@ -1,7 +1,7 @@
 // 本地启动入口：node src/main.ts（Node 24 直接跑 TypeScript）
 // 配置来源：先加载 server/.env（存在则加载），再由环境变量覆盖。
 import { loadConfig, loadDotEnv } from './config.ts';
-import { demoSeedFromEnv, hasDemoEnv, maskEmail } from './domain/demo.ts';
+import { demoSeedFromEnv, hasDemoEnv, maskEmail, assertDemoSeedUsesMemory } from './domain/demo.ts';
 import { MemoryRepository } from './repo/memory.ts';
 import { fromSync } from './repo/from-sync.ts';
 import { PrismaRepository } from './repo/prisma.ts';
@@ -43,6 +43,7 @@ function createRepository(): {
 }
 
 const { repo, mode: storageMode, memory } = createRepository();
+assertDemoSeedUsesMemory(demoSeed !== null, memory !== null);
 let seededDemoEmail: string | null = null;
 if (demoSeed && memory) {
   const seeded = await memory.seedEmailAccount(
@@ -51,6 +52,10 @@ if (demoSeed && memory) {
     demoSeed.displayName,
   );
   seededDemoEmail = seeded.email ?? demoSeed.email;
+}
+let seededDemoProducts = 0;
+if (config.nodeEnv === 'demo' && memory) {
+  seededDemoProducts = memory.seedDemoProducts();
 }
 const app = buildApp({ config, repo, logger: true });
 
@@ -71,5 +76,6 @@ app.log.info({
   payment_provider: config.paymentProvider,
   storage: storageMode,
   demo_seed: seededDemoEmail !== null,
+  demo_products: seededDemoProducts,
   ...(seededDemoEmail === null ? {} : { email: maskEmail(seededDemoEmail) }),
 }, 'whaletodo-api ready');

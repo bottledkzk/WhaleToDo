@@ -598,6 +598,45 @@ export class MemoryRepository {
 
   /* ---------------- 商品与订单（内存实现） ---------------- */
 
+  /** 演示商品：仅在 demo + 内存模式由 main.ts 调用；已存在则跳过。 */
+  seedDemoProducts(): number {
+    const products: RepoProduct[] = [
+      {
+        productId: 'vip_7d',
+        title: 'VIP 7 天',
+        priceMinor: 700,
+        currency: 'CNY',
+        vipDays: 7,
+        points: 0,
+        active: true,
+      },
+      {
+        productId: 'vip_30d',
+        title: 'VIP 30 天',
+        priceMinor: 1800,
+        currency: 'CNY',
+        vipDays: 30,
+        points: 0,
+        active: true,
+      },
+      {
+        productId: 'points_100',
+        title: '100 积分',
+        priceMinor: 600,
+        currency: 'CNY',
+        vipDays: 0,
+        points: 100,
+        active: true,
+      },
+    ];
+    for (const product of products) {
+      if (!this.store.products.has(product.productId)) {
+        this.store.products.set(product.productId, product);
+      }
+    }
+    return products.length;
+  }
+
   async listProducts(): Promise<RepoProduct[]> {
     return [...this.store.products.values()]
       .filter((p) => p.active)

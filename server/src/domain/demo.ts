@@ -54,6 +54,13 @@ export function demoSeedFromEnv(env: NodeJS.ProcessEnv = process.env): DemoSeed 
   };
 }
 
+/** DEMO_* 只能配合内存仓储；与 DATABASE_URL 同时出现时拒绝启动。 */
+export function assertDemoSeedUsesMemory(demoSeedConfigured: boolean, memoryMode: boolean): void {
+  if (demoSeedConfigured && !memoryMode) {
+    throw new Error('DEMO_* 仅用于内存模式：请移除 DATABASE_URL，或不要设置 DEMO_*');
+  }
+}
+
 /** 日志只允许出现掩码邮箱，例如 d***@example.com。 */
 export function maskEmail(email: string): string {
   const clean = String(email ?? '').trim().toLowerCase();
