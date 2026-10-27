@@ -11,6 +11,7 @@ class ApiException(
     override val message: String,
     val status: Int,
     val requestId: String?,
+    val body: String = "",
 ) : Exception(message)
 
 /** 原始响应：成功时 body 为 `{request_id, data:{...}}` */
@@ -192,7 +193,7 @@ class ApiClient(
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = timeoutMs
-            readTimeout = timeoutMs
+            readTimeout = if (path.startsWith("/ai/")) AI_READ_TIMEOUT_MS else timeoutMs
             instanceFollowRedirects = false
             setRequestProperty("Accept", "application/json")
         }
@@ -217,12 +218,15 @@ class ApiClient(
 
     private companion object {
         val INVALID_REFRESH_STATUSES = setOf(400, 401, 403)
+
+        /** AI 服务端单次调用最长 45s，客户端读超时需覆盖它；账户请求仍用 15s。 */
+        const val AI_READ_TIMEOUT_MS = 55_000
     }
 
     private fun toException(response: ApiResponse): ApiException {
         val code = Json.stringField(response.body, "code") ?: "INTERNAL"
         val message = Json.stringField(response.body, "message") ?: "请求失败（HTTP ${response.status}）"
-        return ApiException(code, message, response.status, response.requestId)
+        return ApiException(code, message, response.status, response.requestId, response.body)
     }
 
     private fun escape(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")

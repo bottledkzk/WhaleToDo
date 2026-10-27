@@ -5,6 +5,7 @@ import io.whaletodo.app.BuildConfig
 import io.whaletodo.app.agent.AgentBridgeHub
 import io.whaletodo.app.profile.ProfileBridgeHub
 import io.whaletodo.app.reminder.ReminderCenter
+import io.whaletodo.network.AiApi
 import io.whaletodo.network.ApiClient
 import io.whaletodo.network.ApiConfig
 import io.whaletodo.network.AuthApi
@@ -17,12 +18,17 @@ private val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 private val installLock = Any()
 private var installed = false
 
+private data class AccountRuntime(
+    val profile: ServerProfileBridge,
+    val agent: ServerAgentBridge,
+)
+
 /**
- * 在 Compose 启动前安装账户 bridge。
- * MainActivity 只调用这一处；API 基址来自 BuildConfig，release 不允许明文 HTTP。
+ * 在 Compose 启动前安装账户与 AI bridge。
+ * 账户和 AI 共用同一个 ApiClient/TokenStore；restore 后再刷新 models/usage/钱包。
  */
 fun installAccount(context: Context) {
-    val bridge = synchronized(installLock) {
+    val runtime = synchronized(installLock) {
         if (installed) return
         installed = true
         val credentials = KeystoreTokenStore(context.applicationContext)
@@ -30,8 +36,10 @@ fun installAccount(context: Context) {
             baseUrl = BuildConfig.API_BASE_URL,
             allowInsecureHttp = BuildConfig.DEBUG,
         )
-        val auth = AuthApi(ApiClient(config, credentials), credentials)
+        val client = ApiClient(config, credentials)
+        val auth = AuthApi(client, credentials)
         val session = AccountSession { credentials.read()?.sessionId }
+        val agent = ServerAgentBridge(AiApi(client), auth, session, accountScope)
         val profile = ServerProfileBridge(auth, session, credentials) { owner, sessionId ->
             // begin 之后的立即取消（owner=null）时 currentSessionId 仍是新代次；
             // 登出/401 清空后 currentSessionId 已为 null，此时只允许 guest 清理落地。
@@ -49,12 +57,12 @@ fun installAccount(context: Context) {
                 }
             }
         }
-        val originalAgent = AgentBridgeHub.bridge
         ProfileBridgeHub.bridge = profile
-        AgentBridgeHub.bridge = AccountAgentBridge(originalAgent, session)
-        profile
+        AgentBridgeHub.bridge = agent
+        AccountRuntime(profile, agent)
     }
     accountScope.launch {
-        runCatching { bridge.restore() }
+        runCatching { runtime.profile.restore() }
+        runCatching { runtime.agent.refresh() }
     }
 }
