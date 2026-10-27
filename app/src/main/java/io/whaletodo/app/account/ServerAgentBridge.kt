@@ -107,7 +107,12 @@ class ServerAgentBridge(
         val wallet = runCatching { auth.wallet() }.getOrNull()
         if (session.access.value.userId == owner) {
             if (entitlements != null && wallet != null) {
-                session.updateBalance(owner, entitlements, wallet.available)
+                session.updateBalance(
+                    session.currentSessionId() ?: return,
+                    owner,
+                    entitlements,
+                    wallet.available,
+                )
             }
             if (session.access.value.userId == owner) {
                 mutableAccess.value = session.access.value.copy(connected = true, editModels = editModels)
@@ -244,7 +249,13 @@ class ServerAgentBridge(
             val entitlements = auth.entitlements()
             val wallet = auth.wallet()
             if (session.access.value.userId == owner) {
-                if (session.updateBalance(owner, entitlements, wallet.available)) {
+                if (session.updateBalance(
+                        session.currentSessionId() ?: return,
+                        owner,
+                        entitlements,
+                        wallet.available,
+                    )
+                ) {
                     mutableAccess.value = session.access.value.copy(
                         connected = mutableAccess.value.connected,
                         editModels = modelList.filter { it.canEdit }.map { it.code }.toSet(),
