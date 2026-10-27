@@ -288,12 +288,110 @@ class ApiClientTest {
     }
 
     @Test
+    fun `A 到 B 延迟 401 不重放 B 的写请求`() {
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val writes = AtomicInteger(0)
+        val refreshes = AtomicInteger(0)
+        handler { rec ->
+            when (rec.path) {
+                "/api/v1/rewards/daily/claim" -> {
+                    writes.incrementAndGet()
+                    arrived.countDown()
+                    release.await(3, TimeUnit.SECONDS)
+                    Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"A expired"}}""")
+                }
+                "/api/v1/auth/refresh" -> {
+                    refreshes.incrementAndGet()
+                    Pair(200, """{"data":{"access_token":"a2","refresh_token":"r2"}}""")
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val a = TokenPair("a", "ra", "A")
+        val b = TokenPair("b", "rb", "B")
+        val store = InMemoryTokenStore(a)
+        val api = client(store)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val future = pool.submit<ApiResponse> { api.post("/rewards/daily/claim") }
+            assertTrue(arrived.await(5, TimeUnit.SECONDS))
+            store.save(b)
+            release.countDown()
+            try {
+                future.get(5, TimeUnit.SECONDS)
+                fail("A 的 401 不应以 B 身份重试")
+            } catch (e: ExecutionException) {
+                assertTrue(e.cause is ApiException)
+                val ex = e.cause as ApiException
+                assertEquals("UNAUTHENTICATED", ex.code)
+                assertEquals(401, ex.status)
+                assertTrue(ex.message.contains("账户已切换"))
+            }
+            assertEquals(1, writes.get())
+            assertEquals(0, refreshes.get())
+            assertEquals(b, store.read())
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `A refresh 延迟后切 B 结果丢弃且 B 不变`() {
+        val refreshStarted = CountDownLatch(1)
+        val allowRefresh = CountDownLatch(1)
+        val meCalls = AtomicInteger(0)
+        handler { rec ->
+            when (rec.path) {
+                "/api/v1/me" -> {
+                    meCalls.incrementAndGet()
+                    Pair(401, """{"request_id":"r401","error":{"code":"UNAUTHENTICATED","message":"A expired"}}""")
+                }
+                "/api/v1/auth/refresh" -> {
+                    refreshStarted.countDown()
+                    allowRefresh.await(3, TimeUnit.SECONDS)
+                    Pair(200, """{"data":{"access_token":"a2","refresh_token":"r2"}}""")
+                }
+                else -> Pair(404, """{"error":{"code":"VALIDATION_ERROR","message":"?"}}""")
+            }
+        }
+        val a = TokenPair("a", "ra", "A")
+        val b = TokenPair("b", "rb", "B")
+        val store = InMemoryTokenStore(a)
+        val api = client(store)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val future = pool.submit<ApiResponse> { api.get("/me") }
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS))
+            store.save(b)
+            allowRefresh.countDown()
+            try {
+                future.get(5, TimeUnit.SECONDS)
+                fail("A 的刷新结果应被丢弃")
+            } catch (e: ExecutionException) {
+                assertTrue(e.cause is ApiException)
+                val ex = e.cause as ApiException
+                assertEquals("UNAUTHENTICATED", ex.code)
+                assertTrue(ex.message.contains("账户已切换"))
+            }
+            assertEquals(1, meCalls.get())
+            assertEquals(b, store.read())
+        } finally {
+            allowRefresh.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
     fun `登录成功保存令牌`() {
         handler { Pair(200, """{"request_id":"r","data":{"access_token":"acc","refresh_token":"ref"}}""") }
         val store = InMemoryTokenStore()
         val tokens = AuthApi(client(store), store).login("alice", "S3cret-passw0rd")
-        assertEquals(TokenPair("acc", "ref"), tokens)
-        assertEquals(TokenPair("acc", "ref"), store.read())
+        assertEquals("acc", tokens.accessToken)
+        assertEquals("ref", tokens.refreshToken)
+        assertTrue(tokens.sessionId.isNotBlank())
+        assertEquals(tokens, store.read())
     }
 
     @Test
@@ -358,7 +456,10 @@ class ApiClientTest {
         assertEquals("/api/v1/auth/login", call.path)
         assertTrue(call.body.contains("\"email\":\"a@example.invalid\""))
         assertFalse(call.body.contains("\"username\""))
-        assertEquals(TokenPair("acc", "ref"), store.read())
+        val saved = store.read()!!
+        assertEquals("acc", saved.accessToken)
+        assertEquals("ref", saved.refreshToken)
+        assertTrue(saved.sessionId.isNotBlank())
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.whaletodo.network
 
 import java.time.Instant
+import java.util.UUID
 
 data class AuthUser(val id: String, val username: String, val displayName: String?)
 data class AccountProfile(val id: String, val username: String, val displayName: String?)
@@ -41,7 +42,7 @@ class AuthApi(
             ?: throw missing(response, "access_token")
         val refresh = Json.stringField(response.body, "refresh_token")
             ?: throw missing(response, "refresh_token")
-        return TokenPair(access, refresh).also(tokenStore::save)
+        return TokenPair(access, refresh, UUID.randomUUID().toString()).also(tokenStore::save)
     }
 
     /** 发送邮箱验证码；purpose 为 register / reset */
@@ -100,11 +101,17 @@ class AuthApi(
     }
 
     /** 退出登录：先通知服务端撤销，再清本地令牌（服务端失败也要清） */
-    fun logout() {
+    /**
+     * 退出登录：先通知服务端撤销，再清本地令牌（服务端失败也要清）。
+     * expectedSessionId 非空时只清理同一会话，避免退出期间的新登录被清掉。
+     */
+    fun logout(expectedSessionId: String? = null) {
         try {
             client.post("/auth/logout")
         } finally {
-            tokenStore.clear()
+            if (expectedSessionId == null || tokenStore.read()?.sessionId == expectedSessionId) {
+                tokenStore.clear()
+            }
         }
     }
 

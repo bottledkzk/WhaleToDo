@@ -1,7 +1,11 @@
 package io.whaletodo.network
 
-/** 令牌对：内存里只有这两个值，持久化由 [TokenStore] 决定（Android 侧用 Keystore 加密） */
-data class TokenPair(val accessToken: String, val refreshToken: String)
+/** 令牌对：access/refresh + 会话代次；同会话 refresh 保留 sessionId，换号/退出更换或清空。 */
+data class TokenPair(
+    val accessToken: String,
+    val refreshToken: String,
+    val sessionId: String = "",
+)
 
 /**
  * 令牌存储抽象。

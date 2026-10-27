@@ -26,7 +26,8 @@ class ServerProfileBridge(
         val clean = email.trim()
         auth.loginWithEmail(clean, password)
         credentials.saveEmail(clean)
-        loadAccount(clean)
+        val expected = credentials.read()?.sessionId ?: return@call
+        loadAccount(clean, expected)
     }
 
     override suspend fun register(
@@ -61,21 +62,21 @@ class ServerProfileBridge(
         password: String,
     ) = call {
         val clean = email.trim()
+        val expected = credentials.read()?.sessionId
         val ticket = auth.verifyEmailCode(clean, code, PURPOSE_RESET).ticket
         auth.resetPassword(clean, ticket, password)
-        credentials.clear()
-        session.clear()
+        clearIfSession(expected)
     }
 
     override suspend fun signOut() {
         withContext(io) {
+            val expected = credentials.read()?.sessionId
             try {
-                auth.logout()
+                if (expected != null) auth.logout(expected)
             } catch (_: Exception) {
-                // 服务端不可达也要在本机退出；令牌在 finally 中清除。
+                // 服务端不可达也要在本机退出；只清理本会话，避免误清 B。
             } finally {
-                credentials.clear()
-                session.clear()
+                clearIfSession(expected)
             }
         }
     }
@@ -95,17 +96,17 @@ class ServerProfileBridge(
         Unit
     }
 
-    /** App 启动时若本地仍有令牌，恢复登录态；401 会清空本地凭据并回到 guest。 */
+    /** App 启动时若本地仍有令牌，恢复登录态；401 只在会话代次未变时清空。 */
     suspend fun restore() {
-        if (credentials.read() == null) return
+        val stored = credentials.read() ?: return
+        val expected = stored.sessionId
         val email = credentials.readEmail().orEmpty()
         withContext(io) {
             try {
-                loadAccount(email)
+                loadAccount(email, expected)
             } catch (e: ApiException) {
                 if (e.status == 401 || e.code == "UNAUTHENTICATED") {
-                    credentials.clear()
-                    session.clear()
+                    clearIfSession(expected)
                 }
             } catch (_: IOException) {
                 // 离线启动保留令牌，下次启动再试。
@@ -113,20 +114,23 @@ class ServerProfileBridge(
         }
     }
 
-    private suspend fun loadAccount(email: String) {
+    private suspend fun loadAccount(email: String, expectedSession: String) {
         val profile = auth.me()
+        if (credentials.read()?.sessionId != expectedSession) return
         val entitlements = auth.entitlements()
+        if (credentials.read()?.sessionId != expectedSession) return
         val wallet = auth.wallet()
+        if (credentials.read()?.sessionId != expectedSession) return
         session.update(email, profile, entitlements, wallet.available)
     }
 
     private suspend fun <T> call(block: suspend () -> T): T = withContext(io) {
+        val expected = credentials.read()?.sessionId
         try {
             block()
         } catch (e: ApiException) {
             if (e.status == 401 || e.code == "UNAUTHENTICATED") {
-                credentials.clear()
-                session.clear()
+                clearIfSession(expected)
             }
             throw ProfileException(friendly(e))
         } catch (_: IOException) {
@@ -134,8 +138,24 @@ class ServerProfileBridge(
         }
     }
 
+    /**
+     * 只有当前会话仍是发起操作时的会话（或令牌已被同一会话的刷新失败清空）才清。
+     * 期间切到 B 时不动 B 的 TokenStore/AccountSession。
+     */
+    private fun clearIfSession(expected: String?) {
+        val current = credentials.read()?.sessionId
+        if (current == expected || current == null) {
+            credentials.clear()
+            session.clear()
+        }
+    }
+
     private fun friendly(e: ApiException): String = when (e.code) {
-        "UNAUTHENTICATED" -> "邮箱或密码错误，或登录已过期，请重新登录"
+        "UNAUTHENTICATED" -> if (e.message.contains("账户已切换")) {
+            "账户已切换，请重试"
+        } else {
+            "邮箱或密码错误，或登录已过期，请重新登录"
+        }
         "RATE_LIMITED" -> "操作过于频繁，请稍后再试"
         "CONFLICT" -> "该邮箱已被注册"
         "VALIDATION_ERROR" -> e.message.takeIf { it.isNotBlank() } ?: "请检查输入信息"

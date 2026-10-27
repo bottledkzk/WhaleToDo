@@ -29,19 +29,23 @@ class KeystoreTokenStore(context: Context) : AccountCredentials {
 
     override fun read(): TokenPair? = synchronized(lock) {
         val plain = decrypt(KEY_TOKENS) ?: return null
-        val split = plain.indexOf('\n')
-        if (split <= 0 || split == plain.lastIndex) {
+        val parts = plain.split('\n', limit = 3)
+        if (parts.size !in 2..3 || parts[0].isBlank() || parts[1].isBlank()) {
             clearLocked()
             return null
         }
-        TokenPair(plain.substring(0, split), plain.substring(split + 1))
+        // 旧版本只有 access/refresh 两段，sessionId 按空串兼容。
+        TokenPair(parts[0], parts[1], parts.getOrElse(2) { "" })
     }
 
     override fun save(tokens: TokenPair) = synchronized(lock) {
         require(tokens.accessToken.isNotBlank() && tokens.refreshToken.isNotBlank()) {
             "令牌不能为空"
         }
-        write(KEY_TOKENS, tokens.accessToken + "\n" + tokens.refreshToken)
+        write(
+            KEY_TOKENS,
+            tokens.accessToken + "\n" + tokens.refreshToken + "\n" + tokens.sessionId,
+        )
     }
 
     override fun saveEmail(email: String) = synchronized(lock) {

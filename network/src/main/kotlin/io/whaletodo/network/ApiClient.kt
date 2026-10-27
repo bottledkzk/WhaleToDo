@@ -40,7 +40,7 @@ class ApiClient(
 ) {
     private val refreshLock = Any()
 
-    private enum class RefreshResult { RETRY, INVALID, DISCARDED }
+    private enum class RefreshResult { RETRY, INVALID, SWITCHED, DISCARDED }
 
     fun get(path: String, auth: Boolean = true): ApiResponse = request("GET", path, null, auth, null)
 
@@ -58,21 +58,28 @@ class ApiClient(
         auth: Boolean,
         idempotencyKey: String?,
     ): ApiResponse {
-        val usedAccess = if (auth) tokenStore.read()?.accessToken else null
+        val used = if (auth) tokenStore.read() else null
+        val usedAccess = used?.accessToken
+        val usedSessionId = used?.sessionId.orEmpty()
         var response = execute(method, path, body, auth, idempotencyKey, usedAccess)
         if (response.status == 401 && auth) {
-            when (refreshAfter401(usedAccess, response.requestId)) {
+            when (refreshAfter401(usedSessionId, usedAccess, response.requestId)) {
                 RefreshResult.RETRY -> {
+                    val retryTokens = tokenStore.read()
+                    if (retryTokens == null || retryTokens.sessionId != usedSessionId) {
+                        throw switched(response.requestId)
+                    }
                     response = execute(
                         method,
                         path,
                         body,
                         auth,
                         idempotencyKey,
-                        tokenStore.read()?.accessToken,
+                        retryTokens.accessToken,
                     )
                 }
-                RefreshResult.INVALID, RefreshResult.DISCARDED -> Unit
+                RefreshResult.SWITCHED, RefreshResult.DISCARDED -> throw switched(response.requestId)
+                RefreshResult.INVALID -> Unit
             }
         }
         if (!response.isSuccess) throw toException(response)
@@ -81,39 +88,47 @@ class ApiClient(
 
     /**
      * 401 后的单飞刷新：同实例并发 401 只提交一次 refresh。
-     * 成功返回 RETRY；明确无效清空令牌；等待者发现 access 已变则直接重试。
+     * 会话代次不同时绝不拿新账户令牌重试；返回 SWITCHED。
      */
-    private fun refreshAfter401(usedAccess: String?, originalRequestId: String?): RefreshResult =
-        synchronized(refreshLock) {
-            val current = tokenStore.read() ?: return@synchronized RefreshResult.INVALID
-            if (current.accessToken != usedAccess) return@synchronized RefreshResult.RETRY
+    private fun refreshAfter401(
+        usedSessionId: String,
+        usedAccess: String?,
+        originalRequestId: String?,
+    ): RefreshResult = synchronized(refreshLock) {
+        val current = tokenStore.read() ?: return@synchronized RefreshResult.INVALID
+        if (current.sessionId != usedSessionId) return@synchronized RefreshResult.SWITCHED
+        if (current.accessToken != usedAccess) return@synchronized RefreshResult.RETRY
 
-            val response = try {
-                submitRefresh(current.refreshToken)
-            } catch (_: IOException) {
-                throw upstreamUnavailable(originalRequestId)
-            }
+        val response = try {
+            submitRefresh(current.refreshToken)
+        } catch (_: IOException) {
+            throw upstreamUnavailable(originalRequestId)
+        }
 
-            if (response.isSuccess) {
-                val tokens = readTokens(response)
-                if (tokens == null) {
-                    if (tokenStore.read()?.refreshToken == current.refreshToken) tokenStore.clear()
-                    return@synchronized RefreshResult.INVALID
-                }
-                // 保存前核对：期间退出或换号（refreshToken 已变）时丢弃结果。
-                if (tokenStore.read()?.refreshToken != current.refreshToken) {
-                    return@synchronized RefreshResult.DISCARDED
-                }
-                tokenStore.save(tokens)
-                return@synchronized RefreshResult.RETRY
-            }
-
-            if (response.status in INVALID_REFRESH_STATUSES) {
-                if (tokenStore.read()?.refreshToken == current.refreshToken) tokenStore.clear()
+        if (response.isSuccess) {
+            val tokens = readTokens(response, current.sessionId)
+            if (tokens == null) {
+                if (tokenStore.read()?.sessionId == current.sessionId) tokenStore.clear()
                 return@synchronized RefreshResult.INVALID
             }
-            throw upstreamUnavailable(response.requestId ?: originalRequestId)
+            // 保存前核对：期间退出或换号（session/refresh 已变）时丢弃结果。
+            val latest = tokenStore.read()
+            if (latest == null ||
+                latest.sessionId != current.sessionId ||
+                latest.refreshToken != current.refreshToken
+            ) {
+                return@synchronized RefreshResult.DISCARDED
+            }
+            tokenStore.save(tokens)
+            return@synchronized RefreshResult.RETRY
         }
+
+        if (response.status in INVALID_REFRESH_STATUSES) {
+            if (tokenStore.read()?.sessionId == current.sessionId) tokenStore.clear()
+            return@synchronized RefreshResult.INVALID
+        }
+        throw upstreamUnavailable(response.requestId ?: originalRequestId)
+    }
 
     /**
      * 用 refresh_token 换新令牌；成功返回 true 并写回 TokenStore。
@@ -127,8 +142,12 @@ class ApiClient(
             return@synchronized false
         }
         if (!response.isSuccess) return@synchronized false
-        val tokens = readTokens(response) ?: return@synchronized false
-        if (tokenStore.read()?.refreshToken != current.refreshToken) return@synchronized false
+        val tokens = readTokens(response, current.sessionId) ?: return@synchronized false
+        val latest = tokenStore.read()
+        if (latest == null ||
+            latest.sessionId != current.sessionId ||
+            latest.refreshToken != current.refreshToken
+        ) return@synchronized false
         tokenStore.save(tokens)
         true
     }
@@ -138,11 +157,14 @@ class ApiClient(
         return execute("POST", "/auth/refresh", payload, auth = false, idempotencyKey = null, accessToken = null)
     }
 
-    private fun readTokens(response: ApiResponse): TokenPair? {
+    private fun readTokens(response: ApiResponse, sessionId: String): TokenPair? {
         val access = Json.stringField(response.body, "access_token") ?: return null
         val refresh = Json.stringField(response.body, "refresh_token") ?: return null
-        return TokenPair(access, refresh)
+        return TokenPair(access, refresh, sessionId)
     }
+
+    private fun switched(requestId: String?): ApiException =
+        ApiException("UNAUTHENTICATED", "账户已切换，请重试", 401, requestId)
 
     private fun upstreamUnavailable(requestId: String?): ApiException =
         ApiException(
