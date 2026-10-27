@@ -2,22 +2,21 @@ package io.whaletodo.app.agent
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.whaletodo.core.*
 import java.time.LocalDate
-import kotlin.math.*
 
 /** Visual component contract only. Weiding owns bitmap export, camera/gallery and platform sharing. */
 enum class ShareStyle(val code:String,val label:String,val bg:Long,val ink:Long,val accent:Long,val premium:Boolean=true){
@@ -30,9 +29,14 @@ enum class ShareStyle(val code:String,val label:String,val bg:Long,val ink:Long,
     RED("red","红色",0xFF972E35,0xFFFFF0DF,0xFFFFCBA0),
     FITNESS("fitness","锻炼",0xFF192B30,0xFFECF6EC,0xFFCCEE67)
 }
-@Composable fun ShareCardPreview(style:ShareStyle,title:String,lines:List<String>,date:String=LocalDate.now().toString(),modifier:Modifier=Modifier){
-    val ink=Color(style.ink);val accent=Color(style.accent)
-    Box(modifier.aspectRatio(0.78f).background(Color(style.bg),RoundedCornerShape(22.dp))){
+@Composable fun ShareCardPreview(style:ShareStyle,title:String,lines:List<String>,date:String=LocalDate.now().toString(),modifier:Modifier=Modifier,background:ImageBitmap?=null){
+    val ink=Color(style.ink);val accent=Color(style.accent);val shape=RoundedCornerShape(22.dp)
+    Box(modifier.aspectRatio(0.78f).clip(shape).background(Color(style.bg))){
+        if(background!=null){
+            Image(background,null,Modifier.matchParentSize(),contentScale=ContentScale.Crop)
+            // 照片只作为纹理透出，模板底色/墨色保持原样，保证长标题和配文可读。
+            Box(Modifier.matchParentSize().background(Color(style.bg).copy(alpha=0.82f)))
+        }
         Canvas(Modifier.fillMaxSize()){
             when(style){
                 ShareStyle.STARRY->repeat(64){i->val x=((i*73+19)%997)/997f*size.width;val y=((i*127+37)%991)/991f*size.height;drawCircle(accent.copy(alpha=0.15f+(i%5)*0.13f),if(i%9==0)2.4f else 1f,Offset(x,y))}
@@ -54,15 +58,4 @@ enum class ShareStyle(val code:String,val label:String,val bg:Long,val ink:Long,
             Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){WhaleAvatar(Modifier.size(24.dp));Text("  每一步，都算数。",fontSize=11.sp,color=ink.copy(alpha=.72f))}
         }
     }
-}
-@Composable internal fun ShareStyleSheet(text:String,access:AgentAccess,dismiss:()->Unit,onExport:()->Unit,
-    onGate:(GateReason,ShareStyle)->Unit){
-    var selected by remember {mutableStateOf(ShareStyle.MINIMAL)}
-    AlertDialog(onDismissRequest=dismiss,title={Text("分享样式")},text={
-        Column(Modifier.verticalScroll(rememberScrollState())){
-            LazyRow(horizontalArrangement=Arrangement.spacedBy(6.dp)){items(ShareStyle.entries){s->FilterChip(selected==s,onClick={selected=s},label={Text(s.label+if(s.premium&&!access.vip)" · VIP" else "")})}}
-            ShareCardPreview(selected,"今天的进度",text.lines().filter{it.isNotBlank()}.take(5),modifier=Modifier.fillMaxWidth().padding(top=12.dp))
-        }
-    },confirmButton={TextButton(onClick={val gate=AgentPolicy.shareGate(access,selected.premium);if(gate!=null)onGate(gate,selected)else onExport()}){Text("分享文字")}},
-        dismissButton={TextButton(onClick=dismiss){Text("关闭")}})
 }

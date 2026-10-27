@@ -38,6 +38,7 @@ import io.whaletodo.app.ui.*
 import io.whaletodo.core.*
 import io.whaletodo.app.agent.*
 import io.whaletodo.app.profile.*
+import io.whaletodo.app.share.ShareStyleSheet
 import kotlinx.coroutines.launch
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -126,7 +127,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     var shareDraft by remember { mutableStateOf<String?>(null) }
     var shareGate by remember { mutableStateOf<GateReason?>(null) }
     var trialStyle by remember { mutableStateOf(ShareStyle.MINIMAL) }
-    LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;edit=null;capture=false;rating=null }
+    var shareTrialStyle by remember { mutableStateOf<ShareStyle?>(null) }
+    LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;shareTrialStyle=null;edit=null;capture=false;rating=null }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -227,17 +229,29 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             }
         }
     }
-    shareDraft?.let { text -> ShareStyleSheet(text, assistant.access, dismiss={shareDraft=null},
-        onExport={shareText(context,text);shareDraft=null},onGate={reason,style->shareGate=reason;trialStyle=style}) }
+    shareDraft?.let { text -> ShareStyleSheet(
+        text = text,
+        access = assistant.access,
+        trialStyle = shareTrialStyle,
+        dismiss = { shareDraft=null;shareGate=null;shareTrialStyle=null },
+        onGate = { reason, style -> shareGate=reason;trialStyle=style },
+        onShareText = { shareText(context,text);shareDraft=null;shareGate=null;shareTrialStyle=null },
+        onShared = { shareDraft=null;shareGate=null;shareTrialStyle=null },
+        onTrialConsumed = { shareTrialStyle=null },
+    ) }
     shareGate?.let { reason -> AccessDialog(reason,dismiss={shareGate=null},
-        onAccount={shareDraft=null;vm.profile.open(MyDialog.LOGIN);tab=4},onVip={shareDraft=null;vm.profile.open(MyDialog.RECHARGE_VIP);tab=4},
-        onPoints={shareDraft=null;vm.profile.open(MyDialog.POINTS);tab=4},onTrial={uiScope.launch {
+        onAccount={shareDraft=null;shareGate=null;shareTrialStyle=null;vm.profile.open(MyDialog.LOGIN);tab=4},
+        onVip={shareDraft=null;shareGate=null;shareTrialStyle=null;vm.profile.open(MyDialog.RECHARGE_VIP);tab=4},
+        onPoints={shareDraft=null;shareGate=null;shareTrialStyle=null;vm.profile.open(MyDialog.POINTS);tab=4},onTrial={uiScope.launch {
             if(assistant.access.availablePoints<=0)shareGate=GateReason.POINTS
             else {
                 val owner=vm.assistant.state.value.owner
                 val approved=AgentBridgeHub.bridge.authorizeTemplateTrial(trialStyle.code)
                 if(vm.assistant.state.value.owner==owner) {
-                    if(approved){shareDraft?.let {shareText(context,it)};shareDraft=null} else shareGate=GateReason.CONNECTION
+                    if(approved) {
+                        shareGate=null
+                        shareTrialStyle=trialStyle
+                    } else shareGate=GateReason.CONNECTION
                 }
             }
         }}) }
