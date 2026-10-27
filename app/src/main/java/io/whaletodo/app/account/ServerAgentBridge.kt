@@ -25,8 +25,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 
@@ -51,13 +49,24 @@ class ServerAgentBridge(
 
     init {
         scope.launch {
-            session.access.map { it.userId }.distinctUntilChanged().collect { owner ->
+            var lastOwner: String? = null
+            session.access.collect { base ->
+                val owner = base.userId
                 if (owner == null) {
+                    lastOwner = null
                     modelList = emptyList()
                     mutableAccess.value = AgentAccess()
-                } else {
-                    mutableAccess.value = session.access.value.copy(connected = false, editModels = emptySet())
+                } else if (owner != lastOwner) {
+                    lastOwner = owner
+                    // 换号时先断开旧 owner 的模型/编辑能力，再刷新新 owner。
+                    mutableAccess.value = base.copy(connected = false, editModels = emptySet())
                     refresh()
+                } else {
+                    // 签到/订单/VIP/余额变化：只同步 userId/vip/points，保留已建立的连接与编辑模型。
+                    mutableAccess.value = base.copy(
+                        connected = mutableAccess.value.connected,
+                        editModels = mutableAccess.value.editModels,
+                    )
                 }
             }
         }
