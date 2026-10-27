@@ -70,6 +70,12 @@ export function fromSync(repo: MemoryRepository): AccountRepository {
     },
     resetPasswordWithTicket: async (input) => repo.resetPasswordWithTicket(input),
     bindEmailWithTicket: async (input) => repo.bindEmailWithTicket(input),
+    // 订单/支付：默认内存路径；漏转发会让 /products /orders /webhook 500
+    listProducts: async () => repo.listProducts(),
+    createOrder: async (input) => repo.createOrder(input),
+    getOrder: async (userId, orderId) => repo.getOrder(userId, orderId),
+    applyPayment: async (input) => repo.applyPayment(input),
+    vipExpiresAt: async (userId) => repo.vipExpiresAt(userId),
     getIdempotent: async (scope, key) => repo.getIdempotent(scope, key),
     saveIdempotent: async (scope, key, fingerprint, response) => { repo.saveIdempotent(scope, key, fingerprint, response); },
   };
