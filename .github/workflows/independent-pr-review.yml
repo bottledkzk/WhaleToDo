@@ -1,0 +1,64 @@
+name: Independent PR review probes
+on:
+  push:
+    branches: [review/bottledkzk-open-pr-20261026]
+permissions:
+  contents: read
+jobs:
+  postgres-probes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - number: 23
+            revision: 66bb5df1df33cc0bd4760f2ca7e5fc8074805fa2
+          - number: 24
+            revision: e92442005118b63c19bc8c598b98c0c181862f5e
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: whaletodo_verify
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: ci-only-password
+      DATABASE_URL: postgresql://whaletodo_migrator:ci-migration-only@127.0.0.1:5432/whaletodo_verify?schema=whaletodo
+      VERIFY_DATABASE_URL: postgresql://whaletodo_migrator:ci-migration-only@127.0.0.1:5432/whaletodo_verify?schema=whaletodo
+      VERIFY_APP_URL: postgresql://whaletodo_app:ci-runtime-only@127.0.0.1:5432/whaletodo_verify
+      REVIEW_CASE: ${{ matrix.number }}
+      REVIEW_SOURCE: target/server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision }}
+          path: target
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: review
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Fixed dependencies and generated client
+        working-directory: target/server
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node node_modules/prisma/build/index.js generate
+      - name: Create roles and apply migrations in disposable CI service
+        run: |
+          psql -h 127.0.0.1 -U postgres -d whaletodo_verify -v ON_ERROR_STOP=1 -f target/env/postgresql/ci-roles.sql
+          cd target/server
+          node node_modules/prisma/build/index.js migrate deploy
+          psql -h 127.0.0.1 -U postgres -d whaletodo_verify -v ON_ERROR_STOP=1 -f ../env/postgresql/grants.sql
+      - name: Independent failure and concurrency probes
+        run: node review/review/pg-probes.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: independent-pr${{ matrix.number }}-evidence
+          path: independent-pr*-evidence.json
