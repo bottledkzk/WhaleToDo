@@ -1,7 +1,16 @@
 // 本地启动入口：node src/main.ts（Node 24 直接跑 TypeScript）
 // 配置来源：先加载 server/.env（存在则加载），再由环境变量覆盖。
 import { loadConfig, loadDotEnv } from './config.ts';
-import { demoSeedFromEnv, hasDemoEnv, maskEmail, assertDemoSeedUsesMemory } from './domain/demo.ts';
+import {
+  assertDemoOutboxNodeEnv,
+  assertDemoOutboxUsesMemory,
+  assertDemoSeedUsesMemory,
+  createDemoEmailCodeSink,
+  demoSeedFromEnv,
+  hasDemoEnv,
+  maskEmail,
+  resolveDemoOutboxPath,
+} from './domain/demo.ts';
 import { MemoryRepository } from './repo/memory.ts';
 import { fromSync } from './repo/from-sync.ts';
 import { PrismaRepository } from './repo/prisma.ts';
@@ -14,6 +23,8 @@ import { buildApp } from './http/app.ts';
 const dotenvLoaded = loadDotEnv(new URL('../.env', import.meta.url));
 
 const config = loadConfig();
+const demoOutbox = resolveDemoOutboxPath(process.env);
+assertDemoOutboxNodeEnv(demoOutbox !== null, config.nodeEnv);
 if (config.nodeEnv === 'production' && hasDemoEnv(process.env)) {
   throw new Error('生产环境禁止设置 DEMO_* 演示变量');
 }
@@ -44,6 +55,7 @@ function createRepository(): {
 
 const { repo, mode: storageMode, memory } = createRepository();
 assertDemoSeedUsesMemory(demoSeed !== null, memory !== null);
+assertDemoOutboxUsesMemory(demoOutbox !== null, memory !== null);
 let seededDemoEmail: string | null = null;
 if (demoSeed && memory) {
   const seeded = await memory.seedEmailAccount(
@@ -57,7 +69,8 @@ let seededDemoProducts = 0;
 if (config.nodeEnv === 'demo' && memory) {
   seededDemoProducts = memory.seedDemoProducts();
 }
-const app = buildApp({ config, repo, logger: true });
+const emailCodeSink = demoOutbox === null ? undefined : createDemoEmailCodeSink(demoOutbox);
+const app = buildApp({ config, repo, logger: true, emailCodeSink });
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, 'shutting down');
@@ -77,5 +90,6 @@ app.log.info({
   storage: storageMode,
   demo_seed: seededDemoEmail !== null,
   demo_products: seededDemoProducts,
+  demo_email_outbox: demoOutbox !== null,
   ...(seededDemoEmail === null ? {} : { email: maskEmail(seededDemoEmail) }),
 }, 'whaletodo-api ready');
