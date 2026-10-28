@@ -180,9 +180,11 @@ class ServerAgentBridge(
     override suspend fun reply(request: AssistantRequest): AssistantReply = withContext(io) {
         // 冻结本次调用所属代次；后续 HTTP 必须用它做 bound，返回后也要用它核对。
         val expectedSession = session.currentSessionId()
-            ?: throw AgentGateException(GateReason.LOGIN)
-        val owner = requireOwner()
-        if (request.ownerId != owner) throw AgentGateException(GateReason.LOGIN)
+            ?: throw AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
+        val owner = requireOwner(definitelyNotSent = true)
+        if (request.ownerId != owner) {
+            throw AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
+        }
         try {
             val view = try {
                 ai.submit(
@@ -210,10 +212,13 @@ class ServerAgentBridge(
             } catch (_: Exception) {
                 throw AgentServiceException(false)
             }
-            if (!sameSession(expectedSession, owner)) throw AgentGateException(GateReason.LOGIN)
+            if (!sameSession(expectedSession, owner)) {
+                // submit 已返回；即使请求未成功，也不能证明服务端没有受理/计费。
+                throw AgentGateException(GateReason.LOGIN, definitelyNotSent = false)
+            }
             when (view.status) {
                 "succeeded" -> toReply(view)
-                "failed" -> throw AgentServiceException(true)
+                "failed" -> throw AgentServiceException(true, definitelyNotSent = false)
                 else -> throw AgentPendingException(request.id)
             }
         } finally {
@@ -254,9 +259,9 @@ class ServerAgentBridge(
     private fun sameSession(expectedSession: String, owner: String): Boolean =
         session.currentSessionId() == expectedSession && session.access.value.userId == owner
 
-    private fun requireOwner(): String =
+    private fun requireOwner(definitelyNotSent: Boolean = false): String =
         session.access.value.userId?.takeIf { it.isNotBlank() }
-            ?: throw AgentGateException(GateReason.LOGIN)
+            ?: throw AgentGateException(GateReason.LOGIN, definitelyNotSent)
 
     private fun toReply(view: AiRequestView): AssistantReply {
         val text = view.text?.takeIf { it.isNotBlank() }
@@ -317,16 +322,19 @@ class ServerAgentBridge(
             return if (e.requestSent) {
                 AgentPendingException(requestId)
             } else {
-                AgentGateException(GateReason.CONNECTION)
+                AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
             }
         }
         return when {
             e is ConnectException || e is UnknownHostException ->
-                AgentGateException(GateReason.CONNECTION)
+                AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
             e is SocketTimeoutException -> {
                 val connectTimeout = e.message?.contains("connect", ignoreCase = true) == true
-                if (connectTimeout) AgentGateException(GateReason.CONNECTION)
-                else AgentPendingException(requestId)
+                if (connectTimeout) {
+                    AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
+                } else {
+                    AgentPendingException(requestId)
+                }
             }
             else -> AgentGateException(GateReason.CONNECTION)
         }

@@ -61,9 +61,58 @@ class AgentErrorMappingTest {
     }
 
     @Test
+    fun `提交 401 402 403 409 429 明确未发送`() {
+        val login = AgentErrorMapping.submit(401, null, null, "req") as AgentGateException
+        assertEquals(GateReason.LOGIN, login.reason)
+        assertTrue(login.definitelyNotSent)
+
+        val points = AgentErrorMapping.submit(402, null, null, "req") as AgentGateException
+        assertEquals(GateReason.POINTS, points.reason)
+        assertTrue(points.definitelyNotSent)
+
+        val vip = AgentErrorMapping.submit(403, null, "VIP_REQUIRED", "req") as AgentGateException
+        assertEquals(GateReason.VIP, vip.reason)
+        assertTrue(vip.definitelyNotSent)
+
+        val conflict = AgentErrorMapping.submit(409, null, null, "req") as AgentServiceException
+        assertTrue(conflict.definitelyRejected)
+        assertTrue(conflict.definitelyNotSent)
+
+        val limited = AgentErrorMapping.submit(429, null, null, "req") as AgentServiceException
+        assertTrue(limited.definitelyRejected)
+        assertTrue(limited.definitelyNotSent)
+    }
+
+    @Test
+    fun `提交 5xx 非 failed 为 pending failed 才明确未发送`() {
+        val pending = AgentErrorMapping.submit(503, null, null, "req")
+        assertTrue(pending is AgentPendingException)
+
+        val failed = AgentErrorMapping.submit(503, "failed", null, "req") as AgentServiceException
+        assertTrue(failed.definitelyRejected)
+        assertTrue(failed.definitelyNotSent)
+    }
+
+    @Test
+    fun `提交未知状态保留未知语义`() {
+        val unknown = AgentErrorMapping.submit(418, null, null, "req") as AgentServiceException
+        assertFalse(unknown.definitelyRejected)
+        assertFalse(unknown.definitelyNotSent)
+    }
+
+    @Test
+    fun `查询错误不带未发送标记`() {
+        val forbidden = AgentErrorMapping.query(403, "FORBIDDEN", null, "req") as AgentServiceException
+        assertTrue(forbidden.definitelyRejected)
+        assertFalse(forbidden.definitelyNotSent)
+        assertTrue(AgentErrorMapping.query(429, "RATE_LIMITED", null, "req") is AgentPendingException)
+    }
+
+    @Test
     fun `提交 429 语义不变`() {
         val e = AgentErrorMapping.submit(429, null, null, "req-10")
         assertTrue((e as AgentServiceException).definitelyRejected)
+        assertTrue(e.definitelyNotSent)
     }
 
     @Test
@@ -75,17 +124,14 @@ class AgentErrorMappingTest {
 
     @Test
     fun `提交 403 的三种 reason 仍映射门禁`() {
-        assertEquals(
-            GateReason.VIP,
-            (AgentErrorMapping.submit(403, null, "VIP_REQUIRED", "req") as AgentGateException).reason,
-        )
-        assertEquals(
-            GateReason.MODEL,
-            (AgentErrorMapping.submit(403, null, "MODEL_NOT_ALLOWED", "req") as AgentGateException).reason,
-        )
-        assertEquals(
-            GateReason.CONSENT,
-            (AgentErrorMapping.submit(403, null, "CONSENT_REQUIRED", "req") as AgentGateException).reason,
-        )
+        val vip = AgentErrorMapping.submit(403, null, "VIP_REQUIRED", "req") as AgentGateException
+        assertEquals(GateReason.VIP, vip.reason)
+        assertTrue(vip.definitelyNotSent)
+        val model = AgentErrorMapping.submit(403, null, "MODEL_NOT_ALLOWED", "req") as AgentGateException
+        assertEquals(GateReason.MODEL, model.reason)
+        assertTrue(model.definitelyNotSent)
+        val consent = AgentErrorMapping.submit(403, null, "CONSENT_REQUIRED", "req") as AgentGateException
+        assertEquals(GateReason.CONSENT, consent.reason)
+        assertTrue(consent.definitelyNotSent)
     }
 }

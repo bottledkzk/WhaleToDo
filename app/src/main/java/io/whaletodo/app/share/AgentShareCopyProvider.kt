@@ -73,12 +73,14 @@ internal class AgentShareCopyProvider(
             // Keep the durable record; use the ID we persisted, not a replacement.
             throw AgentPendingException(request.id)
         } catch (e: AgentGateException) {
-            // reply may have reached the server before a session/owner check failed.
-            // A gate after save never proves the request was unsent: retain it for query/recover.
+            // A gate can be raised after reply reached the server (session changed), or
+            // before any POST (connection/login/points). Only the latter may clear.
+            if (e.definitelyNotSent) clearPending(ownerId)
             throw e
         } catch (e: AgentServiceException) {
-            // This includes definitelyRejected=true from the bridge: it cannot prove the
-            // provider/server did not accept the request. Only a matching-owner query may clear.
+            // definitelyNotSent is set only for an explicit pre-acceptance rejection.
+            // A post-submit service failure (including definitelyRejected) keeps the ID.
+            if (e.definitelyNotSent) clearPending(ownerId)
             throw e
         } catch (e: CancellationException) {
             throw e

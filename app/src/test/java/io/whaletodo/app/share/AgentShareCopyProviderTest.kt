@@ -295,6 +295,49 @@ class AgentShareCopyProviderTest {
     }
 
     @Test
+    fun `pre-send connection failure with definitelyNotSent clears pending`() {
+        val harness = harness(
+            reply = { throw AgentGateException(GateReason.CONNECTION, definitelyNotSent = true) },
+        )
+        assertThrows(AgentGateException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        assertEquals(1, harness.bridge.replyCalls)
+        assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
+    fun `explicit login points and rate-limit rejections clear pending`() {
+        val failures = listOf<Exception>(
+            AgentGateException(GateReason.LOGIN, definitelyNotSent = true),
+            AgentGateException(GateReason.POINTS, definitelyNotSent = true),
+            AgentServiceException(true, definitelyNotSent = true),
+        )
+        failures.forEach { failure ->
+            val harness = harness(reply = { throw failure })
+            assertThrows(Exception::class.java) {
+                runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+            }
+            assertEquals(1, harness.bridge.replyCalls)
+            assertNull("failure=$failure", harness.store.load("owner-1"))
+        }
+    }
+
+    @Test
+    fun `post-submit disconnect keeps original id and recover does not POST`() {
+        val harness = pendingHarness()
+        val id = harness.store.load("owner-1")!!.requestId
+
+        val result = runBlocking { harness.provider.recover("owner-1") }
+
+        assertEquals(3, result?.size)
+        assertEquals(id, harness.bridge.lastQueryId)
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(1, harness.bridge.queryCalls)
+        assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
     fun `accepted LOGIN keeps original id and recover queries it after A returns`() {
         val store = FakeStore()
         lateinit var bridgeRef: FakeBridge
@@ -303,7 +346,7 @@ class AgentShareCopyProviderTest {
             reply = {
                 // reply may reach the server and then find the session/owner changed.
                 bridgeRef.access.value = normalAccess.copy(userId = "owner-b")
-                throw AgentGateException(GateReason.LOGIN)
+                throw AgentGateException(GateReason.LOGIN, definitelyNotSent = false)
             },
         )
         bridgeRef = harness.bridge
@@ -326,7 +369,7 @@ class AgentShareCopyProviderTest {
     @Test
     fun `accepted service definitelyRejected keeps pending for recover`() {
         val harness = harness(
-            reply = { throw AgentServiceException(true) },
+            reply = { throw AgentServiceException(true, definitelyNotSent = false) },
         )
         assertThrows(AgentServiceException::class.java) {
             runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
