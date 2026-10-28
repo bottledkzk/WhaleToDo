@@ -2,7 +2,11 @@ package io.whaletodo.app.data
 
 import androidx.room.Dao
 import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
+import androidx.room.Update
 import androidx.room.Upsert
 
 /** Basic persistence/query surface for sync; worker/state-machine behavior is a later block. */
@@ -22,7 +26,21 @@ interface SyncDao {
     @Query("UPDATE sync_batches SET attemptSessionId=:attemptSessionId, attempts=attempts+1, lastAttemptAt=:at WHERE batchId=:batchId AND ownerId=:ownerId")
     suspend fun recordBatchAttempt(ownerId: String, batchId: String, attemptSessionId: String, at: Long)
 
-    @Upsert suspend fun upsertOutbox(row: SyncOutboxRow)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertOutbox(row: SyncOutboxRow): Long
+
+    @Update
+    suspend fun updateOutbox(row: SyncOutboxRow): Int
+
+    /**
+     * Existing opId is a legal update. A new opId that would become a second chain head
+     * must surface the unique-index conflict; do not use @Upsert/REPLACE, which can
+     * swallow the conflict and silently drop the new intent.
+     */
+    @Transaction
+    suspend fun insertOrUpdateOutbox(row: SyncOutboxRow) {
+        if (updateOutbox(row) == 0) insertOutbox(row)
+    }
 
     @Query("SELECT * FROM sync_outbox WHERE opId=:opId")
     suspend fun outbox(opId: String): SyncOutboxRow?

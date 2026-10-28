@@ -149,8 +149,17 @@ abstract class DeskDatabase : RoomDatabase() {
     abstract fun syncDao(): SyncDao
 
     companion object {
-        private const val SYNC_OUTBOX_HEAD_INDEX =
+        internal const val SYNC_OUTBOX_HEAD_INDEX =
             "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_head` ON `sync_outbox`(`ownerId`, `objectType`, `objectId`) WHERE `isHead`=1"
+
+        /** Shared by production open() and Room instrumentation tests. */
+        internal val SYNC_OUTBOX_CALLBACK = object : RoomDatabase.Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                // Partial unique index is not representable in Room's schema JSON;
+                // create it after schema validation on every open.
+                db.execSQL(SYNC_OUTBOX_HEAD_INDEX)
+            }
+        }
 
         val MIGRATION_1_2 =
             object : Migration(1, 2) {
@@ -273,13 +282,7 @@ abstract class DeskDatabase : RoomDatabase() {
                     "whaletodo.db",
                 )
                 .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                .addCallback(object : RoomDatabase.Callback() {
-                    override fun onOpen(db: SupportSQLiteDatabase) {
-                        // Partial unique index is not representable in Room's schema JSON;
-                        // create it after schema validation on every open.
-                        db.execSQL(SYNC_OUTBOX_HEAD_INDEX)
-                    }
-                })
+                .addCallback(SYNC_OUTBOX_CALLBACK)
                 .build()
     }
 }
