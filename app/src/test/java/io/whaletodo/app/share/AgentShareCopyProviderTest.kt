@@ -53,6 +53,7 @@ class AgentShareCopyProviderTest {
         var queryCalls = 0
         var lastRequest: AssistantRequest? = null
         var lastQueryId: String? = null
+        var lastQueryOwner: String? = null
 
         override suspend fun reply(request: AssistantRequest): AssistantReply {
             replyCalls++
@@ -60,9 +61,10 @@ class AgentShareCopyProviderTest {
             return replyWith(request)
         }
 
-        override suspend fun query(requestId: String): AssistantReply {
+        override suspend fun query(requestId: String, expectedOwner: String?): AssistantReply {
             queryCalls++
             lastQueryId = requestId
+            lastQueryOwner = expectedOwner
             return queryWith(requestId)
         }
     }
@@ -201,7 +203,38 @@ class AgentShareCopyProviderTest {
         assertEquals(1, harness.bridge.replyCalls)
         assertEquals(1, harness.bridge.queryCalls)
         assertEquals(id, harness.bridge.lastQueryId)
+        assertEquals("owner-1", harness.bridge.lastQueryOwner)
         assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
+    fun `recover keeps A when the account goes A to B to A during the query`() {
+        val store = FakeStore()
+        lateinit var fakeBridge: FakeBridge
+        val harness = harness(
+            store = store,
+            reply = { request -> throw AgentPendingException(request.id) },
+            query = { id ->
+                // The bridge has frozen A as expected owner, but the UI account switches to B
+                // before HTTP; A is back before the provider handles the result.
+                fakeBridge.access.value = normalAccess.copy(userId = "owner-b")
+                fakeBridge.access.value = normalAccess
+                throw AgentPendingException(id)
+            },
+        )
+        fakeBridge = harness.bridge
+        val pending = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+
+        val error = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.recover("owner-1") }
+        }
+
+        assertEquals(pending.requestId, error.requestId)
+        assertEquals("owner-1", fakeBridge.lastQueryOwner)
+        assertEquals(1, fakeBridge.queryCalls)
+        assertEquals(pending.requestId, store.load("owner-1")?.requestId)
     }
 
     @Test
@@ -445,6 +478,7 @@ class AgentShareCopyProviderTest {
 
         assertEquals(id, error.requestId)
         assertEquals(1, harness.bridge.queryCalls)
+        assertEquals("owner-1", harness.bridge.lastQueryOwner)
         assertEquals(id, harness.store.load("owner-1")?.requestId)
     }
 
@@ -454,6 +488,7 @@ class AgentShareCopyProviderTest {
         runBlocking { harness.provider.recover("owner-1") }
         assertNull(harness.store.load("owner-1"))
         assertEquals(1, harness.bridge.queryCalls)
+        assertEquals("owner-1", harness.bridge.lastQueryOwner)
         assertEquals(1, harness.bridge.replyCalls)
     }
 

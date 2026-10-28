@@ -111,13 +111,13 @@ internal class AgentShareCopyProvider(
             if (bridge.access.value.userId == ownerId) clearPending(ownerId)
             return null
         }
-        // Query uses the bridge's current account. Never query A's ID while B is active.
+        // Query only while A is current; the bridge also binds expectedOwner for the IO race.
         if (bridge.access.value.userId != ownerId) {
             throw AgentPendingException(entry.requestId)
         }
         val reply = try {
             // Query only; never POST a second model request.
-            bridge.query(entry.requestId)
+            bridge.query(entry.requestId, ownerId)
         } catch (e: AgentPendingException) {
             throw AgentPendingException(entry.requestId)
         } catch (e: AgentGateException) {

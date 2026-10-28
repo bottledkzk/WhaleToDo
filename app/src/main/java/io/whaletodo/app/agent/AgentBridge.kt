@@ -9,7 +9,8 @@ interface AgentBridge {
     val access: StateFlow<AgentAccess>
     val models: List<AgentModel>
     suspend fun reply(request: AssistantRequest): AssistantReply
-    suspend fun query(requestId: String): AssistantReply = throw AgentPendingException(requestId)
+    suspend fun query(requestId: String, expectedOwner: String? = null): AssistantReply =
+        throw AgentPendingException(requestId)
     suspend fun authorizeTemplateTrial(template: String): Boolean = false
 }
 data class AssistantRequest(val id: String, val mode: String, val model: String, val prompt: String,
