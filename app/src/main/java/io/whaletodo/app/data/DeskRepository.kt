@@ -29,13 +29,25 @@ class DeskRepository(private val db: DeskDatabase) {
 
     suspend fun save(task: TaskRow, owner: String = "guest") {
         require(owner.isNotBlank())
-        require(task.ownerId == owner || task.ownerId == "guest") { "不能跨账户保存事项" }
+        requireTaskWritable(task, owner)
         require(task.title.isNotBlank())
         require(task.minutes in 0..525600)
         require(task.importance in 1..5)
         require(task.deadline >= 0)
         require(TaskCategory.entries.any { it.code == task.category })
         dao.save(task.copy(ownerId = owner, title = task.title.trim()))
+    }
+
+    /**
+     * A new draft may start as guest, but an existing guest row is a different object and
+     * must never be silently promoted/overwritten by an account edit. Guest→account
+     * migration is an explicit, separately confirmed path (not this edit API).
+     */
+    private suspend fun requireTaskWritable(task: TaskRow, owner: String) {
+        if (task.ownerId == owner) return
+        require(task.ownerId == "guest") { "不能跨账户保存事项" }
+        require(dao.tasks("guest").none { it.id == task.id }) { "访客事项不能隐式导入账户" }
+        require(dao.tasks(owner).none { it.id == task.id }) { "账户事项已存在，不能覆盖" }
     }
 
     /** Future manual reservations are edited atomically with their task. Past work is immutable. */
@@ -45,7 +57,7 @@ class DeskRepository(private val db: DeskDatabase) {
         reminder: TaskReminderRow? = null,
         owner: String = "guest",
     ) = db.withTransaction {
-        require(task.ownerId == owner || task.ownerId == "guest") { "不能跨账户安排事项" }
+        requireTaskWritable(task, owner)
         val now = System.currentTimeMillis()
         val old = dao.blocks(owner)
         val task = task.copy(ownerId = owner)
@@ -123,6 +135,7 @@ class DeskRepository(private val db: DeskDatabase) {
 
     suspend fun complete(task: TaskRow, rating: Int, owner: String = "guest") {
         require(rating in 1..5)
+        require(task.ownerId == owner) { "不能跨账户完成事项" }
         db.withTransaction {
             val current = dao.tasks(owner).find { it.id == task.id } ?: error("事项已不存在")
             if (!current.done) {
@@ -142,7 +155,7 @@ class DeskRepository(private val db: DeskDatabase) {
     }
 
     suspend fun reopen(task: TaskRow, owner: String = "guest") {
-        require(task.ownerId == owner || task.ownerId == "guest") { "不能跨账户恢复事项" }
+        require(task.ownerId == owner) { "不能跨账户恢复事项" }
         db.withTransaction {
             dao.save(task.copy(ownerId = owner, done = false))
             dao.setBlocksDone(task.id, false, owner)

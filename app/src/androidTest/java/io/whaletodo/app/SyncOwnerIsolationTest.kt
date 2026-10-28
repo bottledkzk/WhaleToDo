@@ -78,17 +78,49 @@ class SyncOwnerIsolationTest {
 
     @Test
     fun repositoryRejectsCrossOwnerWrites() = runBlocking {
+        val dao = db.dao()
         val taskA = TaskRow("cross", "A任务", ownerId = "owner-a")
+        val taskB = TaskRow("cross", "B任务", ownerId = "owner-b")
         repo.save(taskA, "owner-a")
+        repo.save(taskB, "owner-b")
+
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking { repo.save(taskA, "owner-b") }
         }
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking { repo.saveScheduled(taskA, null, owner = "owner-b") }
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repo.reopen(taskA, "owner-b") }
+        }
         val error = runCatching { repo.complete(taskA, 4, "owner-b") }.exceptionOrNull()
-        assertTrue(error is IllegalStateException)
-        assertEquals(1, db.dao().tasks("owner-a").size)
-        assertTrue(db.dao().tasks("owner-b").isEmpty())
+        assertTrue(error is IllegalArgumentException)
+        assertEquals("B任务", dao.tasks("owner-b").single().title)
+        assertFalse(dao.tasks("owner-b").single().done)
+        assertTrue(dao.checkIns("owner-b").isEmpty())
+    }
+
+    @Test
+    fun guestRecordCannotBePromotedOverAccountRecord() = runBlocking {
+        val dao = db.dao()
+        val guest = TaskRow("guest-same", "访客任务", ownerId = "guest")
+        val account = TaskRow("guest-same", "B任务", ownerId = "owner-b")
+        repo.save(guest, "guest")
+        repo.save(account, "owner-b")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repo.save(guest.copy(title = "stale guest edit"), "owner-b") }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repo.saveScheduled(guest.copy(title = "stale guest edit"), null, owner = "owner-b") }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { repo.reopen(guest, "owner-b") }
+        }
+        val error = runCatching { repo.complete(guest, 5, "owner-b") }.exceptionOrNull()
+        assertTrue(error is IllegalArgumentException)
+        assertEquals("B任务", dao.tasks("owner-b").single().title)
+        assertFalse(dao.tasks("owner-b").single().done)
+        assertTrue(dao.checkIns("owner-b").isEmpty())
     }
 }

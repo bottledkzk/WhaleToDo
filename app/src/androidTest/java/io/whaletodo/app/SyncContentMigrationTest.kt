@@ -1,5 +1,6 @@
 package io.whaletodo.app
 
+import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -125,6 +126,44 @@ class SyncContentMigrationTest {
                 scalar("SELECT COUNT(*) FROM tasks WHERE id='$uuidId' AND owner_id='owner-b'"),
             )
             close()
+        }
+    }
+
+    @Test
+    fun runtimeV5HeadIndexIsDroppedThenRebuiltByOpen() {
+        val name = "sync-runtime-${UUID.randomUUID()}.db"
+        helper.createDatabase(name, 5).apply {
+            // Simulate a real v5 app that has already run SYNC_OUTBOX_CALLBACK.onOpen.
+            execSQL(DeskDatabase.SYNC_OUTBOX_HEAD_INDEX)
+            execSQL(
+                "INSERT INTO sync_outbox VALUES " +
+                    "('op1','guest','task','obj-1','create','{}',NULL,'idem-op1',NULL,1,NULL," +
+                    "'pending',0,0,1000,NULL)",
+            )
+            close()
+        }
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val db = Room.databaseBuilder(context, DeskDatabase::class.java, name)
+            .addMigrations(DeskDatabase.MIGRATION_5_6)
+            .addCallback(DeskDatabase.SYNC_OUTBOX_CALLBACK)
+            .build()
+        try {
+            db.openHelper.writableDatabase.apply {
+                query("SELECT opId FROM sync_outbox WHERE opId='op1'").use {
+                    assertTrue("sync row lost", it.moveToFirst())
+                    assertEquals("op1", it.getString(0))
+                }
+                query(
+                    "SELECT name FROM sqlite_master WHERE type='index' " +
+                        "AND name='index_sync_outbox_head'",
+                ).use {
+                    assertTrue("partial head index not rebuilt", it.moveToFirst())
+                }
+            }
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
         }
     }
 

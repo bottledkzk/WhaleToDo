@@ -111,23 +111,32 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun capture(title: String) = run {
-        repository.capture(title, currentOwner.value)
-        message.value = "已记下"
+    fun capture(title: String) {
+        val owner = currentOwner.value
+        run {
+            repository.capture(title, owner)
+            message.value = "已记下"
+        }
     }
 
-    fun save(task: TaskRow) = run {
-        repository.save(task, currentOwner.value)
-        message.value = "已保存"
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
+    fun save(task: TaskRow) {
+        val owner = currentOwner.value
+        run {
+            repository.save(task, owner)
+            message.value = "已保存"
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
     }
 
-    fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
-        try { repository.saveScheduled(task, manual, reminder, currentOwner.value) }
-        catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
-        message.value = "已保存安排"
-        onSaved()
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
+    fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) {
+        val owner = currentOwner.value
+        run {
+            try { repository.saveScheduled(task, manual, reminder, owner) }
+            catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
+            message.value = "已保存安排"
+            onSaved()
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
     }
 
     override fun onCleared() {
@@ -136,30 +145,45 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    fun complete(task: TaskRow, rating: Int) = run {
-        repository.complete(task, rating, currentOwner.value)
-        message.value = "今天又前进了一点"
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
-    }
-
-    fun reopen(task: TaskRow) = run {
-        repository.reopen(task, currentOwner.value)
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
-    }
-
-    fun arrange() = run { preview.value = repository.preview(currentOwner.value) }
-
-    fun apply() = run {
-        preview.value?.let {
-            repository.apply(it, currentOwner.value)
-            preview.value = null
-            message.value = "计划已更新"
+    fun complete(task: TaskRow, rating: Int) {
+        val owner = currentOwner.value
+        run {
+            repository.complete(task, rating, owner)
+            message.value = "今天又前进了一点"
             runCatching { ReminderCenter.resyncAll(getApplication()) }
         }
     }
 
-    fun todayWorkTime(start: Int, end: Int, date: LocalDate) = run {
-        repository.todayWorkTime(start, end, date, currentOwner.value)
-        message.value = "今日 WorkTime 已更新"
+    fun reopen(task: TaskRow) {
+        val owner = currentOwner.value
+        run {
+            repository.reopen(task, owner)
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
+    }
+
+    fun arrange() {
+        val owner = currentOwner.value
+        run { preview.value = repository.preview(owner) }
+    }
+
+    fun apply() {
+        val owner = currentOwner.value
+        run {
+            preview.value?.let {
+                repository.apply(it, owner)
+                preview.value = null
+                message.value = "计划已更新"
+                runCatching { ReminderCenter.resyncAll(getApplication()) }
+            }
+        }
+    }
+
+    fun todayWorkTime(start: Int, end: Int, date: LocalDate) {
+        val owner = currentOwner.value
+        run {
+            repository.todayWorkTime(start, end, date, owner)
+            message.value = "今日 WorkTime 已更新"
+        }
     }
 }

@@ -338,6 +338,10 @@ abstract class DeskDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.beginTransaction()
                 try {
+                    // v5 production databases have this runtime-only partial index, which is
+                    // absent from the exported schema. Drop it before Room validates v6;
+                    // onOpen recreates it after validation.
+                    db.execSQL("DROP INDEX IF EXISTS `index_sync_outbox_head`")
                     db.execSQL(
                         "CREATE TABLE IF NOT EXISTS `tasks_new` (" +
                             "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `minutes` INTEGER NOT NULL, " +
