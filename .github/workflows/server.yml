@@ -8,6 +8,10 @@ on:
       - 'env/systemd/whaletodo-*'
       - 'script/*database*'
       - 'script/verify-restore.sh'
+      - 'script/prepare-ai-release.py'
+      - 'script/package-website.py'
+      - 'script/test-release-package.py'
+      - 'env/nginx/**'
       - '.github/workflows/server.yml'
   pull_request:
     paths:
@@ -16,6 +20,10 @@ on:
       - 'env/systemd/whaletodo-*'
       - 'script/*database*'
       - 'script/verify-restore.sh'
+      - 'script/prepare-ai-release.py'
+      - 'script/package-website.py'
+      - 'script/test-release-package.py'
+      - 'env/nginx/**'
       - '.github/workflows/server.yml'
   workflow_dispatch:
 
@@ -51,6 +59,8 @@ jobs:
         run: npm run typecheck
       - name: 单元与接口测试
         run: npm test
+      - name: Release package regression tests (no network or deployment)
+        run: python3 ../script/test-release-package.py
   database:
     runs-on: ubuntu-latest
     services:

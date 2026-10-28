@@ -6,9 +6,9 @@ WhaleToDo 是软件工程团队项目：以 Android 应用为主要客户端，�
 
 ## 当前阶段
 
-本分支交付 0.5.2-preview.1 公开签名预览：单事项记录、保护固定安排的排程、日程与预览日历、打卡、本地日记、资料／主题／Working 与时区设置，Room v4。独立包名 `io.whaletodo.app.preview` 与原调试体验包并存；APK、SHA256、签名／源码信息和官网部署 ZIP 已在 [Release](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1) 公开并读回核验，发布流程见 [release](release/README.md)。生产网站仍待连接恢复后切换，详见[本轮交付与限制](doc/Bottledkzk/2026-10-26-签名预览与官网交付.md)。
+当前公开签名预览为[0.5.2-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1)，独立包名`io.whaletodo.app.preview`与原体验包并存。本分支准备0.5.3-preview.1/code10候选，继续Room v4和同一发行证书；签名构建、同包保留数据升级与线上验收分别记录，新候选尚未公开。生产网站切换、六迁移完整发布包与账户进程见[生产发布与在线验收](doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)，发行流程见[release](release/README.md)。
 
-AI 模式、会话、读取授权、Accept／Refuse／意见重生成、Token 计费和权限策略已有代码与隔离测试。当前 APP 默认网络桥接仍未连接，不能在 APP 内登录、签到或调用在线 AI；生产网关版本升级与客户端闭环分别验收。通知、媒体导出、系统分享、邮件和支付按团队分工接入，不把页面和测试夹具视为在线服务。
+AI模式、会话、读取授权、Accept／Refuse／意见重生成、Token计费和权限策略已有代码与隔离测试，账户/AI网络桥接已合并，查询429/503及断线保留原ID。生产账户服务仍待部署，真实邮件投递尚未接入，新用户邮箱注册/找回不能完成；生产网关升级和真实APP闭环仍待独立验收。客户端同步和图片分享继续各自PR，不把页面、合成响应或健康端点当作线上交付。
 
 2026-10-26 范围调整：保留现有预览日历，取消独立日／周／月／学期切换和长期／多阶段模型。
 
@@ -75,9 +75,7 @@ npm run test:database                                        # 真库集成测�
 PORT=8080 npm start     # 主服务（main 已可用）：账户 / 签到 / 钱包 / 流水
 ```
 
-> **待合并的功能不要当作 main 现有能力**：
-> - `/sync/push`、`/sync/pull` 在 PR #12，尚未进入 main
-> - 访问日志的 `LOG_LEVEL` / `LOG_FILE` 在 PR #13，尚未进入 main
+`/sync/push`、`/sync/pull`及脱敏访问日志已经合并；Android客户端同步仍处于独立设计阶段。服务端接口已合并不代表生产已部署或客户端已同步。
 
 AI 网关是**独立进程**，启动前置条件较多，不能直接复制命令运行：需要 systemd
 `LoadCredential` 提供的凭据目录（`CREDENTIALS_DIRECTORY`）、走 127.0.0.1 的专用数据库连接、
@@ -90,7 +88,7 @@ AI 网关是**独立进程**，启动前置条件较多，不能直接复制命�
 | `DATABASE_URL` | 未配置时用内存仓储（仅本地演示）；**生产未配置会拒绝启动** |
 | `IDEMPOTENCY_SECRET` | 幂等指纹密钥；生产要求 ≥32 字符，缺失拒绝启动 |
 | `BUSINESS_TIMEZONE` | 业务日时区，默认 `Asia/Shanghai` |
-| `LOG_LEVEL` / `LOG_FILE` | 访问日志级别与输出文件（**待 PR #13 合并**） |
+| `LOG_LEVEL` / `LOG_FILE` | 访问日志级别与输出文件；生产单元使用stdout/journal，不记录请求正文 |
 | `PAYMENT_PROVIDER` | `disabled` 时下单/支付接口不暴露 |
 
 ### 接口一览
@@ -106,8 +104,8 @@ AI 网关是**独立进程**，启动前置条件较多，不能直接复制命�
 | POST | `/api/v1/rewards/daily/claim` | 签到发奖（重复领取 409） |
 | GET | `/api/v1/wallet` | 钱包 |
 | GET | `/api/v1/wallet/ledger` | 积分流水（复合游标分页） |
-| POST | `/api/v1/sync/push` | 同步推送（批次幂等 + 版本冲突回传）**待 PR #12** |
-| GET | `/api/v1/sync/pull` | 同步拉取（变更序列游标）**待 PR #12** |
+| POST | `/api/v1/sync/push` | 同步推送（批次幂等 + 版本冲突回传） |
+| GET | `/api/v1/sync/pull` | 同步拉取（变更序列游标） |
 
 统一响应格式 `{request_id, data}` 或 `{request_id, error:{code,message}}`；
 错误码固定 9 个，见 `server/docs/api-reference.md`。

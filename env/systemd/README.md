@@ -1,5 +1,9 @@
 # AI服务和备份
 
+账户生产单元为`whaletodo-api.service`，使用独立`whaletodo-api`用户及`api-current`目录，回环8080；私有数据库URL与持久幂等密钥由LoadCredential传入。启动入口固定受限数据库角色、两连接池、生产模式和禁用支付，拒绝源码.env与DEMO变量。`--check`只校验配置，不代替数据库迁移/权限检查。
+
+完整六迁移发布、8443反代与限量验收步骤见[生产发布与在线验收](../../doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)。单元文件入仓库不等于服务已经安装或启用。
+
 AI服务使用独立系统用户、回环8081、160MiB内存上限。运行时固定Node24.15.0，下载应核对官方SHASUMS。
 
 `LoadCredential` 读取root专属文件：DeepSeek Key与AI数据库URL；密钥不作为命令行参数、仓库内容或普通.env。`ai-limits.env.example`只有非秘密限额。不要在日志中输出凭据、Authorization、原始请求/上游响应。
