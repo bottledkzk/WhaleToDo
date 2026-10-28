@@ -63,13 +63,9 @@ class ServerProfileBridge(
         purpose: CodePurpose,
     ): VerificationDispatch = call {
         val result = auth.sendEmailCode(email.trim(), purpose.wire())
-        if (!result.sent) {
-            val seconds = ((result.retryAfterMs + 999) / 1000).coerceAtLeast(1)
-            throw ProfileException("验证码发送过于频繁，请${seconds}秒后再试")
-        }
-        // TODO: 接入 SMTP/投递能力后，按 retryAfterMs 返回真实 VerificationDispatch。
-        // 当前服务端只是落验证码摘要，没有投递通道，不能向用户谎称“验证码已发送”。
-        throw ProfileException("邮件投递尚未接入，验证码无法送达；请使用演示账号登录")
+        val seconds = resendSeconds(result.retryAfterMs)
+        if (!result.sent) throw ProfileException("验证码发送过于频繁，请${seconds}秒后再试")
+        VerificationDispatch(resendAfterSeconds = seconds)
     }
 
     override suspend fun resetPassword(
@@ -188,6 +184,10 @@ class ServerProfileBridge(
             }
         }
     }
+
+    /** retry_after_ms 向上取整到秒并至少 1 秒：避免服务端返回 0 时按钮立刻可再点。 */
+    private fun resendSeconds(retryAfterMs: Long): Int =
+        ((retryAfterMs + 999) / 1000).coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
 
     private fun friendly(e: ApiException): String = when (e.code) {
         "UNAUTHENTICATED" -> if (e.message.contains("账户已切换")) {
