@@ -40,6 +40,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import io.whaletodo.app.agent.AgentGateException
 import io.whaletodo.app.agent.AgentPendingException
+import io.whaletodo.app.agent.AgentServiceException
 import io.whaletodo.app.agent.ShareCardPreview
 import io.whaletodo.app.agent.ShareStyle
 import io.whaletodo.core.AgentAccess
@@ -57,8 +58,10 @@ import kotlinx.coroutines.withContext
  * AI 配文契约：由 AgentShareCopyProvider 通过 AgentBridge 的 share_copy 模式实现；
  * 不直接走 HTTP，也不在客户端扣积分。
  */
-internal fun interface ShareCopyProvider {
+internal interface ShareCopyProvider {
     suspend fun suggest(style: ShareStyle, sourceText: String): List<String>
+    suspend fun pending(ownerId: String): String? = null
+    suspend fun recover(ownerId: String): List<String>? = null
 }
 
 private enum class ShareImageAction { TEXT, SAVE, SHARE }
@@ -91,6 +94,7 @@ internal fun ShareStyleSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val layer = rememberGraphicsLayer()
+    val currentOwner by rememberUpdatedState(access.userId)
     var caption by remember(text) { mutableStateOf(text) }
     val lines = remember(caption) { caption.lines().map { it.trim() }.filter { it.isNotBlank() }.take(5) }
     var selected by remember { mutableStateOf(ShareStyle.MINIMAL) }
@@ -98,6 +102,8 @@ internal fun ShareStyleSheet(
     var busy by remember { mutableStateOf(false) }
     var aiBusy by remember { mutableStateOf(false) }
     var suggestions by remember(text) { mutableStateOf(emptyList<String>()) }
+    var pendingId by remember(access.userId) { mutableStateOf<String?>(null) }
+    var pendingLoading by remember(access.userId, copyProvider) { mutableStateOf(copyProvider != null) }
     var status by remember { mutableStateOf("") }
     var statusError by remember { mutableStateOf(false) }
     var retryAction by remember { mutableStateOf<ShareImageAction?>(null) }
@@ -111,31 +117,111 @@ internal fun ShareStyleSheet(
         retryAction = retry
     }
 
+    fun stillSameOwner(owner: String?): Boolean = currentOwner == owner
+
     fun requestSuggestions() {
         val provider = copyProvider ?: return
-        if (aiBusy || busy) return
+        if (aiBusy || busy || pendingLoading || pendingId != null) return
         aiBusy = true
         suggestions = emptyList()
         showStatus("正在生成配文…")
         val styleAtRequest = selected
+        val ownerAtRequest = access.userId
         scope.launch {
             try {
                 val result = provider.suggest(styleAtRequest, text)
+                if (!stillSameOwner(ownerAtRequest)) return@launch
+                pendingId = null
                 suggestions = result.take(3)
                 showStatus(if (result.isEmpty()) "配文生成失败，请重试" else "已生成配文，点击选择", error = result.isEmpty())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AgentGateException) {
+                if (!stillSameOwner(ownerAtRequest)) return@launch
+                pendingId = null
                 showStatus("")
                 onGate(e.reason, styleAtRequest)
-            } catch (_: AgentPendingException) {
+            } catch (e: AgentPendingException) {
+                if (!stillSameOwner(ownerAtRequest)) return@launch
+                pendingId = e.requestId
                 showStatus("配文生成中，请稍后重试")
             } catch (_: Exception) {
+                if (!stillSameOwner(ownerAtRequest)) return@launch
+                pendingId = null
                 showStatus("配文生成失败，请重试", error = true)
             } finally {
                 aiBusy = false
             }
         }
+    }
+
+    fun recoverPending() {
+        val provider = copyProvider ?: return
+        val ownerId = access.userId?.takeIf { it.isNotBlank() } ?: return
+        if (aiBusy || busy) return
+        aiBusy = true
+        showStatus("正在查询原配文…")
+        scope.launch {
+            try {
+                val result = provider.recover(ownerId)
+                if (!stillSameOwner(ownerId)) return@launch
+                pendingId = null
+                if (result == null) {
+                    suggestions = emptyList()
+                    showStatus("原配文请求已失败，可重新生成", error = true)
+                } else {
+                    suggestions = result.take(3)
+                    showStatus("已恢复原配文结果，点击选择")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AgentPendingException) {
+                if (!stillSameOwner(ownerId)) return@launch
+                pendingId = e.requestId
+                showStatus("仍未完成，请稍后再查")
+            } catch (e: AgentGateException) {
+                if (!stillSameOwner(ownerId)) return@launch
+                // Keep the pending record; the user can retry after resolving the gate.
+                showStatus("")
+                onGate(e.reason, selected)
+            } catch (e: AgentServiceException) {
+                if (!stillSameOwner(ownerId)) return@launch
+                if (e.definitelyRejected) {
+                    pendingId = null
+                    suggestions = emptyList()
+                    showStatus("原配文请求已失败，可重新生成", error = true)
+                } else {
+                    showStatus("查询暂时不可用，原请求保留", error = true)
+                }
+            } catch (_: Exception) {
+                if (!stillSameOwner(ownerId)) return@launch
+                showStatus("查询失败，原请求保留", error = true)
+            } finally {
+                aiBusy = false
+            }
+        }
+    }
+
+    LaunchedEffect(access.userId, copyProvider) {
+        val provider = copyProvider
+        val ownerId = access.userId?.takeIf { it.isNotBlank() }
+        pendingId = null
+        caption = text
+        suggestions = emptyList()
+        if (provider == null || ownerId == null) {
+            pendingLoading = false
+            return@LaunchedEffect
+        }
+        pendingLoading = true
+        pendingId = try {
+            provider.pending(ownerId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        pendingLoading = false
+        if (pendingId != null) showStatus("上次配文未完成，可查询原结果")
     }
 
     fun loadBackground(uri: Uri, cameraFile: File?) {
@@ -384,9 +470,15 @@ internal fun ShareStyleSheet(
                     ) {
                         OutlinedButton(
                             onClick = ::requestSuggestions,
-                            enabled = !aiBusy && !busy,
+                            enabled = !aiBusy && !busy && !pendingLoading && pendingId == null,
                         ) { Text(if (aiBusy) "配文生成中…" else "AI 配文") }
-                        if (aiBusy) CircularProgressIndicator(Modifier.size(18.dp))
+                        if (pendingId != null) {
+                            OutlinedButton(
+                                onClick = ::recoverPending,
+                                enabled = !aiBusy && !busy,
+                            ) { Text(if (aiBusy) "查询中…" else "查询原结果") }
+                        }
+                        if (aiBusy || pendingLoading) CircularProgressIndicator(Modifier.size(18.dp))
                     }
                 }
                 if (suggestions.isNotEmpty()) {

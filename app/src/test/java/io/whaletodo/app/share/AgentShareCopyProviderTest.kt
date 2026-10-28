@@ -11,10 +11,13 @@ import io.whaletodo.core.AgentAccess
 import io.whaletodo.core.AgentMode
 import io.whaletodo.core.AgentModel
 import io.whaletodo.core.GateReason
+import java.io.IOException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,77 +26,118 @@ class AgentShareCopyProviderTest {
     private val model = AgentModel("deepseek-default", "鲸鱼AI")
     private val normalAccess = AgentAccess(userId = "owner-1", availablePoints = 10, connected = true)
 
+    private class FakeStore : SharePendingStore {
+        val values = mutableMapOf<String, SharePending>()
+        override fun load(ownerId: String): SharePending? = values[ownerId]
+        override fun save(pending: SharePending) {
+            values[pending.ownerId] = pending
+        }
+        override fun clear(ownerId: String) {
+            values.remove(ownerId)
+        }
+    }
+
     private class FakeBridge(
         initial: AgentAccess,
         override val models: List<AgentModel>,
         private val replyWith: suspend (AssistantRequest) -> AssistantReply,
+        private val queryWith: suspend (String) -> AssistantReply,
     ) : AgentBridge {
         override val access = MutableStateFlow(initial)
-        var calls = 0
+        var replyCalls = 0
+        var queryCalls = 0
         var lastRequest: AssistantRequest? = null
+        var lastQueryId: String? = null
 
         override suspend fun reply(request: AssistantRequest): AssistantReply {
-            calls++
+            replyCalls++
             lastRequest = request
             return replyWith(request)
         }
+
+        override suspend fun query(requestId: String): AssistantReply {
+            queryCalls++
+            lastQueryId = requestId
+            return queryWith(requestId)
+        }
     }
 
-    private fun provider(
+    private data class Harness(
+        val provider: AgentShareCopyProvider,
+        val bridge: FakeBridge,
+        val store: FakeStore,
+    )
+
+    private fun successReply(): AssistantReply = AssistantReply("第一句\n第二句\n第三句", 3)
+
+    private fun harness(
         access: AgentAccess = normalAccess,
+        store: FakeStore = FakeStore(),
         models: List<AgentModel> = listOf(model),
-        reply: (AssistantRequest) -> AssistantReply = { AssistantReply("第一句\n第二句\n第三句", 3) },
-    ): Pair<AgentShareCopyProvider, FakeBridge> {
-        val bridge = FakeBridge(access, models) { reply(it) }
-        return AgentShareCopyProvider(bridge) to bridge
+        reply: suspend (AssistantRequest) -> AssistantReply = { successReply() },
+        query: suspend (String) -> AssistantReply = { successReply() },
+    ): Harness {
+        val bridge = FakeBridge(access, models, reply, query)
+        return Harness(AgentShareCopyProvider(store, bridge), bridge, store)
+    }
+
+    private fun pendingHarness(
+        query: suspend (String) -> AssistantReply = { successReply() },
+    ): Harness {
+        val harness = harness(
+            reply = { request -> throw AgentPendingException(request.id) },
+            query = query,
+        )
+        assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        return harness
     }
 
     @Test
-    fun `unauthenticated access is gated without calling reply`() = runBlocking {
-        val (provider, bridge) = provider(access = AgentAccess())
+    fun `unauthenticated access is gated without calling reply`() {
+        val harness = harness(access = AgentAccess())
         val error = assertThrows(AgentGateException::class.java) {
-            runBlocking { provider.suggest(ShareStyle.MINIMAL, "分享文字") }
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "分享文字") }
         }
         assertEquals(GateReason.LOGIN, error.reason)
-        assertEquals(0, bridge.calls)
+        assertEquals(0, harness.bridge.replyCalls)
+        assertNull(harness.store.load("owner-1"))
     }
 
     @Test
-    fun `zero points and disconnected access are gated without reply`() = runBlocking {
-        val (pointsProvider, pointsBridge) = provider(
-            access = normalAccess.copy(availablePoints = 0),
-        )
+    fun `zero points and disconnected access are gated without reply`() {
+        val points = harness(access = normalAccess.copy(availablePoints = 0))
         assertEquals(
             GateReason.POINTS,
             assertThrows(AgentGateException::class.java) {
-                runBlocking { pointsProvider.suggest(ShareStyle.MINIMAL, "分享文字") }
+                runBlocking { points.provider.suggest(ShareStyle.MINIMAL, "分享文字") }
             }.reason,
         )
-        assertEquals(0, pointsBridge.calls)
+        assertEquals(0, points.bridge.replyCalls)
 
-        val (offlineProvider, offlineBridge) = provider(
-            access = normalAccess.copy(connected = false),
-        )
+        val offline = harness(access = normalAccess.copy(connected = false))
         assertEquals(
             GateReason.CONNECTION,
             assertThrows(AgentGateException::class.java) {
-                runBlocking { offlineProvider.suggest(ShareStyle.MINIMAL, "分享文字") }
+                runBlocking { offline.provider.suggest(ShareStyle.MINIMAL, "分享文字") }
             }.reason,
         )
-        assertEquals(0, offlineBridge.calls)
+        assertEquals(0, offline.bridge.replyCalls)
     }
 
     @Test
-    fun `normal reply builds a share_copy request and returns three cleaned suggestions`() = runBlocking {
-        val (provider, bridge) = provider(reply = {
+    fun `normal reply builds a share_copy request and returns three cleaned suggestions`() {
+        val harness = harness(reply = {
             AssistantReply("1. 第一句\n2. “第二句”\n- 第三句\n\n", 20)
         })
-
-        val result = provider.suggest(ShareStyle.LITERARY, "源文本")
+        val result = runBlocking { harness.provider.suggest(ShareStyle.LITERARY, "源文本") }
 
         assertEquals(listOf("第一句", "第二句", "第三句"), result)
-        assertEquals(1, bridge.calls)
-        val request = bridge.lastRequest!!
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(0, harness.bridge.queryCalls)
+        assertNull(harness.store.load("owner-1"))
+        val request = harness.bridge.lastRequest!!
         assertEquals(AgentMode.SHARE_COPY.code, request.mode)
         assertEquals(model.code, request.model)
         assertEquals(ShareStyle.LITERARY.code, request.shareStyle)
@@ -105,29 +149,151 @@ class AgentShareCopyProviderTest {
     }
 
     @Test
-    fun `empty reply text is a service failure`() = runBlocking {
-        val (provider, _) = provider(reply = { AssistantReply(" \n\n", 1) })
+    fun `empty reply text is a service failure and clears pending`() {
+        val harness = harness(reply = { AssistantReply(" \n\n", 1) })
         assertThrows(AgentServiceException::class.java) {
-            runBlocking { provider.suggest(ShareStyle.MINIMAL, "源文本") }
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
         }
-        Unit
+        assertNull(harness.store.load("owner-1"))
     }
 
     @Test
-    fun `pending is propagated unchanged and is not converted to a normal list`() = runBlocking {
-        val (provider, bridge) = provider(reply = { throw AgentPendingException("req-42") })
-        val error = assertThrows(AgentPendingException::class.java) {
-            runBlocking { provider.suggest(ShareStyle.MINIMAL, "源文本") }
+    fun `pending saves before reply, second suggest reuses the same ID without reply`() {
+        val store = FakeStore()
+        var savedBeforeReply = false
+        val harness = harness(
+            store = store,
+            reply = { request ->
+                savedBeforeReply = store.load("owner-1")?.requestId == request.id
+                throw AgentPendingException(request.id)
+            },
+        )
+        val first = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
         }
-        assertEquals("req-42", error.requestId)
-        assertEquals(1, bridge.calls)
+        val saved = store.load("owner-1")
+        assertNotNull(saved)
+        assertEquals(saved!!.requestId, first.requestId)
+        assertTrue(savedBeforeReply)
+        assertEquals(1, harness.bridge.replyCalls)
+
+        val second = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "再次生成") }
+        }
+        assertEquals(saved.requestId, second.requestId)
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(saved.requestId, runBlocking { harness.provider.pending("owner-1") })
     }
 
     @Test
-    fun `long source text is bounded to the server prompt limit`() = runBlocking {
-        val (provider, bridge) = provider()
-        provider.suggest(ShareStyle.MINIMAL, "字".repeat(16_001))
-        assertEquals(16_000, bridge.lastRequest!!.prompt.length)
+    fun `recover queries once, returns the original result and clears pending`() {
+        val harness = pendingHarness(query = { successReply() })
+        val id = harness.store.load("owner-1")!!.requestId
+
+        val result = runBlocking { harness.provider.recover("owner-1") }
+
+        assertEquals(listOf("第一句", "第二句", "第三句"), result)
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(1, harness.bridge.queryCalls)
+        assertEquals(id, harness.bridge.lastQueryId)
+        assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
+    fun `recover 429, 5xx and IO retain pending and never POST`() {
+        val cases = listOf<suspend (String) -> AssistantReply>(
+            { id -> throw AgentPendingException(id) },
+            { _ -> throw AgentServiceException(false) },
+            { _ -> throw IOException("synthetic network failure") },
+        )
+        cases.forEach { query ->
+            val harness = pendingHarness(query = query)
+            val id = harness.store.load("owner-1")!!.requestId
+            val error = assertThrows(AgentPendingException::class.java) {
+                runBlocking { harness.provider.recover("owner-1") }
+            }
+            assertEquals(id, error.requestId)
+            assertEquals(id, harness.store.load("owner-1")?.requestId)
+            assertEquals(1, harness.bridge.replyCalls)
+            assertEquals(1, harness.bridge.queryCalls)
+        }
+    }
+
+    @Test
+    fun `definite failed clears pending and allows a new request`() {
+        val store = FakeStore()
+        var first = true
+        val harness = harness(
+            store = store,
+            reply = { request ->
+                if (first) {
+                    first = false
+                    throw AgentPendingException(request.id)
+                }
+                successReply()
+            },
+            query = { throw AgentServiceException(true) },
+        )
+        val pending = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        val oldId = pending.requestId
+
+        assertNull(runBlocking { harness.provider.recover("owner-1") })
+        assertNull(store.load("owner-1"))
+
+        val result = runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "新请求") }
+        assertEquals(3, result.size)
+        assertEquals(2, harness.bridge.replyCalls)
+        assertNull(store.load("owner-1"))
+        assertNotNull(harness.bridge.lastRequest)
+        assertFalse(oldId == harness.bridge.lastRequest!!.id)
+    }
+
+    @Test
+    fun `owner isolation keeps A pending and lets B create independently`() {
+        val store = FakeStore()
+        val ownerA = harness(
+            access = normalAccess.copy(userId = "owner-a"),
+            store = store,
+            reply = { request -> throw AgentPendingException(request.id) },
+        )
+        val pendingA = assertThrows(AgentPendingException::class.java) {
+            runBlocking { ownerA.provider.suggest(ShareStyle.MINIMAL, "A 源文本") }
+        }
+
+        val ownerB = harness(
+            access = normalAccess.copy(userId = "owner-b"),
+            store = store,
+            reply = { successReply() },
+        )
+        assertNull(runBlocking { ownerB.provider.pending("owner-b") })
+        val bResult = runBlocking { ownerB.provider.suggest(ShareStyle.MINIMAL, "B 源文本") }
+        assertEquals(3, bResult.size)
+        assertNotNull(store.load("owner-a"))
+        assertEquals(pendingA.requestId, store.load("owner-a")?.requestId)
+        assertNull(store.load("owner-b"))
+    }
+
+    @Test
+    fun `new provider with the same store recovers the original ID`() {
+        val first = pendingHarness()
+        val id = first.store.load("owner-1")!!.requestId
+
+        val restarted = harness(store = first.store)
+        assertEquals(id, runBlocking { restarted.provider.pending("owner-1") })
+        val result = runBlocking { restarted.provider.recover("owner-1") }
+        assertEquals(3, result?.size)
+        assertEquals(1, restarted.bridge.queryCalls)
+        assertEquals(0, restarted.bridge.replyCalls)
+        assertNull(first.store.load("owner-1"))
+    }
+
+    @Test
+    fun `long source text is bounded to the server prompt limit`() {
+        val harness = harness()
+        runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "字".repeat(16_001)) }
+        assertEquals(16_000, harness.bridge.lastRequest!!.prompt.length)
     }
 
     @Test

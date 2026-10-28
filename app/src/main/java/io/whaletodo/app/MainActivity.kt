@@ -39,6 +39,7 @@ import io.whaletodo.core.*
 import io.whaletodo.app.agent.*
 import io.whaletodo.app.profile.*
 import io.whaletodo.app.share.AgentShareCopyProvider
+import io.whaletodo.app.share.SharedPreferencesSharePendingStore
 import io.whaletodo.app.share.ShareStyleSheet
 import kotlinx.coroutines.launch
 import java.time.*
@@ -132,7 +133,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;shareTrialStyle=null;edit=null;capture=false;rating=null }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
-    val shareCopyProvider = remember { AgentShareCopyProvider() }
+    val shareCopyProvider = remember { AgentShareCopyProvider(SharedPreferencesSharePendingStore(context)) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < 33) return
