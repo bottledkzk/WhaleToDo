@@ -132,8 +132,8 @@ object ReminderCenter {
             val alarmManager = app.getSystemService(AlarmManager::class.java)
             cancelScheduled(app, prefs, alarmManager)
 
-            val tasks = dao.tasks().filterNot { it.done }.associateBy { it.id }
-            val blocksByTask = dao.blocks().filterNot { it.done }.groupBy { it.taskId }
+            val tasks = dao.tasks(active).filterNot { it.done }.associateBy { it.id }
+            val blocksByTask = dao.blocks(active).filterNot { it.done }.groupBy { it.taskId }
             val enabled = dao.enabledReminders()
             val selected = ReminderSelector.select(
                 enabled.map { ReminderOwnerItem(it.ownerId, it.taskId) },

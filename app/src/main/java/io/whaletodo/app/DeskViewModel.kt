@@ -10,9 +10,11 @@ import io.whaletodo.core.Window
 import java.time.ZoneId
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import io.whaletodo.app.agent.AgentBridgeHub
 import io.whaletodo.app.data.*
 import io.whaletodo.app.reminder.ReminderCenter
 import java.time.LocalDate
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -29,8 +31,13 @@ data class DeskState(
     val preferences: List<UiPreferenceRow> = emptyList(),
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     internal val repository = DeskRepository(DeskDatabase.open(app))
+    private val currentOwner = AgentBridgeHub.bridge.access
+        .map { it.userId?.takeIf { owner -> owner.isNotBlank() } ?: "guest" }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "guest")
     val profile by lazy { io.whaletodo.app.profile.ProfileController(repository,viewModelScope,
         onRemindersChanged={ ReminderCenter.resyncAll(getApplication()) }) }
     val assistant by lazy { io.whaletodo.app.agent.AssistantController(repository, viewModelScope,
@@ -64,16 +71,21 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     val state =
-        combine(
-                repository.dao.observeTasks(),
-                repository.dao.observeBlocks(),
-                repository.dao.observeCheckIns(),
-                repository.dao.observeSettings(),
-                repository.dao.observeWorkTimes(),
-            ) { tasks, blocks, checks, settings, workTimes ->
-                DeskState(tasks, blocks, checks, settings ?: SettingRow(), workTimes)
+        currentOwner
+            .flatMapLatest { owner ->
+                combine(
+                    repository.dao.observeTasks(owner),
+                    repository.dao.observeBlocks(owner),
+                    repository.dao.observeCheckIns(owner),
+                    repository.dao.observeSettings(owner),
+                    repository.dao.observeWorkTimes(owner),
+                ) { tasks, blocks, checks, settings, workTimes ->
+                    DeskState(tasks, blocks, checks, settings ?: SettingRow(ownerId = owner), workTimes)
+                }
+                    .combine(repository.dao.observeOptions("device")) { state, options ->
+                        state.copy(preferences = options)
+                    }
             }
-            .combine(repository.dao.observeOptions("device")) {state,options -> state.copy(preferences=options)}
             .combine(clock) { state, time ->
                 val zone=DeskOptions.zone(state.preferences)
                 state.copy(today=java.time.Instant.ofEpochMilli(time.now).atZone(zone).toLocalDate(),zoneId=zone.id,now=time.now)
@@ -99,23 +111,32 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun capture(title: String) = run {
-        repository.capture(title)
-        message.value = "已记下"
+    fun capture(title: String) {
+        val owner = currentOwner.value
+        run {
+            repository.capture(title, owner)
+            message.value = "已记下"
+        }
     }
 
-    fun save(task: TaskRow) = run {
-        repository.save(task)
-        message.value = "已保存"
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
+    fun save(task: TaskRow) {
+        val owner = currentOwner.value
+        run {
+            repository.save(task, owner)
+            message.value = "已保存"
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
     }
 
-    fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) = run {
-        try { repository.saveScheduled(task, manual, reminder) }
-        catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
-        message.value = "已保存安排"
-        onSaved()
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
+    fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null, onRejected: (String) -> Unit = {}, onSaved: () -> Unit = {}) {
+        val owner = currentOwner.value
+        run {
+            try { repository.saveScheduled(task, manual, reminder, owner) }
+            catch (e: IllegalArgumentException) { onRejected(e.message ?: "请检查安排"); return@run }
+            message.value = "已保存安排"
+            onSaved()
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
     }
 
     override fun onCleared() {
@@ -124,30 +145,45 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 
-    fun complete(task: TaskRow, rating: Int) = run {
-        repository.complete(task, rating)
-        message.value = "今天又前进了一点"
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
-    }
-
-    fun reopen(task: TaskRow) = run {
-        repository.reopen(task)
-        runCatching { ReminderCenter.resyncAll(getApplication()) }
-    }
-
-    fun arrange() = run { preview.value = repository.preview() }
-
-    fun apply() = run {
-        preview.value?.let {
-            repository.apply(it)
-            preview.value = null
-            message.value = "计划已更新"
+    fun complete(task: TaskRow, rating: Int) {
+        val owner = currentOwner.value
+        run {
+            repository.complete(task, rating, owner)
+            message.value = "今天又前进了一点"
             runCatching { ReminderCenter.resyncAll(getApplication()) }
         }
     }
 
-    fun todayWorkTime(start: Int, end: Int, date: LocalDate) = run {
-        repository.todayWorkTime(start, end, date)
-        message.value = "今日 WorkTime 已更新"
+    fun reopen(task: TaskRow) {
+        val owner = currentOwner.value
+        run {
+            repository.reopen(task, owner)
+            runCatching { ReminderCenter.resyncAll(getApplication()) }
+        }
+    }
+
+    fun arrange() {
+        val owner = currentOwner.value
+        run { preview.value = repository.preview(owner) }
+    }
+
+    fun apply() {
+        val owner = currentOwner.value
+        run {
+            preview.value?.let {
+                repository.apply(it, owner)
+                preview.value = null
+                message.value = "计划已更新"
+                runCatching { ReminderCenter.resyncAll(getApplication()) }
+            }
+        }
+    }
+
+    fun todayWorkTime(start: Int, end: Int, date: LocalDate) {
+        val owner = currentOwner.value
+        run {
+            repository.todayWorkTime(start, end, date, owner)
+            message.value = "今日 WorkTime 已更新"
+        }
     }
 }

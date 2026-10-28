@@ -22,24 +22,45 @@ class DeskRepository(private val db: DeskDatabase) {
     val dao = db.dao()
     fun close() = db.close()
 
-    suspend fun capture(title: String) {
+    suspend fun capture(title: String, owner: String = "guest") {
         require(title.isNotBlank())
-        dao.save(TaskRow(UUID.randomUUID().toString(), title.trim()))
+        dao.save(TaskRow(UUID.randomUUID().toString(), title.trim(), ownerId = owner))
     }
 
-    suspend fun save(task: TaskRow) {
+    suspend fun save(task: TaskRow, owner: String = "guest") {
+        require(owner.isNotBlank())
+        requireTaskWritable(task, owner)
         require(task.title.isNotBlank())
         require(task.minutes in 0..525600)
         require(task.importance in 1..5)
         require(task.deadline >= 0)
         require(TaskCategory.entries.any { it.code == task.category })
-        dao.save(task.copy(title = task.title.trim()))
+        dao.save(task.copy(ownerId = owner, title = task.title.trim()))
+    }
+
+    /**
+     * A new draft may start as guest, but an existing guest row is a different object and
+     * must never be silently promoted/overwritten by an account edit. Guest→account
+     * migration is an explicit, separately confirmed path (not this edit API).
+     */
+    private suspend fun requireTaskWritable(task: TaskRow, owner: String) {
+        if (task.ownerId == owner) return
+        require(task.ownerId == "guest") { "不能跨账户保存事项" }
+        require(dao.tasks("guest").none { it.id == task.id }) { "访客事项不能隐式导入账户" }
+        require(dao.tasks(owner).none { it.id == task.id }) { "账户事项已存在，不能覆盖" }
     }
 
     /** Future manual reservations are edited atomically with their task. Past work is immutable. */
-    suspend fun saveScheduled(task: TaskRow, manual: Window?, reminder:TaskReminderRow?=null) = db.withTransaction {
+    suspend fun saveScheduled(
+        task: TaskRow,
+        manual: Window?,
+        reminder: TaskReminderRow? = null,
+        owner: String = "guest",
+    ) = db.withTransaction {
+        requireTaskWritable(task, owner)
         val now = System.currentTimeMillis()
-        val old = dao.blocks()
+        val old = dao.blocks(owner)
+        val task = task.copy(ownerId = owner)
         val editable = old.filter { it.taskId == task.id && it.start > now && !it.done }
         if (manual != null) {
             require(!task.done) { "已完成事项请先恢复为待办" }
@@ -51,41 +72,56 @@ class DeskRepository(private val db: DeskDatabase) {
                 "与已固定或已开始的安排重叠，请选择其他时段"
             }
         }
-        save(task)
+        save(task, owner)
         // Remove replaceable work for this task; a manual reservation also displaces overlapping auto work.
         val retained = old.filterNot { b ->
             b in editable && (b.locked || manual != null) ||
                 manual != null && !b.locked && !b.done && b.start > now &&
                 b.start < manual.end.toEpochMilli() && b.end > manual.start.toEpochMilli()
         }
-        dao.clearBlocks()
+        dao.clearBlocks(owner)
         dao.insertBlocks(retained + listOfNotNull(manual?.let {
-            BlockRow(UUID.randomUUID().toString(), task.id, it.start.toEpochMilli(), it.end.toEpochMilli(), locked = true)
+            BlockRow(
+                UUID.randomUUID().toString(),
+                task.id,
+                it.start.toEpochMilli(),
+                it.end.toEpochMilli(),
+                locked = true,
+                ownerId = owner,
+            )
         }))
-        if(reminder!=null){require(reminder.taskId==task.id);saveReminder(reminder)}
+        if (reminder != null) {
+            require(reminder.taskId == task.id)
+            require(reminder.ownerId == owner) { "提醒与事项不属于同一账户" }
+            saveReminder(reminder)
+        }
     }
 
 
     /** Same preview/transaction boundary as manual planning; a receipt prevents repeated application. */
     suspend fun applyAgent(id: String, owner: String, source: DeskSnapshot, changes: List<AgentChange>) = db.withTransaction {
         check(dao.receiptCount(id, owner) == 0) { "此提案已采用" }
-        check(snapshot() == source) { "日程已变化，请重新生成提案" }
+        check(snapshot(owner) == source) { "日程已变化，请重新生成提案" }
         validateAgentChanges(source, changes)
         val updated = source.tasks.associateBy { it.id }.toMutableMap()
         val blocks = source.blocks.associateBy { it.id }.toMutableMap()
         changes.forEach { c -> when(c) {
-            is AgentChange.RenameTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(title=c.title.trim())
-            is AgentChange.CategorizeTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(category=c.category)
-            is AgentChange.MoveBlock -> blocks[c.blockId] = blocks.getValue(c.blockId).copy(start=c.start,end=c.end)
+            is AgentChange.RenameTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(title=c.title.trim(), ownerId=owner)
+            is AgentChange.CategorizeTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(category=c.category, ownerId=owner)
+            is AgentChange.MoveBlock -> blocks[c.blockId] = blocks.getValue(c.blockId).copy(start=c.start,end=c.end,ownerId=owner)
         } }
         updated.values.forEach { dao.save(it) }
-        dao.clearBlocks();dao.insertBlocks(blocks.values.toList())
+        dao.clearBlocks(owner);dao.insertBlocks(blocks.values.map { it.copy(ownerId = owner) })
         dao.addReceipt(AgentReceiptRow(id,owner,System.currentTimeMillis()))
     }
 
     /** Read-only admission to the confirmation dialog; commit repeats these checks. */
-    suspend fun checkAgentPreview(source: DeskSnapshot, changes: List<AgentChange>) {
-        check(snapshot() == source) { "日程已变化，请重新生成提案" }
+    suspend fun checkAgentPreview(
+        source: DeskSnapshot,
+        changes: List<AgentChange>,
+        owner: String = "guest",
+    ) {
+        check(snapshot(owner) == source) { "日程已变化，请重新生成提案" }
         validateAgentChanges(source, changes)
     }
     private fun validateAgentChanges(source: DeskSnapshot, changes: List<AgentChange>) {
@@ -97,51 +133,83 @@ class DeskRepository(private val db: DeskDatabase) {
             source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
     }
 
-    suspend fun complete(task: TaskRow, rating: Int) {
+    suspend fun complete(task: TaskRow, rating: Int, owner: String = "guest") {
         require(rating in 1..5)
+        require(task.ownerId == owner) { "不能跨账户完成事项" }
         db.withTransaction {
-            val current = dao.tasks().find { it.id == task.id } ?: error("事项已不存在")
+            val current = dao.tasks(owner).find { it.id == task.id } ?: error("事项已不存在")
             if (!current.done) {
                 dao.save(current.copy(done = true))
-                dao.setBlocksDone(current.id, true)
+                dao.setBlocksDone(current.id, true, owner)
                 dao.addCheckIn(
                     CheckInRow(
                         UUID.randomUUID().toString(),
                         current.id,
                         System.currentTimeMillis(),
                         rating,
+                        ownerId = owner,
                     )
                 )
             }
         }
     }
 
-    suspend fun reopen(task: TaskRow) {
+    suspend fun reopen(task: TaskRow, owner: String = "guest") {
+        require(task.ownerId == owner) { "不能跨账户恢复事项" }
         db.withTransaction {
-            dao.save(task.copy(done = false))
-            dao.setBlocksDone(task.id, false)
+            dao.save(task.copy(ownerId = owner, done = false))
+            dao.setBlocksDone(task.id, false, owner)
         }
     }
 
-    suspend fun settings(start: Int, end: Int) {
+    suspend fun settings(start: Int, end: Int, owner: String = "guest") {
         require(start in 0..23 && end in 1..24 && start < end)
-        dao.save(SettingRow(startHour = start, endHour = end))
+        val existing = dao.settings(owner)
+        dao.save(
+            SettingRow(
+                startHour = start,
+                endHour = end,
+                ownerId = owner,
+                clientId = existing?.clientId,
+                serverVersion = existing?.serverVersion ?: 0,
+                updatedAt = existing?.updatedAt ?: 0,
+                timeZone = existing?.timeZone,
+            )
+        )
     }
 
-    suspend fun todayWorkTime(start: Int, end: Int, date: LocalDate) {
+    suspend fun todayWorkTime(start: Int, end: Int, date: LocalDate, owner: String = "guest") {
         require(date == LocalDate.now(DeskOptions.zone(dao.deviceOptions()))) { "日期已变化，请重新选择今日时段" }
         require(start in 0..1439 && end in start..1439) { "请选择有效起止时刻" }
-        dao.save(DailyWorkTimeRow(date.toString(), start, end))
+        val existing = dao.workTimes(owner).find { it.date == date.toString() }
+        dao.save(
+            DailyWorkTimeRow(
+                date.toString(),
+                start,
+                end,
+                ownerId = owner,
+                clientId = existing?.clientId,
+                serverVersion = existing?.serverVersion ?: 0,
+                updatedAt = existing?.updatedAt ?: 0,
+                timeZone = existing?.timeZone,
+            )
+        )
     }
 
     /** Explicit user-confirmed conversion; historical instants and durations remain intact. */
-    suspend fun changeZone(choice:DeskZoneChoice,adjustSchedule:Boolean,expected:DeskZoneChoice,expectedZoneId:String?=null) = db.withTransaction {
+    suspend fun changeZone(
+        choice: DeskZoneChoice,
+        adjustSchedule: Boolean,
+        expected: DeskZoneChoice,
+        expectedZoneId: String? = null,
+        owner: String = "guest",
+    ) = db.withTransaction {
         val options=dao.deviceOptions()
         check(DeskOptions.zoneChoice(options)==expected) { "时区已变化，请重新选择" }
         val now=System.currentTimeMillis();val from=DeskOptions.zone(options);val to=choice.effective(Instant.ofEpochMilli(now))
         check(expectedZoneId==null||from.id==expectedZoneId) { "系统时区已变化，请重新选择" }
         if(adjustSchedule&&from!=to) {
-            val tasks=dao.tasks();val blocks=dao.blocks()
+            val tasks=dao.tasks(owner);val blocks=dao.blocks(owner)
             val shiftedTasks=tasks.map { t->if(!t.done&&t.deadline>now)t.copy(deadline=DeskZones.moveKeepingLocal(t.deadline,from,to))else t }
             require(shiftedTasks.none { !it.done&&it.deadline>0&&tasks.first { old->old.id==it.id }.deadline>now&&it.deadline<=now }) { "同步后有截止时间早于现在" }
             val moved=blocks.filter { !it.done&&it.start>now }.associate { b->
@@ -160,14 +228,22 @@ class DeskRepository(private val db: DeskDatabase) {
                 require(task==null||task.done||task.deadline==0L||b.end<=task.deadline) { "同步后安排晚于截止时间" }
             }
             shiftedTasks.filterIndexed { i,t->t!=tasks[i] }.forEach { dao.save(it) }
-            if(moved.isNotEmpty()){dao.clearBlocks();dao.insertBlocks(result)}
+            if(moved.isNotEmpty()){dao.clearBlocks(owner);dao.insertBlocks(result)}
         }
         dao.saveOptions(listOf(UiPreferenceRow("device","time.zone",choice.id),UiPreferenceRow("device","time.dst",choice.daylight.toString())))
     }
 
-    suspend fun snapshot():DeskSnapshot {
+    suspend fun snapshot(owner: String = "guest"):DeskSnapshot {
         val options=dao.deviceOptions();val zone=DeskOptions.zone(options)
-        return DeskSnapshot(dao.tasks(),dao.blocks(),dao.settings()?:SettingRow(),dao.workTimes(),LocalDate.now(zone),zone.id,options)
+        return DeskSnapshot(
+            dao.tasks(owner),
+            dao.blocks(owner),
+            dao.settings(owner) ?: SettingRow(ownerId = owner),
+            dao.workTimes(owner),
+            LocalDate.now(zone),
+            zone.id,
+            options,
+        )
     }
     suspend fun saveDiary(owner:String,date:String,content:String,expected:DiaryRow?,sourceMessageId:String?=null) = db.withTransaction {
         require(owner.isNotBlank());LocalDate.parse(date)
@@ -176,13 +252,13 @@ class DeskRepository(private val db: DeskDatabase) {
     }
     suspend fun deleteDiary(row:DiaryRow) { check(dao.deleteDiary(row.ownerId,row.date,row.updatedAt)==1){"日记已变化，请重新打开"} }
     suspend fun saveReminder(row:TaskReminderRow) {
-        require(dao.tasks().any{it.id==row.taskId}){"事项不存在"}
+        require(dao.tasks(row.ownerId).any{it.id==row.taskId}){"事项不存在"}
         require(ReminderMethod.entries.any{it.code==row.method}&&ReminderTiming.entries.any{it.code==row.timing})
         dao.save(row)
     }
 
-    suspend fun preview(): PlanPreview = db.withTransaction {
-        val source = snapshot()
+    suspend fun preview(owner: String = "guest"): PlanPreview = db.withTransaction {
+        val source = snapshot(owner)
         val now = Instant.now()
         val zone = ZoneId.of(source.zoneId)
         val today = source.date
@@ -223,9 +299,9 @@ class DeskRepository(private val db: DeskDatabase) {
         PlanPreview(source, Scheduler.plan(tasks, windows, emptyList(), blocks, now))
     }
 
-    suspend fun apply(preview: PlanPreview) {
+    suspend fun apply(preview: PlanPreview, owner: String = "guest") {
         db.withTransaction {
-            check(snapshot() == preview.source) { "事项或计划已变化，请重新预览" }
+            check(snapshot(owner) == preview.source) { "事项或计划已变化，请重新预览" }
             // Do not apply a stale suggestion that moves work into the past.
             check(
                 preview.result.blocks
@@ -240,7 +316,7 @@ class DeskRepository(private val db: DeskDatabase) {
             ) {
                 "预览已过期，请重新安排"
             }
-            dao.clearBlocks()
+            dao.clearBlocks(owner)
             dao.insertBlocks(
                 preview.result.blocks.map {
                     BlockRow(
@@ -253,6 +329,7 @@ class DeskRepository(private val db: DeskDatabase) {
                         it.window.end.toEpochMilli(),
                         it.locked,
                         it.done,
+                        ownerId = owner,
                     )
                 }
             )
