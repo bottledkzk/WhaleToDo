@@ -137,14 +137,21 @@ interface DeskDao {
             DailyWorkTimeRow::class,
             AgentSessionRow::class, AgentMessageRow::class, AgentReceiptRow::class,
             UiPreferenceRow::class, TaskReminderRow::class, DiaryRow::class,
+            SyncBatchRow::class, SyncOutboxRow::class, SyncStateRow::class,
+            SyncConflictRow::class, SyncIdMappingRow::class, SyncTombstoneRow::class,
         ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class DeskDatabase : RoomDatabase() {
     abstract fun dao(): DeskDao
 
+    abstract fun syncDao(): SyncDao
+
     companion object {
+        private const val SYNC_OUTBOX_HEAD_INDEX =
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_head` ON `sync_outbox`(`ownerId`, `objectType`, `objectId`) WHERE `isHead`=1"
+
         val MIGRATION_1_2 =
             object : Migration(1, 2) {
                 override fun migrate(db: SupportSQLiteDatabase) {
@@ -172,13 +179,107 @@ abstract class DeskDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_batches` (" +
+                        "`batchId` TEXT NOT NULL, `ownerId` TEXT NOT NULL, " +
+                        "`createdSessionId` TEXT NOT NULL, `attemptSessionId` TEXT, " +
+                        "`deviceId` TEXT NOT NULL, `bodyJson` TEXT NOT NULL, " +
+                        "`bodySha256` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`state` TEXT NOT NULL, `attempts` INTEGER NOT NULL DEFAULT 0, " +
+                        "`lastAttemptAt` INTEGER, `lastErrorCode` TEXT, " +
+                        "PRIMARY KEY(`batchId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_batches_owner_state` " +
+                        "ON `sync_batches`(`ownerId`, `state`)"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_outbox` (" +
+                        "`opId` TEXT NOT NULL, `ownerId` TEXT NOT NULL, `objectType` TEXT NOT NULL, " +
+                        "`objectId` TEXT NOT NULL, `op` TEXT NOT NULL, `payloadJson` TEXT, " +
+                        "`baseVersion` INTEGER, `idempotencyKey` TEXT NOT NULL, `parentOpId` TEXT, " +
+                        "`isHead` INTEGER NOT NULL DEFAULT 1, `batchId` TEXT, `state` TEXT NOT NULL, " +
+                        "`attempts` INTEGER NOT NULL DEFAULT 0, " +
+                        "`nextRetryAt` INTEGER NOT NULL DEFAULT 0, `createdAt` INTEGER NOT NULL, " +
+                        "`lastErrorCode` TEXT, PRIMARY KEY(`opId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_outbox_owner_state_retry` " +
+                        "ON `sync_outbox`(`ownerId`, `state`, `nextRetryAt`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_outbox_owner_batch` " +
+                        "ON `sync_outbox`(`ownerId`, `batchId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_outbox_parent` " +
+                        "ON `sync_outbox`(`parentOpId`)"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_state` (" +
+                        "`ownerId` TEXT NOT NULL, `cursor` INTEGER NOT NULL DEFAULT 0, " +
+                        "`lastPushAt` INTEGER, `lastPullAt` INTEGER, `deviceId` TEXT NOT NULL, " +
+                        "PRIMARY KEY(`ownerId`))"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_conflicts` (" +
+                        "`ownerId` TEXT NOT NULL, `objectType` TEXT NOT NULL, `objectId` TEXT NOT NULL, " +
+                        "`localPayloadJson` TEXT, `localBaseVersion` INTEGER, " +
+                        "`remoteKnownVersion` INTEGER, " +
+                        "`remoteDetailFetched` INTEGER NOT NULL DEFAULT 0, " +
+                        "`remotePayloadJson` TEXT, `remoteDeleted` INTEGER, " +
+                        "`reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`state` TEXT NOT NULL, PRIMARY KEY(`ownerId`, `objectType`, `objectId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_conflicts_owner_state` " +
+                        "ON `sync_conflicts`(`ownerId`, `state`)"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_id_mappings` (" +
+                        "`ownerId` TEXT NOT NULL, `objectType` TEXT NOT NULL, " +
+                        "`guestObjectId` TEXT NOT NULL, `accountObjectId` TEXT NOT NULL, " +
+                        "`naturalKey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`ownerId`, `objectType`, `guestObjectId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_id_mappings_owner_natural` " +
+                        "ON `sync_id_mappings`(`ownerId`, `naturalKey`)"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sync_tombstones` (" +
+                        "`ownerId` TEXT NOT NULL, `objectType` TEXT NOT NULL, `objectId` TEXT NOT NULL, " +
+                        "`deletedAt` INTEGER NOT NULL, `version` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`ownerId`, `objectType`, `objectId`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sync_tombstones_owner_deleted` " +
+                        "ON `sync_tombstones`(`ownerId`, `deletedAt`)"
+                )
+            }
+        }
+
         fun open(context: Context): DeskDatabase =
             Room.databaseBuilder(
                     context.applicationContext,
                     DeskDatabase::class.java,
                     "whaletodo.db",
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addCallback(object : RoomDatabase.Callback() {
+                    override fun onOpen(db: SupportSQLiteDatabase) {
+                        // Partial unique index is not representable in Room's schema JSON;
+                        // create it after schema validation on every open.
+                        db.execSQL(SYNC_OUTBOX_HEAD_INDEX)
+                    }
+                })
                 .build()
     }
 }
