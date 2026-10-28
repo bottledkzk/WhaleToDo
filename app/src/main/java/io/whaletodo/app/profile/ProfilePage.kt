@@ -85,6 +85,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
                 item{ProfileRow("◐","外观设定"){controller.navigate(MyPageRoute.APPEARANCE)}}
                 item{ProfileRow("◷","Working时间"){controller.navigate(MyPageRoute.WORKING)}}
                 item{ProfileRow("◎","时间和地区",desk.zoneId){controller.navigate(MyPageRoute.REGION)}}
+                item{ProfileRow("▣","设备与兼容性","系统、通知与后台状态"){controller.navigate(MyPageRoute.DEVICE)}}
                 item{ProfileRow("ⓘ","关于"){controller.navigate(MyPageRoute.ABOUT)}}
             }
             MyPageRoute.ACCOUNT->AccountPanel(s,controller)
@@ -107,6 +108,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
                 }
             }
             MyPageRoute.REGION->RegionPanel(s,desk,controller)
+            MyPageRoute.DEVICE->io.whaletodo.app.device.DeviceCompatibilityPanel()
             MyPageRoute.ABOUT->Column(verticalArrangement=Arrangement.spacedBy(14.dp)){
                 WhaleAvatar(Modifier.size(80.dp));Text("WhaleToDo",style=MaterialTheme.typography.headlineSmall)
                 Text("版本 ${remember{context.packageManager.getPackageInfo(context.packageName,0).versionName}}")
