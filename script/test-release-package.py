@@ -24,7 +24,7 @@ class ReleasePackageTest(unittest.TestCase):
         self.repo.mkdir()
         self.names = ['202610230001_initial', '202610230002_tenant_policies', '202610230003_schema_scope',
                       '202610230004_slot_default', package.GATEWAY_BOUNDARY, package.FULL_BOUNDARY]
-        paths = ['server/package.json', 'server/package-lock.json', 'server/prisma/schema.prisma',
+        paths = ['server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
                  'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh', 'script/verify-restore.sh',
                  'env/systemd/whaletodo-ai.service', 'env/systemd/ai-limits.env.example', 'env/systemd/whaletodo-api.service',
                  'env/nginx/whaletodo-api-proxy.conf', 'env/postgresql/grants.sql', 'server/src/main.ts',
@@ -62,6 +62,7 @@ class ReleasePackageTest(unittest.TestCase):
             self.assertTrue(manifest['account_api_start_permitted'])
             self.assertFalse(manifest['deployed'])
             self.assertIn('server/src/ops/api-main.ts', archive.getnames())
+            self.assertIn('server/tsconfig.json', archive.getnames())
             for name, digest in manifest['files'].items():
                 self.assertNotIn('.env', name.replace('.env.example', '.example'))
                 self.assertNotIn('node_modules', name)
@@ -96,7 +97,8 @@ class ReleasePackageTest(unittest.TestCase):
 
     def test_website_uses_candidate_metadata_but_leaves_public_template_unchanged(self):
         self.write('script/package-website.py', (HERE / 'package-website.py').read_bytes())
-        self.write('web/index.html', '0.5.2-preview.1 · code 9 downloads/v0.5.2-preview.1/WhaleToDo-0.5.2-preview.1.apk APP 账户与在线 AI 尚待接入。')
+        self.write('web/index.html', '0.5.2-preview.1 · code 9 downloads/v0.5.2-preview.1/WhaleToDo-0.5.2-preview.1.apk APP 账户与在线 AI 尚待接入。 https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1')
+        self.write('release/preview-certificate.sha256', 'c'*64)
         self.write('web/app.js', 'fetch("downloads/v0.5.2-preview.1/release.json")')
         self.commit()
         commit = package.git(self.repo, 'rev-parse', 'HEAD').decode().strip()
@@ -106,7 +108,7 @@ class ReleasePackageTest(unittest.TestCase):
         version, asset = '0.5.3-preview.1', 'WhaleToDo-0.5.3-preview.1.apk'
         meta = {'version': version, 'version_code': 10, 'tag': 'v' + version, 'package': 'io.whaletodo.app.preview',
                 'asset': asset, 'sha256': hashlib.sha256(apk).hexdigest(), 'source_commit': commit,
-                'online_account_agent': 'client_integrated_production_acceptance_pending'}
+                'online_account_agent': 'client_integrated_production_acceptance_pending', 'certificate_sha256': 'c'*64}
         (artifacts / asset).write_bytes(apk)
         for name, text in [('release.json', json.dumps(meta)), ('SHA256SUMS.txt', meta['sha256']), ('RELEASE-NOTES.md', 'synthetic')]:
             (artifacts / name).write_text(text, encoding='utf-8')
@@ -114,10 +116,16 @@ class ReleasePackageTest(unittest.TestCase):
         with zipfile.ZipFile(artifacts / ('WhaleToDo-website-v' + version + '.zip')) as archive:
             html = archive.read('index.html').decode()
             self.assertIn('0.5.3-preview.1 · code 10', html)
-            self.assertNotIn('0.5.2-preview.1', html)
+            self.assertIn('https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1', html)
+            self.assertNotIn('https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.3-preview.1', html)
             self.assertIn('生产联调尚待验收', html)
             self.assertIn('downloads/v' + version + '/' + asset, archive.namelist())
         self.assertIn('0.5.2-preview.1', (self.repo / 'web/index.html').read_text(encoding='utf-8'))
+        meta['certificate_sha256'] = 'd'*64
+        (artifacts / 'release.json').write_text(json.dumps(meta), encoding='utf-8')
+        bad = subprocess.run([sys.executable, str(self.repo / 'script/package-website.py'), str(artifacts)], capture_output=True)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn(b'PREVIEW_CERTIFICATE_MISMATCH', bad.stderr)
 
 
 if __name__ == '__main__': unittest.main()

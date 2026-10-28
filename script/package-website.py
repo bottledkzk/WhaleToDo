@@ -14,6 +14,8 @@ if (not re.fullmatch(r'\d+\.\d+\.\d+-preview\.\d+',meta['version']) or meta['tag
     meta['package']!='io.whaletodo.app.preview' or meta['asset']!='WhaleToDo-'+meta['version']+'.apk' or
     not re.fullmatch(r'[a-f0-9]{40}',meta['source_commit']) or not re.fullmatch(r'[a-f0-9]{64}',meta['sha256']) or
     type(meta['version_code']) is not int or meta['version_code']<1):raise SystemExit('INVALID_PREVIEW_MANIFEST')
+pin=git('show','HEAD:release/preview-certificate.sha256').decode().strip()
+if meta.get('certificate_sha256')!=pin:raise SystemExit('PREVIEW_CERTIFICATE_MISMATCH')
 apk=artifact/meta['asset']
 if hashlib.sha256(apk.read_bytes()).hexdigest()!=meta['sha256']:raise SystemExit('APK_HASH_MISMATCH')
 dest=artifact/('WhaleToDo-website-'+meta['tag']+'.zip')
@@ -30,11 +32,16 @@ versions=set(re.findall(r'\d+\.\d+\.\d+-preview\.\d+',template))
 if len(versions)!=1:raise SystemExit('WEBSITE_TEMPLATE_VERSION_AMBIGUOUS')
 old_version=versions.pop()
 for name in ['index.html','app.js']:
-    text=files[name].decode('utf-8').replace(old_version,meta['version'])
+    # Keep the verified public fallback tag until the candidate release actually exists.
+    public_tag='https://github.com/bottledkzk/WhaleToDo/releases/tag/v'+old_version
+    text=files[name].decode('utf-8').replace(public_tag,'__VERIFIED_PUBLIC_RELEASE__').replace(old_version,meta['version'])
+    text=text.replace('__VERIFIED_PUBLIC_RELEASE__',public_tag)
     if name=='index.html':
         text=re.sub(r' · code \d+', ' · code '+str(meta['version_code']),text)
         if meta.get('online_account_agent')=='client_integrated_production_acceptance_pending':
             text=text.replace('APP 账户与在线 AI 尚待接入。','客户端已接入账户与 AI，生产联调尚待验收。')
+            text=text.replace('当前安装包尚未接通账户和在线 AI。','客户端已接入账户与 AI，生产联调尚待验收。')
+            text=text.replace('日记界面 · 在线生成待接入','日记界面 · 在线生成待生产验收')
     files[name]=text.encode('utf-8')
 for name in [meta['asset'],'SHA256SUMS.txt','release.json','RELEASE-NOTES.md']:
     files['downloads/'+meta['tag']+'/'+name]=(artifact/name).read_bytes()

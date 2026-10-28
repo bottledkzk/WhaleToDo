@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -51,4 +51,19 @@ test('production entry --check imports without a database connection and redacts
   assert.equal(bad.status, 1);
   assert.equal(bad.stdout, '');
   assert.equal(bad.stderr.trim(), 'API_STARTUP_REFUSED_CHECK_PRIVATE_CONFIGURATION');
+}));
+
+test('production entry refuses a source .env even for --check without logging its contents', () => fixture(dir => {
+  const source = join(dir, 'isolated-source');
+  mkdirSync(join(source, 'src/ops'), { recursive: true });
+  writeFileSync(join(source, 'package.json'), '{"type":"module"}');
+  for (const path of ['ops/api-main.ts', 'ops/api-config.ts', 'config.ts']) {
+    copyFileSync(new URL('../src/' + path, import.meta.url), join(source, 'src', path));
+  }
+  writeFileSync(join(source, '.env'), 'PRIVATE_SYNTHETIC_VALUE=must-never-appear');
+  const result = spawnSync(process.execPath, [join(source, 'src/ops/api-main.ts'), '--check'], {
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, NODE_ENV: 'production', CREDENTIALS_DIRECTORY: dir }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 1); assert.equal(result.stdout, '');
+  assert.equal(result.stderr.trim(), 'API_STARTUP_REFUSED_CHECK_PRIVATE_CONFIGURATION');
 }));

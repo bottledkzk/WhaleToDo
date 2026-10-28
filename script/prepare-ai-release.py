@@ -29,7 +29,7 @@ def prepare(repo, output, profile='gateway'):
     cutoff = FULL_BOUNDARY if profile == 'full' else GATEWAY_BOUNDARY
     count = 6 if profile == 'full' else 5
     files = {}
-    fixed = {'server/package.json', 'server/package-lock.json', 'server/prisma/schema.prisma',
+    fixed = {'server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
              'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh',
              'script/verify-restore.sh', 'env/systemd/whaletodo-ai.service',
              'env/systemd/ai-limits.env.example'}

@@ -81,12 +81,13 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
       if (response.status !== 200 || !response.body?.data) refused('ACCEPTANCE_PREFLIGHT_FAILED');
       return response.body.data;
     }
-    const health = await data('/health');
+    // ready currently reports a placeholder storage kind; this is a liveness gate only.
+    const health = await data('/health/live');
     const aiHealth = await data('/ai/health');
     if (health.status !== 'ok' || aiHealth.status !== 'ok') refused('ACCEPTANCE_SERVICE_NOT_READY');
     if ((await http('/ai/models', false)).status !== 401) refused('ACCEPTANCE_ANONYMOUS_GATE_FAILED');
-    const me = await data('/me');
-    if (typeof me.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(me.id)) refused('ACCEPTANCE_OWNER_INVALID');
+    const me = (await data('/me')).user;
+    if (typeof me?.id !== 'string' || !/^[a-f0-9-]{36}$/i.test(me.id)) refused('ACCEPTANCE_OWNER_INVALID');
     const models = await data('/ai/models');
     if (models.prompt_version !== PROMPT_VERSION || !natural(models.tokens_per_point) || models.tokens_per_point === 0 ||
         !Array.isArray(models.items) || !models.items.some((m: any) => m.code === 'deepseek-default')) refused('ACCEPTANCE_GATEWAY_VERSION_MISMATCH');
@@ -99,7 +100,7 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
     if (options.action === 'preflight') {
       return { action: 'preflight', model_post_attempts: 0, ready: wallet.reserved === 0 && wallet.available >= required,
         prompt_version: models.prompt_version, owner_sha256: owner, wallet, required_reservation_points: required,
-        declared_source_commit: options.sourceCommit, deployment_source_verified: false,
+        declared_source_commit: options.sourceCommit, deployment_source_verified: false, database_readiness_verified: false,
         app_acceptance: 'not_tested', email_delivery: 'not_tested' };
     }
     let receipt: Receipt;
@@ -159,7 +160,7 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
         if (!valid) { receipt.status = 'failed'; save(receiptPath!, receipt); break; }
       } else if (view?.id === entry.id && view.mode === entry.mode && view.status === 'failed') {
         entry.state = 'failed'; receipt.status = 'failed'; save(receiptPath!, receipt); break;
-      } else if (!wasAttempted && [400, 401, 402, 403, 409, 413, 422, 429].includes(response.status)) {
+      } else if (!wasAttempted && [400, 401, 402, 403, 409, 413, 422].includes(response.status)) {
         entry.state = 'not_accepted'; receipt.status = 'failed'; save(receiptPath!, receipt); break;
       } else {
         entry.state = 'unknown'; receipt.status = 'pending'; save(receiptPath!, receipt); break;
