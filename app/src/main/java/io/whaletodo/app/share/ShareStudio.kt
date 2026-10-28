@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.net.Uri
+import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
@@ -20,22 +23,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.layer.GraphicsLayer
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import io.whaletodo.app.agent.AgentGateException
@@ -63,6 +61,13 @@ internal interface ShareCopyProvider {
     suspend fun pending(ownerId: String): String? = null
     suspend fun recover(ownerId: String): List<String>? = null
 }
+
+/** Immutable snapshot passed to the offscreen export composition. */
+private data class ShareCardSnapshot(
+    val style: ShareStyle,
+    val lines: List<String>,
+    val background: ImageBitmap?,
+)
 
 private enum class ShareImageAction { TEXT, SAVE, SHARE }
 
@@ -93,9 +98,13 @@ internal fun ShareStyleSheet(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val layer = rememberGraphicsLayer()
     val currentOwner by rememberUpdatedState(access.userId)
     var caption by remember(text) { mutableStateOf(text) }
+    var captureView by remember { mutableStateOf<ComposeView?>(null) }
+    val density = LocalDensity.current
+    val captureWidth = with(density) { SharePlan.TARGET_WIDTH.toDp() }
+    val captureHeight = with(density) { (SharePlan.TARGET_WIDTH / 0.78f).roundToInt().toDp() }
+    // Export and preview must always use the selected AI caption, never the original text.
     val lines = remember(caption) { caption.lines().map { it.trim() }.filter { it.isNotBlank() }.take(5) }
     var selected by remember { mutableStateOf(ShareStyle.MINIMAL) }
     var background by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -110,6 +119,7 @@ internal fun ShareStyleSheet(
     var pendingCameraFile by remember { mutableStateOf<File?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     var pendingAction by remember { mutableStateOf<ShareImageAction?>(null) }
+    val exportSnapshot = rememberUpdatedState(ShareCardSnapshot(selected, lines, background))
 
     fun showStatus(message: String, error: Boolean = false, retry: ShareImageAction? = null) {
         status = message
@@ -336,7 +346,7 @@ internal fun ShareStyleSheet(
         showStatus("正在生成图片…")
         scope.launch {
             try {
-                val bitmap = renderCardBitmap(layer)
+                val bitmap = renderCardBitmap(captureView)
                 if (bitmap == null) error("empty card bitmap")
                 if (save) {
                     withContext(Dispatchers.IO) { ShareMedia.saveToGallery(context, bitmap) }
@@ -432,30 +442,7 @@ internal fun ShareStyleSheet(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .semantics { contentDescription = "分享卡片预览" }
-                        .drawWithContent {
-                            if (size.width <= 0f || size.height <= 0f) {
-                                drawContent()
-                            } else {
-                                val outputWidth = max(SharePlan.TARGET_WIDTH, size.width.roundToInt())
-                                val factor = outputWidth / size.width
-                                val outputHeight = (size.height * factor).roundToInt().coerceAtLeast(1)
-                                layer.record(
-                                    density = this,
-                                    layoutDirection = layoutDirection,
-                                    size = IntSize(outputWidth, outputHeight),
-                                ) {
-                                    scale(factor, factor, pivot = Offset.Zero) {
-                                        this@drawWithContent.drawContent()
-                                    }
-                                }
-                                withTransform({
-                                    scale(1f / factor, 1f / factor, pivot = Offset.Zero)
-                                }) {
-                                    this@drawWithContent.drawLayer(layer)
-                                }
-                            }
-                        },
+                        .semantics { contentDescription = "分享卡片预览" },
                 ) {
                     ShareCardPreview(
                         selected,
@@ -463,6 +450,29 @@ internal fun ShareStyleSheet(
                         lines,
                         background = background,
                         modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                // Offscreen composition used only for export. It is measured at the exact output
+                // pixel size but clipped to 1dp, so the dialog layout is unchanged. Drawing this
+                // view is reliable on API 30, unlike the GraphicsLayer snapshot path.
+                Box(Modifier.size(1.dp).clipToBounds()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            ComposeView(ctx).also { view ->
+                                captureView = view
+                                view.setContent {
+                                    val snapshot = exportSnapshot.value
+                                    ShareCardPreview(
+                                        snapshot.style,
+                                        "今天的进度",
+                                        snapshot.lines,
+                                        background = snapshot.background,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier.requiredSize(captureWidth, captureHeight),
                     )
                 }
                 Spacer(Modifier.height(12.dp))
@@ -575,15 +585,52 @@ internal fun ShareStyleSheet(
     }
 }
 
-private suspend fun renderCardBitmap(layer: GraphicsLayer): Bitmap? {
-    val image = layer.toImageBitmap()
-    var bitmap = image.asAndroidBitmap()
-    if (bitmap.config == Bitmap.Config.HARDWARE) {
-        bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+/**
+ * Captures the offscreen export composition at [SharePlan.TARGET_WIDTH].
+ *
+ * The export view is a real Android View measured at the target size, so drawing it into a
+ * software ARGB_8888 bitmap does not depend on API 30 GraphicsLayer/RenderNode readback. A
+ * fully blank capture is rejected and never saved/shared.
+ */
+private fun renderCardBitmap(view: View?): Bitmap? {
+    if (view == null || view.width <= 0 || view.height <= 0) return null
+    val outputWidth = max(SharePlan.TARGET_WIDTH, view.width)
+    val factor = outputWidth.toFloat() / view.width
+    val outputHeight = (view.height * factor).roundToInt().coerceAtLeast(1)
+    val captured = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+    try {
+        val canvas = Canvas(captured)
+        canvas.drawColor(Color.WHITE)
+        canvas.scale(factor, factor)
+        view.draw(canvas)
+
+        val size = SharePlan.outputSize(captured.width, captured.height)
+        val result = if (captured.width != size.width || captured.height != size.height) {
+            Bitmap.createScaledBitmap(captured, size.width, size.height, true)
+        } else {
+            captured
+        }
+        if (!hasVisibleContent(result)) {
+            if (result !== captured) result.recycle()
+            captured.recycle()
+            return null
+        }
+        return result
+    } catch (t: Throwable) {
+        captured.recycle()
+        throw t
     }
-    val size = SharePlan.outputSize(bitmap.width, bitmap.height)
-    if (bitmap.width != size.width || bitmap.height != size.height) {
-        bitmap = Bitmap.createScaledBitmap(bitmap, size.width, size.height, true)
+}
+
+/** Rejects an all-white/transparent capture; a valid share card always contains text or an image. */
+private fun hasVisibleContent(bitmap: Bitmap): Boolean {
+    if (bitmap.width <= 0 || bitmap.height <= 0) return false
+    val row = IntArray(bitmap.width)
+    for (y in 0 until bitmap.height) {
+        bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+        for (pixel in row) {
+            if ((pixel ushr 24) != 0 && pixel != Color.WHITE) return true
+        }
     }
-    return bitmap
+    return false
 }
