@@ -17,7 +17,8 @@ class AccountAgentBridge(
 
     override suspend fun reply(request: AssistantRequest): AssistantReply = delegate.reply(request)
 
-    override suspend fun query(requestId: String): AssistantReply = delegate.query(requestId)
+    override suspend fun query(requestId: String, expectedOwner: String?): AssistantReply =
+        delegate.query(requestId, expectedOwner)
 
     override suspend fun authorizeTemplateTrial(template: String): Boolean =
         delegate.authorizeTemplateTrial(template)

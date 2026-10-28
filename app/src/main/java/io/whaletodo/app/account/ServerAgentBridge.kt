@@ -39,8 +39,9 @@ import kotlinx.coroutines.withContext
 /**
  * 真实 AI 网关桥：只发自有服务端，不直连供应商。
  * access 的 userId/vip/points 来自 AccountSession；connected/editModels 只由 models 成功更新。
- * 所有 HTTP 都在 [io] 上执行；reply/query 绑定调用开始时的 sessionId，
- * 返回后若代次已变则丢弃结果，避免 A 的上下文以 B 的令牌发出或写回。
+ * 所有 HTTP 都在 [io] 上执行。reply 绑定调用开始时的 sessionId；
+ * query 在进入 IO 前冻结 owner，并在 HTTP 前/回包前再次核对。同一 owner 重新登录
+ * 可使用当前有效 session，owner 变了则返回 pending，避免 A 的请求以 B 的令牌发出或写回。
  */
 class ServerAgentBridge(
     private val ai: AiApi,
@@ -180,9 +181,11 @@ class ServerAgentBridge(
     override suspend fun reply(request: AssistantRequest): AssistantReply = withContext(io) {
         // 冻结本次调用所属代次；后续 HTTP 必须用它做 bound，返回后也要用它核对。
         val expectedSession = session.currentSessionId()
-            ?: throw AgentGateException(GateReason.LOGIN)
-        val owner = requireOwner()
-        if (request.ownerId != owner) throw AgentGateException(GateReason.LOGIN)
+            ?: throw AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
+        val owner = requireOwner(definitelyNotSent = true)
+        if (request.ownerId != owner) {
+            throw AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
+        }
         try {
             val view = try {
                 ai.submit(
@@ -210,10 +213,13 @@ class ServerAgentBridge(
             } catch (_: Exception) {
                 throw AgentServiceException(false)
             }
-            if (!sameSession(expectedSession, owner)) throw AgentGateException(GateReason.LOGIN)
+            if (!sameSession(expectedSession, owner)) {
+                // submit 已返回；即使请求未成功，也不能证明服务端没有受理/计费。
+                throw AgentGateException(GateReason.LOGIN, definitelyNotSent = false)
+            }
             when (view.status) {
                 "succeeded" -> toReply(view)
-                "failed" -> throw AgentServiceException(true)
+                "failed" -> throw AgentServiceException(true, definitelyNotSent = false)
                 else -> throw AgentPendingException(request.id)
             }
         } finally {
@@ -222,31 +228,54 @@ class ServerAgentBridge(
         }
     }
 
-    override suspend fun query(requestId: String): AssistantReply = withContext(io) {
-        val expectedSession = session.currentSessionId()
-            ?: throw AgentGateException(GateReason.LOGIN)
-        val owner = requireOwner()
-        try {
-            val view = try {
-                ai.query(requestId, expectedSession)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: ApiException) {
-                throw mapQueryApi(e, requestId)
-            } catch (e: IOException) {
-                throw mapIo(e, requestId)
-            } catch (_: Exception) {
-                throw AgentServiceException(false)
+    override suspend fun query(requestId: String, expectedOwner: String?): AssistantReply {
+        // Freeze the owner before dispatching to IO; a later account switch must not turn
+        // this into a query with the other account's token.
+        val owner = expectedOwner ?: requireOwner()
+        val sessionAtCall = session.currentSessionId()
+        if (sessionAtCall == null) throw AgentGateException(GateReason.LOGIN)
+
+        return withContext(io) {
+            // The provider may have observed A before the switch, then IO starts on B.
+            requireQueryOwner(owner, requestId)
+            // Same owner may have logged in again; use the current valid generation.
+            val querySession = session.currentSessionId()
+                ?: throw AgentPendingException(requestId)
+            requireQueryOwner(owner, requestId)
+
+            try {
+                val view = try {
+                    // ApiClient also binds querySession to TokenStore; if the token generation
+                    // changes after this check, the request aborts before HTTP.
+                    ai.query(requestId, querySession)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: ApiException) {
+                    // A 403/401 from another account must never become A's terminal state.
+                    requireQueryOwner(owner, requestId)
+                    throw mapQueryApi(e, requestId)
+                } catch (e: IOException) {
+                    requireQueryOwner(owner, requestId)
+                    throw mapIo(e, requestId)
+                } catch (_: Exception) {
+                    requireQueryOwner(owner, requestId)
+                    throw AgentServiceException(false)
+                }
+                requireQueryOwner(owner, requestId)
+                when (view.status) {
+                    "succeeded" -> toReply(view)
+                    "failed" -> throw AgentServiceException(true)
+                    else -> throw AgentPendingException(requestId)
+                }
+            } finally {
+                if (currentCoroutineContext().isActive) refreshAfterCall(querySession)
             }
-            if (!sameSession(expectedSession, owner)) throw AgentGateException(GateReason.LOGIN)
-            when (view.status) {
-                "succeeded" -> toReply(view)
-                "failed" -> throw AgentServiceException(true)
-                else -> throw AgentPendingException(requestId)
-            }
-        } finally {
-            if (currentCoroutineContext().isActive) refreshAfterCall(expectedSession)
         }
+    }
+
+    /** Owner changed between the provider check and the actual query/response. */
+    private fun requireQueryOwner(owner: String, requestId: String) {
+        if (session.access.value.userId != owner) throw AgentPendingException(requestId)
     }
 
     override suspend fun authorizeTemplateTrial(template: String): Boolean = false
@@ -254,9 +283,9 @@ class ServerAgentBridge(
     private fun sameSession(expectedSession: String, owner: String): Boolean =
         session.currentSessionId() == expectedSession && session.access.value.userId == owner
 
-    private fun requireOwner(): String =
+    private fun requireOwner(definitelyNotSent: Boolean = false): String =
         session.access.value.userId?.takeIf { it.isNotBlank() }
-            ?: throw AgentGateException(GateReason.LOGIN)
+            ?: throw AgentGateException(GateReason.LOGIN, definitelyNotSent)
 
     private fun toReply(view: AiRequestView): AssistantReply {
         val text = view.text?.takeIf { it.isNotBlank() }
@@ -317,16 +346,19 @@ class ServerAgentBridge(
             return if (e.requestSent) {
                 AgentPendingException(requestId)
             } else {
-                AgentGateException(GateReason.CONNECTION)
+                AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
             }
         }
         return when {
             e is ConnectException || e is UnknownHostException ->
-                AgentGateException(GateReason.CONNECTION)
+                AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
             e is SocketTimeoutException -> {
                 val connectTimeout = e.message?.contains("connect", ignoreCase = true) == true
-                if (connectTimeout) AgentGateException(GateReason.CONNECTION)
-                else AgentPendingException(requestId)
+                if (connectTimeout) {
+                    AgentGateException(GateReason.CONNECTION, definitelyNotSent = true)
+                } else {
+                    AgentPendingException(requestId)
+                }
             }
             else -> AgentGateException(GateReason.CONNECTION)
         }

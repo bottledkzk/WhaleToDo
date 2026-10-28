@@ -39,7 +39,7 @@ class AgentExperienceTest {
             return if(request.mode=="edit")AssistantReply("建议将这件事的标题更新。",1250,1000,250,2,changes=listOf(AgentChange.RenameTask(target,"已确认的新标题")))
             else AssistantReply(responseText,1250,1000,250,2,changes=if(readonlyAttack)listOf(AgentChange.RenameTask(target,"越权标题"))else emptyList())
         }
-        override suspend fun query(requestId:String):AssistantReply {queryCount++;return AssistantReply("原请求已确认，无需重复发送。",500,400,100,1)}
+        override suspend fun query(requestId:String,expectedOwner:String?):AssistantReply {queryCount++;return AssistantReply("原请求已确认，无需重复发送。",500,400,100,1)}
     }
 
     @After fun restore(){AgentBridgeHub.bridge=original}

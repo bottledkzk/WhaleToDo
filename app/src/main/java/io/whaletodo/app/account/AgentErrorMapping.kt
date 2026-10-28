@@ -17,18 +17,22 @@ internal object AgentErrorMapping {
         reason: String?,
         requestId: String,
     ): Exception = when {
-        status == 401 -> AgentGateException(GateReason.LOGIN)
-        status == 402 -> AgentGateException(GateReason.POINTS)
+        status == 401 -> AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
+        status == 402 -> AgentGateException(GateReason.POINTS, definitelyNotSent = true)
         status == 403 -> when (reason) {
-            "VIP_REQUIRED" -> AgentGateException(GateReason.VIP)
-            "MODEL_NOT_ALLOWED" -> AgentGateException(GateReason.MODEL)
-            "CONSENT_REQUIRED" -> AgentGateException(GateReason.CONSENT)
-            else -> AgentServiceException(true)
+            "VIP_REQUIRED" -> AgentGateException(GateReason.VIP, definitelyNotSent = true)
+            "MODEL_NOT_ALLOWED" -> AgentGateException(GateReason.MODEL, definitelyNotSent = true)
+            "CONSENT_REQUIRED" -> AgentGateException(GateReason.CONSENT, definitelyNotSent = true)
+            else -> AgentServiceException(true, definitelyNotSent = true)
         }
-        status == 409 || status == 429 -> AgentServiceException(true)
+        status == 409 || status == 429 ->
+            AgentServiceException(true, definitelyNotSent = true)
         status in 500..599 ->
-            if (bodyStatus == "failed") AgentServiceException(true)
-            else AgentPendingException(requestId)
+            if (bodyStatus == "failed") {
+                AgentServiceException(true, definitelyNotSent = true)
+            } else {
+                AgentPendingException(requestId)
+            }
         else -> AgentServiceException(false)
     }
 

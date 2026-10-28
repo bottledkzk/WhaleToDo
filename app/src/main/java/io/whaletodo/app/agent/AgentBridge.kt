@@ -9,7 +9,8 @@ interface AgentBridge {
     val access: StateFlow<AgentAccess>
     val models: List<AgentModel>
     suspend fun reply(request: AssistantRequest): AssistantReply
-    suspend fun query(requestId: String): AssistantReply = throw AgentPendingException(requestId)
+    suspend fun query(requestId: String, expectedOwner: String? = null): AssistantReply =
+        throw AgentPendingException(requestId)
     suspend fun authorizeTemplateTrial(template: String): Boolean = false
 }
 data class AssistantRequest(val id: String, val mode: String, val model: String, val prompt: String,
@@ -18,8 +19,16 @@ data class AssistantReply(val text: String, val totalTokens: Int, val inputToken
     val outputTokens: Int? = null, val chargedPoints: Int? = null, val continuation: Boolean = false,
     val changes: List<AgentChange> = emptyList())
 class AgentPendingException(val requestId: String) : Exception("请求状态待确认")
-class AgentServiceException(val definitelyRejected: Boolean) : Exception("助手暂时不可用")
-class AgentGateException(val reason: GateReason) : Exception(reason.name)
+class AgentServiceException(
+    val definitelyRejected: Boolean,
+    /** True only when the request definitely was not accepted by the server. */
+    val definitelyNotSent: Boolean = false,
+) : Exception("助手暂时不可用")
+class AgentGateException(
+    val reason: GateReason,
+    /** True only when the request definitely was not accepted by the server. */
+    val definitelyNotSent: Boolean = false,
+) : Exception(reason.name)
 object AgentBridgeHub {
     /** Install once from trusted application setup; only test APKs replace this with fixtures. */
     var bridge: AgentBridge = object : AgentBridge {

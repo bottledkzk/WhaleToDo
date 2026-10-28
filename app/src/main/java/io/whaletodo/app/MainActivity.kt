@@ -38,6 +38,8 @@ import io.whaletodo.app.ui.*
 import io.whaletodo.core.*
 import io.whaletodo.app.agent.*
 import io.whaletodo.app.profile.*
+import io.whaletodo.app.share.AgentShareCopyProvider
+import io.whaletodo.app.share.SharedPreferencesSharePendingStore
 import io.whaletodo.app.share.ShareStyleSheet
 import kotlinx.coroutines.launch
 import java.time.*
@@ -131,6 +133,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
     LaunchedEffect(assistant.owner) { shareDraft=null;shareGate=null;shareTrialStyle=null;edit=null;capture=false;rating=null }
     val uiScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val shareCopyProvider = remember { AgentShareCopyProvider(SharedPreferencesSharePendingStore(context)) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < 33) return
@@ -235,9 +238,10 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
         trialStyle = shareTrialStyle,
         dismiss = { shareDraft=null;shareGate=null;shareTrialStyle=null },
         onGate = { reason, style -> shareGate=reason;trialStyle=style },
-        onShareText = { shareText(context,text);shareDraft=null;shareGate=null;shareTrialStyle=null },
+        onShareText = { caption -> shareText(context,caption);shareDraft=null;shareGate=null;shareTrialStyle=null },
         onShared = { shareDraft=null;shareGate=null;shareTrialStyle=null },
         onTrialConsumed = { shareTrialStyle=null },
+        copyProvider = shareCopyProvider,
     ) }
     shareGate?.let { reason -> AccessDialog(reason,dismiss={shareGate=null},
         onAccount={shareDraft=null;shareGate=null;shareTrialStyle=null;vm.profile.open(MyDialog.LOGIN);tab=4},
