@@ -11,6 +11,7 @@ import {
   maskEmail,
   resolveDemoOutboxPath,
 } from './domain/demo.ts';
+import { createSmtpEmailCodeSink, resolveSmtpConfig } from './domain/email-smtp.ts';
 import { MemoryRepository } from './repo/memory.ts';
 import { fromSync } from './repo/from-sync.ts';
 import { PrismaRepository } from './repo/prisma.ts';
@@ -23,7 +24,11 @@ import { buildApp } from './http/app.ts';
 const dotenvLoaded = loadDotEnv(new URL('../.env', import.meta.url));
 
 const config = loadConfig();
+const smtpConfig = resolveSmtpConfig(process.env);
 const demoOutbox = resolveDemoOutboxPath(process.env);
+if (smtpConfig !== null && demoOutbox !== null) {
+  throw new Error('SMTP_DEMO_OUTBOX_CONFLICT');
+}
 assertDemoOutboxNodeEnv(demoOutbox !== null, config.nodeEnv);
 if (config.nodeEnv === 'production' && hasDemoEnv(process.env)) {
   throw new Error('生产环境禁止设置 DEMO_* 演示变量');
@@ -69,7 +74,9 @@ let seededDemoProducts = 0;
 if (config.nodeEnv === 'demo' && memory) {
   seededDemoProducts = memory.seedDemoProducts();
 }
-const emailCodeSink = demoOutbox === null ? undefined : createDemoEmailCodeSink(demoOutbox);
+const smtpSink = smtpConfig === null ? null : createSmtpEmailCodeSink(smtpConfig);
+const outboxSink = demoOutbox === null ? null : createDemoEmailCodeSink(demoOutbox);
+const emailCodeSink = smtpSink ?? outboxSink ?? undefined;
 const app = buildApp({ config, repo, logger: true, emailCodeSink });
 
 const shutdown = async (signal: string) => {
@@ -90,6 +97,6 @@ app.log.info({
   storage: storageMode,
   demo_seed: seededDemoEmail !== null,
   demo_products: seededDemoProducts,
-  demo_email_outbox: demoOutbox !== null,
+  email_delivery: smtpSink !== null ? 'smtp' : outboxSink !== null ? 'outbox' : 'none',
   ...(seededDemoEmail === null ? {} : { email: maskEmail(seededDemoEmail) }),
 }, 'whaletodo-api ready');

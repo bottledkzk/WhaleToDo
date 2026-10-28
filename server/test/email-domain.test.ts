@@ -10,18 +10,72 @@ import { ApiError } from '../src/lib/security.ts';
 const isApiError = (code: string) => (e: unknown) => e instanceof ApiError && e.code === code;
 
 describe('邮箱归一化与校验', () => {
-  test('去空格并小写', () => {
+  const canonical = 'alice@example.test';
+
+  test('去空格并小写，大小写/首尾空格归一为同一 canonical', () => {
     assert.equal(normalizeEmail('  Alice@Example.COM '), 'alice@example.com');
+    for (const input of [canonical, 'Alice@Example.Test', ' alice@example.test ', '\tALICE@EXAMPLE.TEST\r\n']) {
+      assert.equal(assertEmail(input), canonical, `应归一为 ${canonical}`);
+    }
   });
 
-  test('非法邮箱 → VALIDATION_ERROR', () => {
-    for (const bad of ['', 'no-at', 'a@b', 'a@b.c', 'sp ace@x.com', 'x'.repeat(250) + '@a.com']) {
+  test('合法邮箱通过（含 dot-atom 允许的符号）', () => {
+    assert.equal(assertEmail(' User@Whale.ToDo '), 'user@whale.todo');
+    assert.equal(assertEmail("O'Hara+tag@Example.Test"), "o'hara+tag@example.test");
+  });
+
+  test('拒绝显示名、注释、列表/组及畸形 mailbox', () => {
+    const badEmails = [
+      '',
+      'no-at',
+      'a@b',
+      'a@b.c',
+      'a@b..test',
+      'a@example.test.',
+      'a@-b.test',
+      'a@example.test-',
+      'a@exa_mple.test',
+      '@example.test',
+      'a@',
+      'a@@b.test',
+      'sp ace@x.com',
+      'a..b@test',
+      'a..b@example.test',
+      '.a@example.test',
+      'a.@example.test',
+      'alice@example.test(a)',
+      'alice@example.test(b)',
+      'alice@example.test (a)',
+      'x<alice@example.test>',
+      'Alice <alice@example.test>',
+      '"a b"@example.test',
+      'a@example.test, b@example.test',
+      'a@example.test; b@example.test',
+      'a@exämple.test',
+      'ü@example.test',
+      'a\u0000b@example.test',
+      'x'.repeat(250) + '@a.com',
+      `a@${'b'.repeat(64)}.test`,
+    ];
+    for (const bad of badEmails) {
       assert.throws(() => assertEmail(bad), isApiError('VALIDATION_ERROR'), `应拒绝 ${bad}`);
     }
   });
 
-  test('合法邮箱通过', () => {
-    assert.equal(assertEmail(' User@Whale.ToDo '), 'user@whale.todo');
+  test('长度边界：local 64 / 总长 254 接受，超长拒绝', () => {
+    const local64 = 'a'.repeat(64);
+    assert.equal(assertEmail(`${local64}@example.test`), `${local64}@example.test`);
+    assert.throws(() => assertEmail(`${'a'.repeat(65)}@example.test`), isApiError('VALIDATION_ERROR'));
+
+    const domain254 = `${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
+    const email254 = `${local64}@${domain254}`;
+    assert.equal(email254.length, 254);
+    assert.equal(assertEmail(email254), email254);
+
+    const domain255 = `${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(62)}`;
+    const email255 = `${local64}@${domain255}`;
+    assert.equal(email255.length, 255);
+    assert.throws(() => assertEmail(email255), isApiError('VALIDATION_ERROR'));
   });
 
   test('purpose 白名单', () => {

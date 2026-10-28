@@ -20,11 +20,12 @@ const testEnv = {
 
 const sentCodes: string[] = [];
 let app: FastifyInstance;
+let repo: MemoryRepository;
 
 beforeEach(async () => {
   if (app) await app.close();
   sentCodes.length = 0;
-  const repo = new MemoryRepository(createMemoryStore(), () => Date.now());
+  repo = new MemoryRepository(createMemoryStore(), () => Date.now());
   app = buildApp({
     config: loadConfig(testEnv),
     repo: fromSync(repo),
@@ -79,6 +80,45 @@ describe('邮箱验证码（内存路径）', () => {
     assert.equal(second.json().data.sent, false, '60 秒内重发必须返回 sent:false');
     assert.ok(second.json().data.retry_after_ms > 0, '60 秒内重发应给出等待时间');
     assert.equal(sentCodes.length, 1, 'sent:false 时不得调用 emailCodeSink');
+  });
+
+  test('邮箱变体全部 400，不落库不占冷却；归一化后只投递一次', async () => {
+    const canonical = 'alice@example.test';
+    const badEmails = [
+      'alice@example.test(a)',
+      'alice@example.test(b)',
+      'x<alice@example.test>',
+      '"a b"@example.test',
+      'a@@b.test',
+      'a@b',
+      'a@-b.test',
+      'a..b@test',
+    ];
+
+    for (const email of badEmails) {
+      const res = await sendCode(email);
+      assert.equal(res.statusCode, 400, `${email}: ${res.body}`);
+      assert.equal(res.json().error.code, 'VALIDATION_ERROR');
+    }
+    assert.equal(sentCodes.length, 0, '非法邮箱不得投递');
+    assert.equal(repo.store.emailSends.size, 0, '非法邮箱不得命中仓储/占配额');
+    assert.equal(repo.store.emailCodes.size, 0, '非法邮箱不得写入验证码记录');
+
+    // 校验失败不能占用冷却：随后第一次合法请求必须真正发送。
+    const first = await sendCode(' Alice@Example.Test ');
+    assert.equal(first.statusCode, 202, first.body);
+    assert.equal(first.json().data.sent, true);
+    assert.equal(first.json().data.retry_after_ms, 0);
+    assert.equal(sentCodes.length, 1);
+    assert.equal(repo.store.emailCodes.get(`register:${canonical}`)?.email, canonical);
+
+    // 同 canonical 的另一种大小写/空格写法在 60 秒内必须命中原冷却，且不再次投递。
+    const second = await sendCode('ALICE@EXAMPLE.TEST');
+    assert.equal(second.statusCode, 202, second.body);
+    assert.equal(second.json().data.sent, false);
+    assert.ok(second.json().data.retry_after_ms > 0);
+    assert.equal(sentCodes.length, 1);
+    assert.equal(repo.store.emailCodes.size, 1);
   });
 
   test('同邮箱 register 发码后 reset 立即被跨 purpose 冷却拒绝', async () => {
