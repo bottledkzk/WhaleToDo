@@ -203,6 +203,8 @@ class ApiClient(
         accessToken: String?,
     ): ApiResponse {
         val url = java.net.URI.create(config.resolve(path)).toURL()
+        // 服务端（Fastify）对缺 JSON Content-Type 的 POST 返回 415；无 body 的 POST 统一发 {}。
+        val payload = if (method.equals("POST", ignoreCase = true) && body == null) "{}" else body
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = timeoutMs
@@ -216,13 +218,13 @@ class ApiClient(
                 conn.setRequestProperty("Authorization", "Bearer $accessToken")
             }
             idempotencyKey?.let { conn.setRequestProperty("Idempotency-Key", it) }
-            if (body != null) {
+            if (payload != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 val output = conn.outputStream
                 // 连接已建立；即使随后写失败/被 reset，服务端也可能已收到请求。
                 sent = true
-                output.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                output.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
             } else {
                 conn.connect()
                 sent = true

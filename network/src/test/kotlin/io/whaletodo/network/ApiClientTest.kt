@@ -33,7 +33,14 @@ class ApiClientTest {
     /** 记录收到的请求，便于断言 */
     private val calls = mutableListOf<Recorded>()
 
-    data class Recorded(val method: String, val path: String, val auth: String?, val body: String, val idem: String?)
+    data class Recorded(
+        val method: String,
+        val path: String,
+        val auth: String?,
+        val body: String,
+        val idem: String?,
+        val contentType: String? = null,
+    )
 
     @Before
     fun setUp() {
@@ -56,6 +63,7 @@ class ApiClientTest {
                 auth = exchange.requestHeaders.getFirst("Authorization"),
                 body = exchange.requestBody.readBytes().toString(Charsets.UTF_8),
                 idem = exchange.requestHeaders.getFirst("Idempotency-Key"),
+                contentType = exchange.requestHeaders.getFirst("Content-Type"),
             )
             synchronized(calls) { calls += rec }
             val (status, body) = routes(rec)
@@ -620,6 +628,70 @@ class ApiClientTest {
         assertEquals("2026-10-26", api.dailyReward().businessDate)
         assertEquals("Bearer a", calls.first().auth)
         assertEquals("idem-1", calls.first { it.path.endsWith("/claim") }.idem)
+    }
+
+    /* ---------------- 无 body 的 POST ---------------- */
+
+    @Test
+    fun `无 body 的 POST 发送空 JSON 与 Content-Type`() {
+        handler { 200 to """{"request_id":"r","data":{}}""" }
+
+        client().post("/auth/logout")
+
+        val call = calls.single()
+        assertEquals("POST", call.method)
+        assertEquals("{}", call.body)
+        assertEquals("application/json; charset=utf-8", call.contentType)
+    }
+
+    @Test
+    fun `签到 POST 无 body 不再被 415 拒绝`() {
+        handler { rec ->
+            val json = rec.contentType?.startsWith("application/json") == true
+            if (rec.method == "POST" && (!json || rec.body.isBlank())) {
+                415 to """{"request_id":"r","error":{"code":"UNSUPPORTED_MEDIA_TYPE","message":"synthetic"}}"""
+            } else {
+                200 to """{"request_id":"r","data":{"business_date":"2026-10-28","points_awarded":1,"available":11}}"""
+            }
+        }
+        val store = InMemoryTokenStore(TokenPair("a", "r", "S-A"))
+        val api = AuthApi(client(store), store)
+
+        val claim = api.claimDailyReward("idem-claim")
+
+        assertEquals("2026-10-28", claim.businessDate)
+        assertEquals(1, claim.pointsAwarded)
+        assertEquals(11, claim.availablePoints)
+        val call = calls.single()
+        assertEquals("{}", call.body)
+        assertEquals("application/json; charset=utf-8", call.contentType)
+        assertEquals("idem-claim", call.idem)
+    }
+
+    @Test
+    fun `退出登录的无 body POST 也带 JSON 头`() {
+        handler { 200 to """{"request_id":"r","data":{}}""" }
+        val store = InMemoryTokenStore(TokenPair("a", "r", "S-A"))
+
+        AuthApi(client(store), store).logout("S-A")
+
+        val call = calls.single()
+        assertEquals("POST", call.method)
+        assertEquals("{}", call.body)
+        assertEquals("application/json; charset=utf-8", call.contentType)
+        assertEquals("Bearer a", call.auth)
+    }
+
+    @Test
+    fun `GET 不带 body 与 Content-Type`() {
+        handler { 200 to """{"request_id":"r","data":{"id":"u1","username":"whale_x"}}""" }
+
+        client().get("/me")
+
+        val call = calls.single()
+        assertEquals("GET", call.method)
+        assertEquals("", call.body)
+        assertNull(call.contentType)
     }
 
     /* ---------------- 传输异常 ---------------- */
