@@ -28,7 +28,12 @@ class AgentShareCopyProviderTest {
 
     private class FakeStore : SharePendingStore {
         val values = mutableMapOf<String, SharePending>()
-        override fun load(ownerId: String): SharePending? = values[ownerId]
+        var afterLoad: (() -> Unit)? = null
+        override fun load(ownerId: String): SharePending? {
+            val value = values[ownerId]
+            afterLoad?.invoke()
+            return value
+        }
         override fun save(pending: SharePending) {
             values[pending.ownerId] = pending
         }
@@ -287,6 +292,126 @@ class AgentShareCopyProviderTest {
         assertEquals(1, restarted.bridge.queryCalls)
         assertEquals(0, restarted.bridge.replyCalls)
         assertNull(first.store.load("owner-1"))
+    }
+
+    @Test
+    fun `accepted LOGIN keeps original id and recover queries it after A returns`() {
+        val store = FakeStore()
+        lateinit var bridgeRef: FakeBridge
+        val harness = harness(
+            store = store,
+            reply = {
+                // reply may reach the server and then find the session/owner changed.
+                bridgeRef.access.value = normalAccess.copy(userId = "owner-b")
+                throw AgentGateException(GateReason.LOGIN)
+            },
+        )
+        bridgeRef = harness.bridge
+        assertThrows(AgentGateException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        val id = store.load("owner-1")!!.requestId
+        assertEquals(1, harness.bridge.replyCalls)
+
+        harness.bridge.access.value = normalAccess
+        val result = runBlocking { harness.provider.recover("owner-1") }
+
+        assertEquals(3, result?.size)
+        assertEquals(id, harness.bridge.lastQueryId)
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(1, harness.bridge.queryCalls)
+        assertNull(store.load("owner-1"))
+    }
+
+    @Test
+    fun `accepted service definitelyRejected keeps pending for recover`() {
+        val harness = harness(
+            reply = { throw AgentServiceException(true) },
+        )
+        assertThrows(AgentServiceException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        val id = harness.store.load("owner-1")?.requestId
+        assertNotNull(id)
+        assertEquals(1, harness.bridge.replyCalls)
+
+        val result = runBlocking { harness.provider.recover("owner-1") }
+        assertEquals(3, result?.size)
+        assertEquals(id, harness.bridge.lastQueryId)
+        assertEquals(1, harness.bridge.queryCalls)
+        assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
+    fun `pre-send gate writes no pending`() {
+        val harness = harness(access = normalAccess.copy(availablePoints = 0))
+        assertThrows(AgentGateException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        assertEquals(0, harness.bridge.replyCalls)
+        assertNull(harness.store.load("owner-1"))
+    }
+
+    @Test
+    fun `recover with mismatched owner does not query or clear A`() {
+        val harness = pendingHarness()
+        val id = harness.store.load("owner-1")!!.requestId
+        harness.bridge.access.value = normalAccess.copy(userId = "owner-b")
+
+        val error = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.recover("owner-1") }
+        }
+
+        assertEquals(id, error.requestId)
+        assertEquals(0, harness.bridge.queryCalls)
+        assertEquals(id, harness.store.load("owner-1")?.requestId)
+    }
+
+    @Test
+    fun `owner change after load prevents query and clear`() {
+        val harness = pendingHarness()
+        val id = harness.store.load("owner-1")!!.requestId
+        harness.store.afterLoad = {
+            harness.bridge.access.value = normalAccess.copy(userId = "owner-b")
+        }
+
+        val error = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.recover("owner-1") }
+        }
+
+        assertEquals(id, error.requestId)
+        assertEquals(0, harness.bridge.queryCalls)
+        assertEquals(id, harness.store.load("owner-1")?.requestId)
+    }
+
+    @Test
+    fun `403 after owner change does not clear A pending`() {
+        var bridgeRef: FakeBridge? = null
+        val harness = pendingHarness(
+            query = {
+                bridgeRef?.access?.value = normalAccess.copy(userId = "owner-b")
+                throw AgentServiceException(true)
+            },
+        )
+        bridgeRef = harness.bridge
+        val id = harness.store.load("owner-1")!!.requestId
+
+        val error = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.recover("owner-1") }
+        }
+
+        assertEquals(id, error.requestId)
+        assertEquals(1, harness.bridge.queryCalls)
+        assertEquals(id, harness.store.load("owner-1")?.requestId)
+    }
+
+    @Test
+    fun `definite failed clears only when owner still matches`() {
+        val harness = pendingHarness(query = { throw AgentServiceException(true) })
+        runBlocking { harness.provider.recover("owner-1") }
+        assertNull(harness.store.load("owner-1"))
+        assertEquals(1, harness.bridge.queryCalls)
+        assertEquals(1, harness.bridge.replyCalls)
     }
 
     @Test

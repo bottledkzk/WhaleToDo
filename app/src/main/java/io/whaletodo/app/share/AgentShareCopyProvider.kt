@@ -37,8 +37,8 @@ internal class AgentShareCopyProvider(
 
         val model = AgentPolicy.route(bridge.models, access, AgentMode.SHARE_COPY)
         AgentPolicy.gate(access, AgentMode.SHARE_COPY, model, consent = false)?.let {
-            // A gate means this attempt was never sent; no pending may survive it.
-            clearPending(ownerId)
+            // This is a local pre-send gate: nothing was saved/never sent; do not touch an
+            // existing owner's pending record.
             throw AgentGateException(it)
         }
         val prompt = sourceText.trim()
@@ -73,14 +73,13 @@ internal class AgentShareCopyProvider(
             // Keep the durable record; use the ID we persisted, not a replacement.
             throw AgentPendingException(request.id)
         } catch (e: AgentGateException) {
-            clearPending(ownerId)
+            // reply may have reached the server before a session/owner check failed.
+            // A gate after save never proves the request was unsent: retain it for query/recover.
             throw e
         } catch (e: AgentServiceException) {
-            if (e.definitelyRejected) {
-                clearPending(ownerId)
-                throw e
-            }
-            throw AgentPendingException(request.id)
+            // This includes definitelyRejected=true from the bridge: it cannot prove the
+            // provider/server did not accept the request. Only a matching-owner query may clear.
+            throw e
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -106,8 +105,13 @@ internal class AgentShareCopyProvider(
     override suspend fun recover(ownerId: String): List<String>? {
         val entry = loadPending(ownerId) ?: return null
         if (entry.state != "pending") {
-            clearPending(ownerId)
+            // Do not let another active owner clear a non-current owner's record.
+            if (bridge.access.value.userId == ownerId) clearPending(ownerId)
             return null
+        }
+        // Query uses the bridge's current account. Never query A's ID while B is active.
+        if (bridge.access.value.userId != ownerId) {
+            throw AgentPendingException(entry.requestId)
         }
         val reply = try {
             // Query only; never POST a second model request.
@@ -119,6 +123,10 @@ internal class AgentShareCopyProvider(
             throw e
         } catch (e: AgentServiceException) {
             if (e.definitelyRejected) {
+                // A 403/failed is a terminal signal only for the owner that issued the query.
+                if (bridge.access.value.userId != ownerId) {
+                    throw AgentPendingException(entry.requestId)
+                }
                 clearPending(ownerId)
                 return null
             }
@@ -129,6 +137,10 @@ internal class AgentShareCopyProvider(
             throw AgentPendingException(entry.requestId)
         }
 
+        // Owner can change between query return and persistence; do not clear A's record.
+        if (bridge.access.value.userId != ownerId) {
+            throw AgentPendingException(entry.requestId)
+        }
         clearPending(ownerId)
         val suggestions = parseShareCopySuggestions(reply.text)
         if (suggestions.isEmpty()) throw AgentServiceException(false)

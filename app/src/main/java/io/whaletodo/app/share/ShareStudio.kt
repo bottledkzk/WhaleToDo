@@ -138,17 +138,38 @@ internal fun ShareStyleSheet(
                 throw e
             } catch (e: AgentGateException) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
-                pendingId = null
-                showStatus("")
+                pendingId = ownerAtRequest?.let { owner ->
+                    runCatching { provider.pending(owner) }.getOrNull()
+                }
+                showStatus(
+                    if (pendingId != null) "请求可能已受理，请重新登录后查询原结果" else "",
+                    error = pendingId != null,
+                )
                 onGate(e.reason, styleAtRequest)
             } catch (e: AgentPendingException) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
                 pendingId = e.requestId
                 showStatus("配文生成中，请稍后重试")
+            } catch (e: AgentServiceException) {
+                if (!stillSameOwner(ownerAtRequest)) return@launch
+                pendingId = ownerAtRequest?.let { owner ->
+                    runCatching { provider.pending(owner) }.getOrNull()
+                }
+                if (pendingId != null) {
+                    showStatus("请求可能已受理，可查询原结果", error = true)
+                } else {
+                    showStatus("配文生成失败，请重试", error = true)
+                }
             } catch (_: Exception) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
-                pendingId = null
-                showStatus("配文生成失败，请重试", error = true)
+                pendingId = ownerAtRequest?.let { owner ->
+                    runCatching { provider.pending(owner) }.getOrNull()
+                }
+                if (pendingId != null) {
+                    showStatus("请求可能已受理，可查询原结果", error = true)
+                } else {
+                    showStatus("配文生成失败，请重试", error = true)
+                }
             } finally {
                 aiBusy = false
             }
