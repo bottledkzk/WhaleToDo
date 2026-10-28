@@ -50,12 +50,31 @@ internal data class DeviceCompatibility(
     }
 }
 
-/** OEMs can omit a settings activity. Try the standard app page, then fail visibly. */
-internal fun openCompatibilitySettings(context: Context, notifications: Boolean): Boolean {
-    val appDetails = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-    val primary = if (notifications) Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName) else appDetails
-    for (intent in listOf(primary, appDetails).distinctBy { it.action }) {
+internal enum class DeviceSettingsTarget { NOTIFICATIONS, EXACT_ALARMS, BATTERY, CAMERA }
+
+/** Explicit SDK parameter allows branch checks without claiming an older OS was run. */
+internal fun compatibilitySettingsIntents(
+    target: DeviceSettingsTarget,
+    packageName: String,
+    sdk: Int = Build.VERSION.SDK_INT,
+): List<Intent> {
+    val packageUri = Uri.parse("package:$packageName")
+    val appDetails = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+    val primary = when (target) {
+        DeviceSettingsTarget.NOTIFICATIONS -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        DeviceSettingsTarget.EXACT_ALARMS -> if (sdk >= 31)
+            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, packageUri) else appDetails
+        // Opens the normal list; never requests an exemption or changes battery policy.
+        DeviceSettingsTarget.BATTERY -> Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        DeviceSettingsTarget.CAMERA -> appDetails
+    }
+    return listOf(primary, appDetails).distinctBy { it.action }
+}
+
+/** OEMs can omit a settings activity. Each target falls back to the standard app page. */
+internal fun openCompatibilitySettings(context: Context, target: DeviceSettingsTarget): Boolean {
+    for (intent in compatibilitySettingsIntents(target, context.packageName)) {
         try {
             context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return true
