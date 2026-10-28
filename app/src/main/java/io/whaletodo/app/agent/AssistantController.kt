@@ -79,7 +79,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         val model=bridge.models.find{it.code==sent.modelCode}
         var canPreview=reply.changes.isNotEmpty()&&model!=null&&sent.mode==AgentMode.EDIT.code&&sent.editGranted&&source!=null&&
             sent.snapshotHash==hash(source)&&AgentPolicy.proposalGate(mutable.value.access,model!!)==null
-        if(canPreview)canPreview=runCatching{repo.checkAgentPreview(source!!,reply.changes)}.isSuccess
+        if(canPreview)canPreview=runCatching{repo.checkAgentPreview(source!!,reply.changes,sent.ownerId)}.isSuccess
         val rows=repo.dao.messages(sent.sessionId,sent.ownerId)
         mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(messages=rows,pendingId=null,
             preview=if(canPreview)EditPreview(sent.id,sent.ownerId,source!!,reply.changes,model!!.code)else null,
@@ -110,7 +110,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         scope.launch {
             var sent:AgentMessageRow?=null
             try {
-                val snapshot=repo.snapshot()
+                val snapshot=repo.snapshot(source.owner)
                 // Feedback uses a new request ID; machine context is not rendered as user chat text.
                 val prompt=if(revision==null)draft.trim() else org.json.JSONObject()
                     .put("instruction","原提案未采纳，请结合本次意见生成新的待确认提案")
@@ -142,7 +142,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
             if(sent==null){mutable.update{it.copy(busySince=null,pendingId=null)};return@launch}
             if(mutable.value.owner!=source.owner||mutable.value.sessionId!=source.sessionId)return@launch
             mutable.update{it.copy(busySince=SystemClock.elapsedRealtime())}
-            try{val reply=withTimeout(60_000){bridge.query(id)};receive(sent,repo.snapshot(),reply)}
+            try{val reply=withTimeout(60_000){bridge.query(id)};receive(sent,repo.snapshot(source.owner),reply)}
             catch(e:CancellationException){if(e is TimeoutCancellationException)failed(sent,e,true)else throw e}
             catch(e:Exception){failed(sent,e,true)}
             finally{mutable.update{if(it.owner==source.owner&&it.sessionId==source.sessionId)it.copy(busySince=null)else it}}

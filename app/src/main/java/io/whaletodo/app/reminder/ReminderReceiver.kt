@@ -31,7 +31,7 @@ class ReminderReceiver : BroadcastReceiver() {
                 db = DeskDatabase.open(context)
                 val reminder = db.dao().reminder(owner, taskId)
                 if (reminder?.enabled != true) return@launch
-                val task = db.dao().tasks().firstOrNull { it.id == taskId }
+                val task = db.dao().tasks(owner).firstOrNull { it.id == taskId }
                 if (task == null || task.done) return@launch
                 if (owner != ReminderCenter.activeOwner(context)) return@launch
                 notify(context, intent)

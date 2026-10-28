@@ -30,15 +30,15 @@ class AgentDataTest {
     @Test fun proposalAppliesAtomicallyOnceAndRejectsStaleOrInvalidChanges()=runBlocking {
         val db=Room.inMemoryDatabaseBuilder(context,DeskDatabase::class.java).build()
         try{
-            val repo=DeskRepository(db);val task=TaskRow("task","原始标题",note="私人备注");repo.save(task)
-            val source=repo.snapshot();repo.applyAgent("proposal-1","owner",source,listOf(AgentChange.RenameTask(task.id,"新标题"),AgentChange.CategorizeTask(task.id,"study")))
-            assertEquals("新标题",db.dao().tasks().single().title);assertEquals("study",db.dao().tasks().single().category)
+            val repo=DeskRepository(db);val task=TaskRow("task","原始标题",note="私人备注",ownerId="owner");repo.save(task,"owner")
+            val source=repo.snapshot("owner");repo.applyAgent("proposal-1","owner",source,listOf(AgentChange.RenameTask(task.id,"新标题"),AgentChange.CategorizeTask(task.id,"study")))
+            assertEquals("新标题",db.dao().tasks("owner").single().title);assertEquals("study",db.dao().tasks("owner").single().category)
             try{repo.applyAgent("proposal-1","owner",source,listOf(AgentChange.RenameTask(task.id,"重复")));fail("Receipt must reject replay")}catch(_:IllegalStateException){}
-            val fresh=repo.snapshot();repo.save(db.dao().tasks().single().copy(note="之后编辑"))
+            val fresh=repo.snapshot("owner");repo.save(db.dao().tasks("owner").single().copy(note="之后编辑"),"owner")
             try{repo.applyAgent("proposal-2","owner",fresh,listOf(AgentChange.RenameTask(task.id,"过时")));fail("Snapshot changed")}catch(_:IllegalStateException){}
-            val latest=repo.snapshot()
+            val latest=repo.snapshot("owner")
             try{repo.applyAgent("proposal-3","owner",latest,listOf(AgentChange.RenameTask(task.id,"不能部分写入"),AgentChange.CategorizeTask("alien","work")));fail("Unknown target")}catch(_:IllegalArgumentException){}
-            assertEquals("新标题",db.dao().tasks().single().title);assertEquals(0,db.dao().receiptCount("proposal-3","owner"))
+            assertEquals("新标题",db.dao().tasks("owner").single().title);assertEquals(0,db.dao().receiptCount("proposal-3","owner"))
         }finally{db.close()}
     }
     @Test fun localConversationQueriesAreOwnerScopedAndArchivePreservesMessages()=runBlocking {

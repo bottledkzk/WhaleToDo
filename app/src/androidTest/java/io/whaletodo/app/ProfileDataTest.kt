@@ -44,13 +44,13 @@ class ProfileDataTest {
     }
     @Test fun reminderAndTaskChangesAreAtomicAndZonePreferencesDoNotRewriteEpochs()=runBlocking{
         val db=Room.inMemoryDatabaseBuilder(context,DeskDatabase::class.java).build()
-        try{val repo=DeskRepository(db);val task=TaskRow("t","原始标题",deadline=1900000000000);repo.save(task)
-            try{repo.saveScheduled(task.copy(title="不能部分保存"),null,TaskReminderRow("a","t",true,"invalid","start"));fail("bad reminder")}catch(_:IllegalArgumentException){}
-            assertEquals("原始标题",db.dao().tasks().single().title);assertNull(db.dao().reminder("a","t"))
-            repo.saveScheduled(task,null,TaskReminderRow("a","t",true,"both","both"));assertTrue(db.dao().reminder("a","t")!!.enabled);assertNull(db.dao().reminder("b","t"))
-            val before=repo.snapshot();db.dao().save(UiPreferenceRow("device","time.zone","+08:00"));db.dao().save(UiPreferenceRow("device","working.default","555,1065"))
-            val after=repo.snapshot();assertEquals("+08:00",after.zoneId);assertEquals(before.tasks,after.tasks);assertEquals(MinuteRange(555,1065),DeskOptions.defaults(after.preferences,after.settings))
-            try{repo.apply(PlanPreview(before,ScheduleResult(emptyList(),emptyList())));fail("old snapshot")}catch(_:IllegalStateException){}
+        try{val repo=DeskRepository(db);val task=TaskRow("t","原始标题",deadline=1900000000000,ownerId="a");repo.save(task,"a")
+            try{repo.saveScheduled(task.copy(title="不能部分保存"),null,TaskReminderRow("a","t",true,"invalid","start"),"a");fail("bad reminder")}catch(_:IllegalArgumentException){}
+            assertEquals("原始标题",db.dao().tasks("a").single().title);assertNull(db.dao().reminder("a","t"))
+            repo.saveScheduled(task,null,TaskReminderRow("a","t",true,"both","both"),"a");assertTrue(db.dao().reminder("a","t")!!.enabled);assertNull(db.dao().reminder("b","t"))
+            val before=repo.snapshot("a");db.dao().save(UiPreferenceRow("device","time.zone","+08:00"));db.dao().save(UiPreferenceRow("device","working.default","555,1065"))
+            val after=repo.snapshot("a");assertEquals("+08:00",after.zoneId);assertEquals(before.tasks,after.tasks);assertEquals(MinuteRange(555,1065),DeskOptions.defaults(after.preferences,after.settings))
+            try{repo.apply(PlanPreview(before,ScheduleResult(emptyList(),emptyList())),"a");fail("old snapshot")}catch(_:IllegalStateException){}
         }finally{db.close()}
     }
 }

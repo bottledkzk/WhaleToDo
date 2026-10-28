@@ -103,7 +103,7 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
     fun confirmZone(adjust:Boolean) {
         val draft=mutable.value.zoneDraft?:return
         action("暂时无法更改时区，请重新选择") { owner->
-            try{repo.changeZone(draft.choice,adjust,draft.previous,draft.from)}catch(e:IllegalArgumentException){mutable.update{if(it.owner==owner)it.copy(error=e.message?:"请检查日程时间")else it};return@action}
+            try{repo.changeZone(draft.choice,adjust,draft.previous,draft.from,owner)}catch(e:IllegalArgumentException){mutable.update{if(it.owner==owner)it.copy(error=e.message?:"请检查日程时间")else it};return@action}
             runCatching{onRemindersChanged()}
             dismissAfter(owner,"时区已更新")
             mutable.update{if(it.owner==owner)it.copy(zoneDraft=null)else it}
