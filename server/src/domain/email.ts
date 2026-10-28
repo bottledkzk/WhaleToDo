@@ -14,8 +14,13 @@ export const MAX_SENDS_PER_HOUR = 5;
 export const MAX_ATTEMPTS = 5;
 export const TICKET_TTL_MS = 60 * 1000;
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// 只接受单一规范 mailbox：dot-atom local + ASCII DNS 风格 domain。
+// 显示名、注释、引号、列表/组地址都在这里拒绝，避免同一收件人因字符串不同绕过冷却。
 const MAX_EMAIL_LENGTH = 254;
+const MAX_LOCAL_LENGTH = 64;
+const MAX_DOMAIN_LABEL_LENGTH = 63;
+const LOCAL_RE = /^[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+\/=?^_`{|}~-]+)*$/;
+const DOMAIN_LABEL_RE = /^[A-Za-z0-9-]+$/;
 
 export function isEmailPurpose(value: string): value is EmailPurpose {
   return (EMAIL_PURPOSES as readonly string[]).includes(value);
@@ -26,9 +31,35 @@ export function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+function isCanonicalMailbox(email: string): boolean {
+  if (!email || email.length > MAX_EMAIL_LENGTH) return false;
+
+  const at = email.indexOf('@');
+  if (at <= 0 || at !== email.lastIndexOf('@') || at === email.length - 1) return false;
+
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length > MAX_LOCAL_LENGTH || !LOCAL_RE.test(local)) return false;
+
+  const labels = domain.split('.');
+  if (labels.length < 2) return false;
+  for (const label of labels) {
+    if (
+      label.length === 0
+      || label.length > MAX_DOMAIN_LABEL_LENGTH
+      || !DOMAIN_LABEL_RE.test(label)
+      || label.startsWith('-')
+      || label.endsWith('-')
+    ) {
+      return false;
+    }
+  }
+  return labels[labels.length - 1]!.length >= 2;
+}
+
 export function assertEmail(raw: unknown): string {
   const email = normalizeEmail(String(raw ?? ''));
-  if (!email || email.length > MAX_EMAIL_LENGTH || !EMAIL_RE.test(email)) {
+  if (!isCanonicalMailbox(email)) {
     throw new ApiError('VALIDATION_ERROR', '邮箱格式不正确');
   }
   return email;

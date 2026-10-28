@@ -117,10 +117,77 @@ test('SMTP sink sends exactly one fixed-template mail to the validated recipient
   assert.ok(!('attachments' in mail));
 });
 
-test('SMTP sink rejects invalid input before transport', async () => {
+test('SMTP transport envelope uses the same canonical mailbox as storage and cooldown', async () => {
   const transport = fakeTransport(async () => ({ messageId: 'synthetic' }));
   const sink = createSmtpEmailCodeSink(config(), { transport });
-  await assert.rejects(() => sink({ purpose: 'register', email: 'not-an-email', code: '123456' }));
+  const repo = new MemoryRepository(createMemoryStore());
+  const app = buildApp({
+    config: loadConfig({
+      NODE_ENV: 'test',
+      BUSINESS_TIMEZONE: 'Asia/Shanghai',
+      PAYMENT_PROVIDER: 'disabled',
+      PUBLIC_BASE_URL: 'http://127.0.0.1:8080/api/v1',
+    }),
+    repo: fromSync(repo),
+    emailCodeSink: sink,
+  });
+  const canonical = 'alice@example.test';
+  try {
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/email/send-code',
+      payload: { purpose: 'register', email: ' Alice@Example.Test ' },
+    });
+    assert.equal(first.statusCode, 202, first.body);
+    assert.equal(first.json().data.sent, true);
+    assert.equal(transport.mails.length, 1);
+    assert.equal(transport.mails[0]!.to, canonical, 'SMTP envelope 必须使用 canonical');
+    assert.equal(repo.store.emailCodes.get(`register:${canonical}`)?.email, canonical);
+
+    // 同 canonical 在 60 秒内再次请求：不得再投递，SMTP 不能看到第二个 envelope。
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/email/send-code',
+      payload: { purpose: 'register', email: 'ALICE@EXAMPLE.TEST' },
+    });
+    assert.equal(second.statusCode, 202, second.body);
+    assert.equal(second.json().data.sent, false);
+    assert.ok(second.json().data.retry_after_ms > 0);
+    assert.equal(transport.mails.length, 1);
+
+    const variant = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/email/send-code',
+      payload: { purpose: 'register', email: 'alice@example.test(a)' },
+    });
+    assert.equal(variant.statusCode, 400, variant.body);
+    assert.equal(variant.json().error.code, 'VALIDATION_ERROR');
+    assert.equal(transport.mails.length, 1);
+  } finally {
+    await app.close();
+  }
+});
+
+test('SMTP sink rejects display-name/comment/list variants before transport', async () => {
+  const transport = fakeTransport(async () => ({ messageId: 'synthetic' }));
+  const sink = createSmtpEmailCodeSink(config(), { transport });
+  for (const email of [
+    'not-an-email',
+    'alice@example.test(a)',
+    'alice@example.test(b)',
+    'x<alice@example.test>',
+    '"a b"@example.test',
+    'a@@b.test',
+    'a@b',
+    'a@-b.test',
+    'a..b@test',
+  ]) {
+    await assert.rejects(
+      () => sink({ purpose: 'register', email, code: '123456' }),
+      /邮箱格式不正确/,
+      `应拒绝 ${email}`,
+    );
+  }
   await assert.rejects(() => sink({ purpose: 'register', email: 'user@example.invalid', code: '12' }));
   await assert.rejects(() => sink({ purpose: 'unbind', email: 'user@example.invalid', code: '123456' }));
   assert.equal(transport.mails.length, 0);
