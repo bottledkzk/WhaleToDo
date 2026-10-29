@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -56,10 +57,19 @@ import kotlinx.coroutines.withContext
  * AI 配文契约：由 AgentShareCopyProvider 通过 AgentBridge 的 share_copy 模式实现；
  * 不直接走 HTTP，也不在客户端扣积分。
  */
+internal data class ShareCopyResult(
+    val suggestions: List<String>,
+    val requestId: String,
+    /** null means the receipt did not expose a usable usage value (unknown, not fabricated). */
+    val usage: Int?,
+    /** 0 is a real settled value; null means unknown. */
+    val chargedPoints: Int?,
+)
+
 internal interface ShareCopyProvider {
-    suspend fun suggest(style: ShareStyle, sourceText: String): List<String>
-    suspend fun pending(ownerId: String): String? = null
-    suspend fun recover(ownerId: String): List<String>? = null
+    suspend fun suggest(style: ShareStyle, sourceText: String): ShareCopyResult
+    suspend fun pending(ownerId: String, sourceFingerprint: String = ""): String? = null
+    suspend fun recover(ownerId: String, sourceFingerprint: String = ""): ShareCopyResult? = null
 }
 
 /** Immutable snapshot passed to the offscreen export composition. */
@@ -95,6 +105,7 @@ internal fun ShareStyleSheet(
     onShared: () -> Unit,
     onTrialConsumed: () -> Unit,
     copyProvider: ShareCopyProvider? = null,
+    draftStore: ShareDraftStore? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -113,6 +124,10 @@ internal fun ShareStyleSheet(
     var suggestions by remember(text) { mutableStateOf(emptyList<String>()) }
     var pendingId by remember(access.userId) { mutableStateOf<String?>(null) }
     var pendingLoading by remember(access.userId, copyProvider) { mutableStateOf(copyProvider != null) }
+    val sourceFingerprint = remember(text) { ShareDraft.fingerprint(text) }
+    var draftRequestId by remember(text) { mutableStateOf<String?>(null) }
+    var draftUsage by remember(text) { mutableStateOf<Int?>(null) }
+    var draftChargedPoints by remember(text) { mutableStateOf<Int?>(null) }
     var status by remember { mutableStateOf("") }
     var statusError by remember { mutableStateOf(false) }
     var retryAction by remember { mutableStateOf<ShareImageAction?>(null) }
@@ -129,6 +144,44 @@ internal fun ShareStyleSheet(
 
     fun stillSameOwner(owner: String?): Boolean = currentOwner == owner
 
+    fun persistDraft() {
+        val store = draftStore ?: return
+        val owner = access.userId?.takeIf { it.isNotBlank() } ?: return
+        val requestId = draftRequestId ?: return
+        if (suggestions.isEmpty()) return
+        val selectedText = caption.takeIf { it in suggestions }
+        val editedText = caption.takeIf { it.isNotBlank() && it != text && it !in suggestions }
+        val draft = ShareDraft(
+            ownerId = owner,
+            sourceFingerprint = sourceFingerprint,
+            suggestions = suggestions.take(3),
+            selectedText = selectedText,
+            editedText = editedText,
+            styleCode = selected.code,
+            requestId = requestId,
+            usage = draftUsage,
+            chargedPoints = draftChargedPoints,
+            updatedAt = System.currentTimeMillis(),
+        )
+        scope.launch(Dispatchers.IO) {
+            runCatching { store.save(draft) }
+        }
+    }
+
+    fun clearDraft() {
+        val store = draftStore ?: return
+        val owner = access.userId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch(Dispatchers.IO) {
+            runCatching { store.clear(owner, sourceFingerprint) }
+        }
+        suggestions = emptyList()
+        draftRequestId = null
+        draftUsage = null
+        draftChargedPoints = null
+        caption = text
+        showStatus("已清除分享草稿")
+    }
+
     fun requestSuggestions() {
         val provider = copyProvider ?: return
         if (aiBusy || busy || pendingLoading || pendingId != null) return
@@ -142,14 +195,21 @@ internal fun ShareStyleSheet(
                 val result = provider.suggest(styleAtRequest, text)
                 if (!stillSameOwner(ownerAtRequest)) return@launch
                 pendingId = null
-                suggestions = result.take(3)
-                showStatus(if (result.isEmpty()) "配文生成失败，请重试" else "已生成配文，点击选择", error = result.isEmpty())
+                suggestions = result.suggestions.take(3)
+                draftRequestId = result.requestId
+                draftUsage = result.usage
+                draftChargedPoints = result.chargedPoints
+                showStatus(
+                    if (result.suggestions.isEmpty()) "配文生成失败，请重试"
+                    else "已生成配文，点击选择",
+                    error = result.suggestions.isEmpty(),
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AgentGateException) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
                 pendingId = ownerAtRequest?.let { owner ->
-                    runCatching { provider.pending(owner) }.getOrNull()
+                    runCatching { provider.pending(owner, sourceFingerprint) }.getOrNull()
                 }
                 showStatus(
                     if (pendingId != null) "请求可能已受理，请重新登录后查询原结果" else "",
@@ -163,7 +223,7 @@ internal fun ShareStyleSheet(
             } catch (e: AgentServiceException) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
                 pendingId = ownerAtRequest?.let { owner ->
-                    runCatching { provider.pending(owner) }.getOrNull()
+                    runCatching { provider.pending(owner, sourceFingerprint) }.getOrNull()
                 }
                 if (pendingId != null) {
                     showStatus("请求可能已受理，可查询原结果", error = true)
@@ -173,7 +233,7 @@ internal fun ShareStyleSheet(
             } catch (_: Exception) {
                 if (!stillSameOwner(ownerAtRequest)) return@launch
                 pendingId = ownerAtRequest?.let { owner ->
-                    runCatching { provider.pending(owner) }.getOrNull()
+                    runCatching { provider.pending(owner, sourceFingerprint) }.getOrNull()
                 }
                 if (pendingId != null) {
                     showStatus("请求可能已受理，可查询原结果", error = true)
@@ -194,14 +254,17 @@ internal fun ShareStyleSheet(
         showStatus("正在查询原配文…")
         scope.launch {
             try {
-                val result = provider.recover(ownerId)
+                val result = provider.recover(ownerId, sourceFingerprint)
                 if (!stillSameOwner(ownerId)) return@launch
                 pendingId = null
                 if (result == null) {
                     suggestions = emptyList()
-                    showStatus("原配文请求已失败，可重新生成", error = true)
+                    showStatus("来源已变化或原配文请求已失败，可重新生成", error = true)
                 } else {
-                    suggestions = result.take(3)
+                    suggestions = result.suggestions.take(3)
+                    draftRequestId = result.requestId
+                    draftUsage = result.usage
+                    draftChargedPoints = result.chargedPoints
                     showStatus("已恢复原配文结果，点击选择")
                 }
             } catch (e: CancellationException) {
@@ -233,26 +296,46 @@ internal fun ShareStyleSheet(
         }
     }
 
-    LaunchedEffect(access.userId, copyProvider) {
+    LaunchedEffect(access.userId, sourceFingerprint, copyProvider, draftStore) {
         val provider = copyProvider
+        val store = draftStore
         val ownerId = access.userId?.takeIf { it.isNotBlank() }
         pendingId = null
         caption = text
         suggestions = emptyList()
-        if (provider == null || ownerId == null) {
+        draftRequestId = null
+        draftUsage = null
+        draftChargedPoints = null
+        if (ownerId == null) {
             pendingLoading = false
             return@LaunchedEffect
         }
-        pendingLoading = true
-        pendingId = try {
-            provider.pending(ownerId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
+        pendingLoading = provider != null
+        val draft = store?.let {
+            withContext(Dispatchers.IO) { it.load(ownerId, sourceFingerprint) }
+        }
+        if (draft != null) {
+            suggestions = draft.suggestions.take(3)
+            selected = ShareStyle.entries.find { it.code == draft.styleCode } ?: selected
+            caption = draft.selectedText ?: draft.editedText ?: text
+            draftRequestId = draft.requestId
+            draftUsage = draft.usage
+            draftChargedPoints = draft.chargedPoints
+        }
+        if (provider != null) {
+            pendingId = try {
+                provider.pending(ownerId, sourceFingerprint)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
         }
         pendingLoading = false
-        if (pendingId != null) showStatus("上次配文未完成，可查询原结果")
+        when {
+            draft != null -> showStatus("已恢复上次配文草稿（未重新请求）")
+            pendingId != null -> showStatus("上次配文未完成，可查询原结果")
+        }
     }
 
     fun loadBackground(uri: Uri, cameraFile: File?) {
@@ -482,6 +565,7 @@ internal fun ShareStyleSheet(
                             selected == style,
                             onClick = {
                                 selected = style
+                                persistDraft()
                                 showStatus("")
                             },
                             label = {
@@ -519,12 +603,41 @@ internal fun ShareStyleSheet(
                                 selected = caption == suggestion,
                                 onClick = {
                                     caption = suggestion
+                                    persistDraft()
                                     showStatus("已选择 AI 配文")
                                 },
                                 label = { Text(suggestion) },
                             )
                         }
                     }
+                }
+                if (draftRequestId != null) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = caption,
+                        onValueChange = {
+                            caption = it
+                            persistDraft()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("分享文案（可编辑）") },
+                        minLines = 2,
+                        maxLines = 4,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    SelectionContainer {
+                        Text(
+                            "本次用量：${draftUsage?.toString() ?: "未知"} tokens · " +
+                                "结算积分：${draftChargedPoints?.toString() ?: "未知"} · " +
+                                "请求 ID：${draftRequestId}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(
+                        onClick = ::clearDraft,
+                        enabled = !aiBusy && !busy,
+                    ) { Text("清除分享草稿") }
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(
