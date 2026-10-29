@@ -14,6 +14,8 @@ function toRepoSession(s: RepoSession): RepoSession {
 
 export function fromSync(repo: MemoryRepository): AccountRepository {
   return {
+    // 内存实现无外部依赖；ready 只在 health/ready 使用。
+    ready: async () => repo.ready(),
     findUserByUsername: async (username) => {
       const u = repo.findUserByUsername(username);
       return u ? toRepoUser(u) : null;

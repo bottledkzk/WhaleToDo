@@ -11,7 +11,7 @@ import {
   type SmtpMail,
   type SmtpTransport,
 } from '../src/domain/email-smtp.ts';
-import { CODE_TTL_MS } from '../src/domain/email.ts';
+import { CODE_TTL_MS, RESEND_INTERVAL_MS } from '../src/domain/email.ts';
 
 const baseEnv = {
   SMTP_HOST: 'smtp.example.invalid',
@@ -140,6 +140,7 @@ test('SMTP transport envelope uses the same canonical mailbox as storage and coo
     });
     assert.equal(first.statusCode, 202, first.body);
     assert.equal(first.json().data.sent, true);
+    assert.equal(first.json().data.retry_after_ms, RESEND_INTERVAL_MS);
     assert.equal(transport.mails.length, 1);
     assert.equal(transport.mails[0]!.to, canonical, 'SMTP envelope 必须使用 canonical');
     assert.equal(repo.store.emailCodes.get(`register:${canonical}`)?.email, canonical);
