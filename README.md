@@ -6,7 +6,7 @@ WhaleToDo 是软件工程团队项目：以 Android 应用为主要客户端，�
 
 ## 当前阶段
 
-当前公开签名预览为[0.5.2-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1)，独立包名`io.whaletodo.app.preview`与原体验包并存。本分支准备0.5.3-preview.1/code10候选，继续Room v4和同一发行证书；签名构建、同包保留数据升级与线上验收分别记录，新候选尚未公开。生产网站切换、六迁移完整发布包与账户进程见[生产发布与在线验收](doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)，发行流程见[release](release/README.md)。
+当前公开签名预览为[0.5.2-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1)，独立包名`io.whaletodo.app.preview`与原体验包并存。本分支准备0.5.3-preview.1/code10候选，继续Room v4和同一发行证书；签名构建、同包保留数据升级与线上验收分别记录，新候选尚未公开。生产网站切换、七迁移完整发布包与账户进程见[生产发布与在线验收](doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)，发行流程见[release](release/README.md)。
 
 AI模式、会话、读取授权、Accept／Refuse／意见重生成、Token计费和权限策略已有代码与隔离测试，账户/AI网络桥接已合并，查询429/503及断线保留原ID。生产账户服务仍待部署，真实邮件投递尚未接入，新用户邮箱注册/找回不能完成；生产网关升级和真实APP闭环仍待独立验收。客户端同步和图片分享继续各自PR，不把页面、合成响应或健康端点当作线上交付。
 
@@ -138,3 +138,5 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/me
 > - 该库已执行 `npm run db:deploy`，且 CI 创建的 `whaletodo_app` 与迁移角色已就位
 >
 > 角色、授权与迁移步骤以 `.github/workflows/server.yml` 的 `database` job 为准。
+
+Agent 最新能力、真实模型测试与积分试算见 [2026-10-29 验收与积分校准](doc/Bottledkzk/2026-10-29-Agent真实验收与积分校准.md)，代码与生产部署状态分别记录

@@ -29,7 +29,7 @@ test('read-only response length ends at complete sentence, displays continuation
 });
 test('truncated JSON never becomes actionable edits or automatically retries',async()=>{
  let calls=0;const fetcher=async()=>{calls++;return new Response(JSON.stringify({choices:[{message:{content:'{"summary":"x","changes":[ '},finish_reason:'length'}],usage:{total_tokens:20}}));};
- const r=await callDeepSeek(config,{...input,mode:'edit',model_code:'deepseek-planner'},fetcher as typeof fetch);assert.equal(r.changes,undefined);assert.equal(r.continuation,true);assert.equal(calls,1);
+ const r=await callDeepSeek(config,{...input,mode:'edit',model_code:'deepseek-planner'},fetcher as typeof fetch);assert.deepEqual(r.changes,[]);assert.equal(r.usable,false);assert.equal(r.continuation,true);assert.equal(calls,1);
 });
 test('reasoning_content is neither exposed nor counted as displayed content',async()=>{
  const r=await callDeepSeek(config,input,(async()=>new Response(JSON.stringify({choices:[{message:{content:'最终答复',reasoning_content:'PRIVATE-THOUGHT'},finish_reason:'stop'}],usage:{total_tokens:20}}))) as typeof fetch);

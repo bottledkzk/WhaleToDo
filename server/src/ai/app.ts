@@ -6,7 +6,7 @@ import type { AiConfig } from './config.ts';
 import { AiStore,type AiRow } from './store.ts';
 import { callDeepSeek,prepareInput,ProviderFailure,MODES,type AiInput,type ModelReply } from './provider.ts';
 export function requestView(row:AiRow){return {id:row.client_request_id,status:row.status,mode:row.mode,
- text:row.response_text==null?null:publicAssistantText(row.response_text),usage_tokens:row.usage_tokens,usage_k:formatK(row.usage_tokens??0),input_tokens:row.input_tokens,output_tokens:row.output_tokens,points_reserved:row.points,points_charged:row.charged_points,continuation:row.continuation,context_compacted:row.compacted,proposal:row.proposal,error_code:row.error_code,created_at:row.created_at.toISOString()};}
+ text:row.response_text==null?null:publicAssistantText(row.response_text),usage_tokens:row.usage_tokens,usage_k:formatK(row.usage_tokens??0),input_tokens:row.input_tokens,output_tokens:row.output_tokens,points_reserved:row.points,points_charged:row.charged_points,tokens_per_point:row.tokens_per_point,billing_strategy:row.billing_strategy??'per_request',continuation:row.continuation,context_compacted:row.compacted,proposal:row.proposal,error_code:row.error_code,created_at:row.created_at.toISOString()};}
 export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput)=>Promise<ModelReply>=(input)=>callDeepSeek(config,input)){
  const app=Fastify({bodyLimit:262144,ajv:{customOptions:{removeAdditional:false}},trustProxy:'127.0.0.1',logger:false,requestTimeout:55000,genReqId:()=>randomUUID()});
  app.setErrorHandler((err,req,reply)=>{
@@ -20,8 +20,8 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  async function auth(header:string|undefined){const m=/^Bearer ([A-Za-z0-9_-]{43})$/.exec(header??'');
  if(!m)throw new ApiError('UNAUTHENTICATED','请先登录');return store.authenticate(m[1]!);}
  app.get('/api/v1/ai/models',async(req)=>{const user=await auth(req.headers.authorization);const vip=await store.vip(user);return {request_id:req.id,data:{prompt_version:PROMPT_VERSION,
- tokens_per_point:config.tokensPerPoint??1000,items:[{code:'deepseek-default',title:'鲸鱼AI',can_edit:false},...(config.editEnabled?[{code:'deepseek-planner',title:'日程编辑',can_edit:vip,requires_vip:true}]:[])]}};});
- app.get('/api/v1/ai/usage',async(req)=>{const user=await auth(req.headers.authorization);const usage=await store.usage(user,config.businessTimezone);return {request_id:req.id,data:{...usage,usage_k:formatK(usage.total_tokens),tokens_per_point:config.tokensPerPoint??1000}};});
+ tokens_per_point:config.tokensPerPoint??1000,billing_strategy:config.billingStrategy??'per_request',items:[{code:'deepseek-default',title:'鲸鱼AI',can_edit:false},...(config.editEnabled?[{code:'deepseek-planner',title:'日程编辑',can_edit:vip,requires_vip:true}]:[])]}};});
+ app.get('/api/v1/ai/usage',async(req)=>{const user=await auth(req.headers.authorization);const usage=await store.usage(user,config.businessTimezone,config.tokensPerPoint??1000);return {request_id:req.id,data:{...usage,usage_k:formatK(usage.total_tokens),tokens_per_point:config.tokensPerPoint??1000,billing_strategy:config.billingStrategy??'per_request'}};});
  const uuid={type:'string',format:'uuid'};
  app.post<{Body:AiInput}>('/api/v1/ai/requests',{schema:{body:{type:'object',additionalProperties:false,
  required:['client_request_id','mode','prompt','model_code'],properties:{client_request_id:uuid,mode:{type:'string',enum:MODES},
@@ -43,7 +43,8 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  if(!admission.fresh)return reply.code(['reserved','running','unknown'].includes(admission.row.status)?202:200).send({request_id:req.id,data:requestView(admission.row)});
  const row=admission.row;
  try{
- await store.running(row.id);const result=await provider(input);const done=await store.finish(row.id,'succeeded',result);
+ await store.running(row.id);const result=await provider(input);const done=await store.finish(row.id,result.usable===false?'failed':'succeeded',result);
+ if(result.usable===false)return reply.code(503).send({request_id:req.id,data:requestView(done)});
  return {request_id:req.id,data:requestView(done)};
  }catch(error){
  const definite=error instanceof ProviderFailure&&error.definite;

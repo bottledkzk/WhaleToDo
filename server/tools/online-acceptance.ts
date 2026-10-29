@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, u
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROMPT_VERSION, parseDiary } from '../src/ai/policy.ts';
+import { cumulativeCharge } from '../src/ai/billing.ts';
 import { prepareInput, tokenReservation, type AiInput } from '../src/ai/provider.ts';
 
 type Wallet = { available: number; reserved: number };
@@ -11,6 +12,7 @@ type Entry = { mode: 'diary' | 'share_copy'; id: string; payload_sha256: string;
   usage_tokens?: number; charged_points?: number; output_sha256?: string; output_chars?: number; structure_checked?: boolean };
 type Receipt = { schema_version: 1; kind: 'synthetic_http_acceptance'; base_url: string; declared_source_commit: string;
   owner_sha256: string; prompt_version: string; max_model_requests: 2; max_output: number; tokens_per_point: number;
+  billing_strategy?: 'per_request' | 'cumulative_tokens'; billing_bucket_before?: {tokens:string;points:string};
   wallet_before: Wallet; wallet_after?: Wallet; entries: Entry[]; status: 'running' | 'pending' | 'failed' | 'passed';
   app_acceptance: 'not_tested'; human_quality_review: 'pending'; updated_at: string };
 export type AcceptanceOptions = { baseUrl: string; token: string; sourceCommit: string; maxOutput?: number;
@@ -91,6 +93,17 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
     const models = await data('/ai/models');
     if (models.prompt_version !== PROMPT_VERSION || !natural(models.tokens_per_point) || models.tokens_per_point === 0 ||
         !Array.isArray(models.items) || !models.items.some((m: any) => m.code === 'deepseek-default')) refused('ACCEPTANCE_GATEWAY_VERSION_MISMATCH');
+    const strategy=models.billing_strategy??'per_request';
+    if(!['per_request','cumulative_tokens'].includes(strategy))refused('ACCEPTANCE_BILLING_STRATEGY_INVALID');
+    let bucket:{tokens:string;points:string}|undefined;
+    function validBucket(value:any):boolean {
+      return !!value&&typeof value.tokens==='string'&&typeof value.points==='string'&&/^\d{1,30}$/.test(value.tokens)&&/^\d{1,30}$/.test(value.points)&&
+       BigInt(value.points)===(BigInt(value.tokens)+BigInt(models.tokens_per_point)-1n)/BigInt(models.tokens_per_point);
+    }
+    if(strategy==='cumulative_tokens'&&options.action!=='resume'){
+      const usage=await data('/ai/usage');bucket={tokens:usage.billing_bucket_tokens,points:usage.billing_bucket_points};
+      if(!validBucket(bucket)||usage.tokens_per_point!==models.tokens_per_point||usage.billing_strategy!==strategy)refused('ACCEPTANCE_BILLING_BUCKET_INVALID');
+    }
     const wallet = await data('/wallet') as Wallet;
     if (!natural(wallet.available) || !natural(wallet.reserved)) refused('ACCEPTANCE_WALLET_INVALID');
     const reservation = (['diary', 'share_copy'] as const).map(mode =>
@@ -109,7 +122,7 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
       if (existsSync(receiptPath!)) refused('ACCEPTANCE_RECEIPT_EXISTS_USE_RESUME');
       receipt = { schema_version: 1, kind: 'synthetic_http_acceptance', base_url: baseUrl, declared_source_commit: options.sourceCommit,
         owner_sha256: owner, prompt_version: PROMPT_VERSION, max_model_requests: 2, max_output: maxOutput,
-        tokens_per_point: models.tokens_per_point, wallet_before: wallet, status: 'running',
+        tokens_per_point: models.tokens_per_point, billing_strategy:strategy, ...(bucket?{billing_bucket_before:bucket}:{}),wallet_before: wallet, status: 'running',
         app_acceptance: 'not_tested', human_quality_review: 'pending', updated_at: '',
         entries: (['diary', 'share_copy'] as const).map(mode => {
           const id = randomUUID(); return { mode, id, payload_sha256: digest(JSON.stringify(payload({ mode, id }))), post_attempted: false, state: 'prepared' };
@@ -120,12 +133,14 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
       if (receipt.schema_version !== 1 || receipt.kind !== 'synthetic_http_acceptance' || receipt.base_url !== baseUrl ||
           receipt.declared_source_commit !== options.sourceCommit || receipt.owner_sha256 !== owner || receipt.prompt_version !== PROMPT_VERSION ||
           receipt.max_model_requests !== 2 || receipt.max_output !== maxOutput || receipt.tokens_per_point !== models.tokens_per_point ||
+          (receipt.billing_strategy??'per_request')!==strategy||strategy==='cumulative_tokens'&&!validBucket(receipt.billing_bucket_before)||
           !Array.isArray(receipt.entries) || receipt.entries.length !== 2) refused('ACCEPTANCE_RECEIPT_CONTEXT_MISMATCH');
       for (const [index, entry] of receipt.entries.entries()) {
         if (entry.mode !== ['diary', 'share_copy'][index] || !/^[a-f0-9-]{36}$/i.test(entry.id) ||
             entry.payload_sha256 !== digest(JSON.stringify(payload(entry))) || typeof entry.post_attempted !== 'boolean' ||
             !['prepared', 'unknown', 'succeeded', 'failed', 'not_accepted'].includes(entry.state) ||
             !entry.post_attempted && entry.state !== 'prepared') refused('ACCEPTANCE_RECEIPT_INVALID');
+        if(entry.state==='succeeded'&&receipt.status!=='failed'&&(!natural(entry.usage_tokens)||entry.usage_tokens===0||!natural(entry.charged_points)||entry.structure_checked!==true))refused('ACCEPTANCE_RECEIPT_INVALID');
       }
       if (receipt.entries[0]!.id === receipt.entries[1]!.id) refused('ACCEPTANCE_RECEIPT_INVALID');
     }
@@ -145,8 +160,16 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
         const text = view.text;
         const tokens = view.usage_tokens;
         const points = view.points_charged;
+        let expectedPoints=-1;
+        if(natural(tokens)&&tokens>0){
+          if(strategy==='cumulative_tokens'){
+            const prior=receipt.entries.filter(e=>e.state==='succeeded');
+            expectedPoints=cumulativeCharge(BigInt(receipt.billing_bucket_before!.tokens)+prior.reduce((n,e)=>n+BigInt(e.usage_tokens??0),0n),
+             BigInt(receipt.billing_bucket_before!.points)+prior.reduce((n,e)=>n+BigInt(e.charged_points??0),0n),tokens,models.tokens_per_point);
+          }else expectedPoints=Math.max(1,Math.ceil(tokens/models.tokens_per_point));
+        }
         if (typeof text !== 'string' || !text.trim() || !natural(tokens) || tokens === 0 || !natural(points) ||
-            points !== Math.max(1, Math.ceil(tokens / models.tokens_per_point)) ||
+            points !== expectedPoints ||
             tokens > tokenReservation(prepareInput(payload(entry)), maxOutput) || view.continuation) {
           receipt.status = 'failed'; entry.state = 'succeeded'; entry.structure_checked = false; save(receiptPath!, receipt); break;
         }
@@ -154,6 +177,9 @@ export async function runAcceptance(options: AcceptanceOptions, fetcher: typeof 
         if (entry.mode === 'diary') {
           try { parseDiary(JSON.stringify({ diary: text })); } catch { valid = false; }
           if (text.includes('日记草稿暂不可用')) valid = false;
+        }else{
+          const lines=text.split('\n').filter((s:string)=>s.trim());
+          if(lines.length!==3||lines.some((s:string)=>Array.from(s).length>50))valid=false;
         }
         entry.state = 'succeeded'; entry.usage_tokens = tokens; entry.charged_points = points;
         entry.output_sha256 = digest(text); entry.output_chars = Array.from(text).length; entry.structure_checked = valid;

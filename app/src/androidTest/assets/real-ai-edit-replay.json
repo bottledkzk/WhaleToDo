@@ -1,0 +1,63 @@
+{
+  "kind": "synthetic_real_model_receipt_replay",
+  "source_start_ms": 1793322000000,
+  "source_end_ms": 1793323800000,
+  "task_id": "00000000-0000-4000-8000-000000000002",
+  "block_id": "00000000-0000-4000-8000-000000000003",
+  "positive": [
+    {
+      "case_id": "edit-rename-r1",
+      "usage_tokens": 852,
+      "changes": [
+        {
+          "type": "rename_task",
+          "target_id": "00000000-0000-4000-8000-000000000002",
+          "title": "阅读第4章"
+        }
+      ]
+    },
+    {
+      "case_id": "edit-category-r1",
+      "usage_tokens": 841,
+      "changes": [
+        {
+          "type": "set_category",
+          "target_id": "00000000-0000-4000-8000-000000000002",
+          "category": "study"
+        }
+      ]
+    },
+    {
+      "case_id": "edit-client-text-r1",
+      "usage_tokens": 944,
+      "changes": [
+        {
+          "type": "move_block",
+          "target_id": "00000000-0000-4000-8000-000000000003",
+          "start_ms": 1793325600000,
+          "end_ms": 1793327400000
+        }
+      ]
+    },
+    {
+      "case_id": "edit-client-opinion-r2",
+      "usage_tokens": 966,
+      "changes": [
+        {
+          "type": "move_block",
+          "target_id": "00000000-0000-4000-8000-000000000003",
+          "start_ms": 1793327400000,
+          "end_ms": 1793329200000
+        }
+      ]
+    }
+  ],
+  "unsafe_completed_counterexample": [
+    {
+      "type": "move_block",
+      "target_id": "00000000-0000-4000-8000-000000000003",
+      "start_ms": 1793152800000,
+      "end_ms": 1793154600000
+    }
+  ]
+}

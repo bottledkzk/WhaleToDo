@@ -23,7 +23,7 @@ class ReleasePackageTest(unittest.TestCase):
         self.repo = self.root / 'source'
         self.repo.mkdir()
         self.names = ['202610230001_initial', '202610230002_tenant_policies', '202610230003_schema_scope',
-                      '202610230004_slot_default', package.GATEWAY_BOUNDARY, package.FULL_BOUNDARY]
+                      '202610230004_slot_default', '202610240001_agent_usage', '202610250001_billing_email', package.FULL_BOUNDARY]
         paths = ['server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
                  'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh', 'script/verify-restore.sh',
                  'env/systemd/whaletodo-ai.service', 'env/systemd/ai-limits.env.example', 'env/systemd/whaletodo-api.service',
@@ -54,9 +54,9 @@ class ReleasePackageTest(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Synthetic Test', '-c', 'user.email=synthetic@example.invalid',
                         'commit', '-qm', 'Synthetic fixture'], check=True)
 
-    def test_full_bundle_has_six_migrations_without_secrets_or_dependencies(self):
+    def test_full_bundle_has_seven_migrations_without_secrets_or_dependencies(self):
         output = self.root / 'full.tar.gz'
-        self.assertEqual(package.prepare(self.repo, output, 'full')['migration_count'], 6)
+        self.assertEqual(package.prepare(self.repo, output, 'full')['migration_count'], 7)
         with tarfile.open(output) as archive:
             manifest = json.load(archive.extractfile('manifest.json'))
             self.assertTrue(manifest['account_api_start_permitted'])
@@ -76,9 +76,9 @@ class ReleasePackageTest(unittest.TestCase):
         self.assertEqual(a.read_bytes(), b.read_bytes())
         with tarfile.open(a) as archive:
             manifest = json.load(archive.extractfile('manifest.json'))
-            self.assertEqual(manifest['migration_count'], 5)
+            self.assertEqual(manifest['migration_count'], 7)
             self.assertFalse(manifest['account_api_start_permitted'])
-            self.assertNotIn('server/prisma/migrations/' + package.FULL_BOUNDARY + '/migration.sql', archive.getnames())
+            self.assertNotIn('env/systemd/whaletodo-api.service', archive.getnames())
         with self.assertRaisesRegex(ValueError, 'OUTPUT_ALREADY_EXISTS'): package.prepare(self.repo, a)
 
     def test_dirty_source_and_sql_drift_are_refused(self):
@@ -90,7 +90,7 @@ class ReleasePackageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'MIGRATION_CHECKSUM_MISMATCH'): package.prepare(self.repo, self.root / 'drift.tar.gz', 'full')
 
     def test_full_profile_does_not_silently_omit_a_newer_migration(self):
-        self.write('server/prisma/migrations/202610280001_future/migration.sql', '-- future\n')
+        self.write('server/prisma/migrations/202610300001_future/migration.sql', '-- future\n')
         self.commit()
         with self.assertRaisesRegex(ValueError, 'FULL_RELEASE_BOUNDARY_CHANGED'):
             package.prepare(self.repo, self.root / 'future.tar.gz', 'full')
