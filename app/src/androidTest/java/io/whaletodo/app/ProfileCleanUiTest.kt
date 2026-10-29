@@ -36,12 +36,18 @@ class ProfileCleanUiTest {
         val access=MutableStateFlow(AgentAccess(owner,false,if(guest)0 else 100,true))
         override val details=MutableStateFlow(owner?.let{ProfileDetails(it,"小鲸同学","UI-DEMO","learner@example.test",signInDates=if(sixDays)(1L..6L).map{LocalDate.now().minusDays(it)}.toSet()else emptySet())})
         var codeCalls=0;var signInCalls=0;var failCode=false;var resendSeconds=1
+        var authError:String?=null;var authCalls=0;var codeError:String?=null
         val purposes=mutableListOf<CodePurpose>()
         override suspend fun requestCode(email:String,purpose:CodePurpose):VerificationDispatch {
             codeCalls++;purposes+=purpose;delay(100)
+            codeError?.let{throw ProfileException(it)}
             if(failCode)throw ProfileUnavailable()
             return VerificationDispatch(resendSeconds)
         }
+        override suspend fun register(email:String,code:String,password:String,nickname:String?){authenticate()}
+        override suspend fun resetPassword(email:String,code:String,password:String){authenticate()}
+        override suspend fun login(email:String,password:String){authenticate()}
+        private suspend fun authenticate(){authCalls++;delay(100);authError?.let{throw ProfileException(it)}}
         override suspend fun signIn(){
             signInCalls++;delay(100);val d=details.value!!
             if(d.businessDate !in d.signInDates){
@@ -69,6 +75,14 @@ class ProfileCleanUiTest {
         error("Activity never focused")
     }
     private fun email(){ui.desc("账户邮箱");device.findObjects(By.clazz("android.widget.EditText"))[0].text="learner@example.test";device.waitForIdle()}
+    private fun field(index:Int,value:String){
+        repeat(40){
+            val fields=device.findObjects(By.clazz("android.widget.EditText"))
+            if(fields.size>index){try{fields[index].text=value;device.waitForIdle();return}catch(_:StaleObjectException){}}
+            SystemClock.sleep(100)
+        }
+        error("Editable field $index did not settle")
+    }
     private fun countdown():UiObject2=device.wait(Until.findObject(By.text(Pattern.compile("\\d+s 后重发"))),5000)?:error("No resend countdown")
     private fun seconds()=countdown().text.substringBefore('s').toInt()
     private fun sendButton()=ui.desc("发送邮箱验证码").parent
@@ -106,5 +120,41 @@ class ProfileCleanUiTest {
         f.failCode=false;ui.click("发送验证码");assertTrue(seconds() in 115..120);assertFalse(sendButton().isEnabled)
         ui.desc("验证码重发倒计时");assertFalse(device.hasObject(By.text("暂时无法发送验证码，请稍后重试")));shot("reset-wait")
         assertEquals(2,f.codeCalls);assertEquals(listOf(CodePurpose.RESET_PASSWORD,CodePurpose.RESET_PASSWORD),f.purposes)
+    }
+    @Test fun invalidRegisterCodeIsVisibleAboveFieldsAndKeepsInput(){
+        val f=Fixture(guest=true);f.authError="验证码无效或已过期";start(f);ui.click("我的");ui.click("登录 / 注册");ui.click("注册账户");email()
+        field(2,"123456");field(3,"Synthetic-password-9");field(4,"Synthetic-password-9");ui.click("创建账户")
+        val notice=ui.desc("账户操作提示");assertTrue(notice.visibleBounds.bottom<=ui.desc("账户邮箱").visibleBounds.top)
+        ui.text("验证码无效或已过期");assertEquals(1,f.authCalls)
+        assertEquals("123456",device.findObjects(By.clazz("android.widget.EditText"))[2].text)
+        val previousKeyboard=device.executeShellCommand("settings get secure show_ime_with_hard_keyboard").trim()
+        try{
+            device.executeShellCommand("settings put secure show_ime_with_hard_keyboard 1")
+            val keyboardPackage=device.executeShellCommand("settings get secure default_input_method").trim().substringBefore('/')
+            ui.desc("邮箱验证码").click()
+            assertTrue("Soft keyboard must actually be visible",device.wait(Until.hasObject(By.pkg(keyboardPackage)),5000))
+            assertTrue(ui.desc("账户操作提示").visibleBounds.height()>0);shot("register-code-error-keyboard")
+        }finally{
+            if(previousKeyboard=="null")device.executeShellCommand("settings delete secure show_ime_with_hard_keyboard")
+            else device.executeShellCommand("settings put secure show_ime_with_hard_keyboard $previousKeyboard")
+        }
+        field(2,"654321");assertFalse(device.hasObject(By.desc("账户操作提示")));assertEquals(1,f.authCalls)
+    }
+    @Test fun invalidResetCodeAndMismatchedPasswordHaveClearFeedback(){
+        val f=Fixture();f.authError="验证码无效或已过期";start(f);ui.click("我的");ui.click("设置");ui.click("账户密码")
+        field(1,"123456");field(2,"Synthetic-password-9");field(3,"Other-password-9")
+        ui.text("两次输入的密码不一致");assertEquals(0,f.authCalls)
+        field(3,"Synthetic-password-9");ui.click("重置密码");ui.text("验证码无效或已过期")
+        assertTrue(ui.desc("账户操作提示").visibleBounds.bottom<=ui.desc("账户邮箱").visibleBounds.top);assertEquals(1,f.authCalls)
+        assertEquals("123456",device.findObjects(By.clazz("android.widget.EditText"))[1].text);shot("reset-code-error")
+    }
+    @Test fun offlineSendingAndLoginKeepFieldsAndAllowExplicitRetry(){
+        val f=Fixture(guest=true);val offline="网络连接失败，请检查网络后重试";f.codeError=offline;f.authError=offline
+        start(f);ui.click("我的");ui.click("登录 / 注册");ui.click("注册账户");email();ui.click("发送验证码")
+        ui.text(offline);assertTrue(sendButton().isEnabled);assertFalse(device.hasObject(By.desc("验证码重发倒计时")));assertEquals(1,f.codeCalls);shot("offline-code")
+        ui.click("发送验证码");ui.text(offline);assertEquals(2,f.codeCalls)
+        ui.click("返回登录");email();field(1,"Synthetic-password-9");ui.click("登录");ui.text(offline)
+        assertEquals(1,f.authCalls);assertEquals("learner@example.test",device.findObjects(By.clazz("android.widget.EditText"))[0].text);shot("offline-login")
+        f.authError=null;ui.click("登录");ui.text("每日签到");assertEquals(2,f.authCalls)
     }
 }

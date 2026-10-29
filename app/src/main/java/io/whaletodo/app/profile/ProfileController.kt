@@ -51,6 +51,7 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
     fun dismiss(){if(!mutable.value.busy)mutable.update{it.copy(dialog=MyDialog.NONE,error="",diary=null,zoneDraft=null)}}
     fun back(){if(mutable.value.dialog!=MyDialog.NONE)dismiss() else navigate(if(mutable.value.page==MyPageRoute.SETTINGS)MyPageRoute.HOME else MyPageRoute.SETTINGS)}
     fun clearNotice(){mutable.update{it.copy(notice="")}}
+    fun clearError(){mutable.update{it.copy(error="")}}
     fun option(key:String,default:String="")=mutable.value.options.find{it.key==key}?.value?:default
     private fun action(error:String="暂时无法完成，请稍后重试",block:suspend (String)->Unit) {
         val owner=mutable.value.owner;if(mutable.value.busy)return
@@ -79,8 +80,13 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
     }
     fun authenticate(email:String,password:String,code:String="",register:Boolean=false,reset:Boolean=false,nickname:String?=null){
         val publicName=if(register&&nickname!=null)runCatching{ProfileIdentity.nickname(nickname)}.getOrElse{mutable.update{it.copy(error="请检查昵称")};return}else null
-        if(!validEmail(email)||password.length !in 8..200||(register||reset)&&!Regex("[0-9]{4,8}").matches(code)){
-            mutable.update{it.copy(error="请检查邮箱、密码（8–200位）和验证码")};return}
+        val validationError=when{
+            !validEmail(email)->"请输入有效邮箱"
+            password.length !in 8..200->"密码需为8–200位"
+            (register||reset)&&!Regex("[0-9]{4,8}").matches(code)->"请输入4–8位数字验证码"
+            else->null
+        }
+        if(validationError!=null){mutable.update{it.copy(error=validationError)};return}
         action("账户操作暂不可用，请稍后重试") {owner->
             when{reset->bridge.resetPassword(email.trim(),code,password);register->bridge.register(email.trim(),code,password,publicName);else->bridge.login(email.trim(),password)}
             if(reset||register)mutable.update{if(it.owner==owner)it.copy(dialog=MyDialog.LOGIN,notice=if(reset)"密码已更新" else "注册已完成，请登录")else it}

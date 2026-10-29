@@ -185,6 +185,40 @@ class ServerProfileBridgeTest {
     }
 
     @Test
+    fun `invalid register and reset codes keep the server feedback and session`() {
+        status = 400
+        body = """{"request_id":"r","error":{"code":"VALIDATION_ERROR","message":"验证码无效或已过期"}}"""
+        for (reset in listOf(false, true)) {
+            val error = assertThrows(ProfileException::class.java) {
+                runBlocking {
+                    if (reset) bridge.resetPassword("user@example.invalid", "123456", "Synthetic-password-9")
+                    else bridge.register("user@example.invalid", "123456", "Synthetic-password-9")
+                }
+            }
+            assertEquals("验证码无效或已过期", error.message)
+            assertNotNull(credentials.read())
+        }
+    }
+
+    @Test
+    fun `offline login register and reset keep credentials and report network failure`() {
+        server.close()
+        for (operation in 0..2) {
+            val error = assertThrows(ProfileException::class.java) {
+                runBlocking {
+                    when (operation) {
+                        0 -> bridge.login("user@example.invalid", "Synthetic-password-9")
+                        1 -> bridge.register("user@example.invalid", "123456", "Synthetic-password-9")
+                        else -> bridge.resetPassword("user@example.invalid", "123456", "Synthetic-password-9")
+                    }
+                }
+            }
+            assertEquals("网络连接失败，请检查网络后重试", error.message)
+            assertNotNull(credentials.read())
+        }
+    }
+
+    @Test
     fun `401 keeps unauthenticated message and clears session`() {
         status = 401
         body = """{"request_id":"r","error":{"code":"UNAUTHENTICATED","message":"synthetic"}}"""

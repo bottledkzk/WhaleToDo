@@ -132,11 +132,15 @@ import kotlinx.coroutines.delay
     LaunchedEffect(s.codeUntil){while(s.codeUntil>SystemClock.elapsedRealtime()){now=SystemClock.elapsedRealtime();delay(1000)};now=SystemClock.elapsedRealtime()}
     val remaining=if(s.codeEmail==email.trim()&&s.codePurpose==(if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER))((s.codeUntil-now+999)/1000).coerceAtLeast(0)else 0
     val resendProgress by animateFloatAsState((remaining.toFloat()/s.codeResendSeconds).coerceIn(0f,1f),tween(1000,easing=LinearEasing),label="验证码等待进度")
-    AlertDialog(onDismissRequest=c::dismiss,title={Text(if(reset)"重置密码" else if(register)"注册" else "登录")},text={Column(Modifier.heightIn(max=430.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
-        OutlinedTextField(email,{if(it.length<=254)email=it},label={Text("邮箱")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.semantics{contentDescription="账户邮箱"})
-        if(register)OutlinedTextField(nickname,{nickname=ProfileIdentity.clipNickname(it);customNickname=true},label={Text("用户昵称")},singleLine=true,modifier=Modifier.fillMaxWidth().semantics{contentDescription="注册昵称"})
+    AlertDialog(onDismissRequest=c::dismiss,title={Text(if(reset)"重置密码" else if(register)"注册" else "登录")},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
+        if(s.error.isNotBlank())Surface(color=MaterialTheme.colorScheme.errorContainer,shape=RoundedCornerShape(12.dp)){
+            Text(s.error,Modifier.fillMaxWidth().padding(12.dp).semantics{contentDescription="账户操作提示";liveRegion=LiveRegionMode.Polite},color=MaterialTheme.colorScheme.onErrorContainer,style=MaterialTheme.typography.bodyMedium)
+        }
+        Column(Modifier.weight(1f,fill=false).heightIn(max=430.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        OutlinedTextField(email,{if(it.length<=254)email=it;c.clearError()},label={Text("邮箱")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.semantics{contentDescription="账户邮箱"})
+        if(register)OutlinedTextField(nickname,{nickname=ProfileIdentity.clipNickname(it);customNickname=true;c.clearError()},label={Text("用户昵称")},singleLine=true,modifier=Modifier.fillMaxWidth().semantics{contentDescription="注册昵称"})
         if(register||reset){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
-            OutlinedTextField(code,{if(it.length<=8)code=it.filter(Char::isDigit)},label={Text("验证码")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.weight(1f).semantics{contentDescription="邮箱验证码"})
+            OutlinedTextField(code,{if(it.length<=8)code=it.filter(Char::isDigit);c.clearError()},label={Text("验证码")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.weight(1f).semantics{contentDescription="邮箱验证码"})
             Column(Modifier.width(112.dp),verticalArrangement=Arrangement.spacedBy(5.dp)){
                 FilledTonalButton(onClick={c.requestCode(email,if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER)},enabled=!s.busy&&remaining==0L,modifier=Modifier.fillMaxWidth().height(56.dp).semantics{contentDescription="发送邮箱验证码"},shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(8.dp)){
                     Text(if(remaining>0)"${remaining}s 后重发" else "发送验证码",fontSize=12.sp)
@@ -144,12 +148,11 @@ import kotlinx.coroutines.delay
                 if(remaining>0)LinearProgressIndicator(progress={resendProgress},modifier=Modifier.fillMaxWidth().height(3.dp).semantics{contentDescription="验证码重发倒计时"})
             }}
         }
-        OutlinedTextField(password,{if(it.length<=200)password=it},label={Text(if(reset)"新密码" else "密码")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="账户密码"})
-        if(register||reset)OutlinedTextField(confirmation,{if(it.length<=200)confirmation=it},label={Text("确认密码")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="确认密码"})
+        OutlinedTextField(password,{if(it.length<=200)password=it;c.clearError()},label={Text(if(reset)"新密码" else "密码")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="账户密码"})
+        if(register||reset)OutlinedTextField(confirmation,{if(it.length<=200)confirmation=it;c.clearError()},label={Text("确认密码")},isError=confirmation.isNotEmpty()&&confirmation!=password,supportingText=if(confirmation.isNotEmpty()&&confirmation!=password){{Text("两次输入的密码不一致")}}else null,singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="确认密码"})
         if(!register&&!reset)Row{TextButton(onClick={c.open(MyDialog.REGISTER)}){Text("注册账户")};TextButton(onClick={c.open(MyDialog.RESET_PASSWORD)}){Text("忘记密码")}}
         if(register||reset)TextButton(onClick={c.open(MyDialog.LOGIN)}){Text("返回登录")}
-        DialogError(s)
-    }},confirmButton={TextButton(onClick={c.authenticate(email,password,code,register,reset,if(customNickname)nickname else null)},enabled=!s.busy&&email.isNotBlank()&&password.isNotBlank()&&(!register||runCatching{ProfileIdentity.nickname(nickname)}.isSuccess)&&(!(register||reset)||code.isNotBlank()&&confirmation==password)){
+    }}},confirmButton={TextButton(onClick={c.authenticate(email,password,code,register,reset,if(customNickname)nickname else null)},enabled=!s.busy&&email.isNotBlank()&&password.isNotBlank()&&(!register||runCatching{ProfileIdentity.nickname(nickname)}.isSuccess)&&(!(register||reset)||code.isNotBlank()&&confirmation==password)){
         Text(if(reset)"重置密码" else if(register)"创建账户" else "登录")}},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("取消")}})
 }
 @Composable private fun AvatarDialog(s:ProfileState,c:ProfileController){
