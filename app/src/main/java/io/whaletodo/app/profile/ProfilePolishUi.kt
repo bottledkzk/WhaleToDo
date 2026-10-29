@@ -49,7 +49,7 @@ import java.time.*
                     }
                 }
             }
-            if(logged&&s.motto.isNotBlank())Text(s.motto,Modifier.fillMaxWidth().semantics{contentDescription="个人Motto"},style=MaterialTheme.typography.bodyMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
+            if(s.motto.isNotBlank())Text(s.motto,Modifier.fillMaxWidth().semantics{contentDescription="个人Motto"},style=MaterialTheme.typography.bodyMedium,maxLines=2,overflow=TextOverflow.Ellipsis)
             Text("${desk.tasks.count{it.done}} 件已完成",Modifier.align(Alignment.End),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

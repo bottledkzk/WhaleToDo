@@ -5,6 +5,7 @@ import java.time.*
 
 /** Public display text is separate from account identifiers and credentials. */
 object ProfileIdentity {
+    const val DEFAULT_MOTTO = "Whale to do， will to do"
     private fun points(text:String)=text.codePoints().toArray()
     fun nicknameLength(text:String)=points(text).sumOf { if(Character.UnicodeScript.of(it)==Character.UnicodeScript.HAN)2 else 1 }
     fun mottoLength(text:String)=text.codePointCount(0,text.length)

@@ -14,3 +14,5 @@
 0.5.3-preview.1候选包含账户/AI桥接、Room6账户分区、PNG导出和验证码/空POST修复。构建不读取生产秘密或探测服务，manifest的production_deployed和email_delivery_integrated为null，状态文字要求查看独立回执；online_acceptance_passed仍为false。网站包按候选元数据渲染版本、code和链接，源网页继续引用已存在的公开版本；候选尚未发布时不切官网或替换旧Release附件。实际生产发布与健康路由见[2026-10-28交接](../doc/Bottledkzk/2026-10-28-生产账户与发行状态交接.md)。
 
 依据：[Android 应用签名](https://developer.android.com/studio/publish/app-signing)、[GitHub Release 管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
+
+状态字段采用三态：true/false仅表示有对应验收证据的已验证结果，null表示构建未验证该外部状态；邮件not_verified_by_build不表示已送达或未配置。真实邮件回执与APK构建分开记录。

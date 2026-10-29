@@ -55,7 +55,7 @@ enum class ShareStyle(val code:String,val label:String,val bg:Long,val ink:Long,
                 Spacer(Modifier.height(28.dp));Text(title,color=ink,fontSize=27.sp,fontWeight=FontWeight.Bold,fontFamily=if(style==ShareStyle.LITERARY)FontFamily.Serif else FontFamily.Default,maxLines=3)
                 Spacer(Modifier.height(20.dp));lines.take(5).forEachIndexed{i,line->Text("${if(style==ShareStyle.CODE)"+" else "${i+1}."} $line",color=ink.copy(alpha=.88f),fontSize=14.sp,modifier=Modifier.padding(vertical=6.dp),maxLines=2)}
             }
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){WhaleAvatar(Modifier.size(24.dp));Text("  每一步，都算数。",fontSize=11.sp,color=ink.copy(alpha=.72f))}
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){WhaleAvatar(Modifier.size(24.dp));Text("  每一步，都算数",fontSize=11.sp,color=ink.copy(alpha=.72f))}
         }
     }
 }
