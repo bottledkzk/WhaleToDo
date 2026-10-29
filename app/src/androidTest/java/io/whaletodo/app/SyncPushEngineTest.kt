@@ -58,6 +58,33 @@ class SyncPushEngineTest {
     }
 
     @Test
+    fun wrongBatchReceiptMustStayRecoverable() = runBlocking {
+        val task = seedTask("task-wrong-batch")
+        var wrong = true
+        val api = FakeApi { body ->
+            if (wrong) {
+                wrong = false
+                response(body, "applied", items(body, "applied"))
+                    .copy(batchId = "00000000-0000-4000-8000-000000000000")
+            } else {
+                success(body)
+            }
+        }
+        val engine = SyncPushEngine(db, session, api)
+        val first = engine.pushOnce(owner, "device-1")
+        assertEquals("unknown", first.status)
+        assertEquals("unknown", db.syncDao().batch(first.batchId!!)!!.state)
+        assertEquals("inflight", db.syncDao().outbox("op-task-wrong-batch")!!.state)
+        assertEquals(0, db.dao().task(owner, task.id)!!.serverVersion)
+
+        val second = engine.pushOnce(owner, "device-1")
+        assertEquals("applied", second.status)
+        assertEquals(first.batchId, second.batchId)
+        assertEquals(api.bodies[0], api.bodies[1])
+        assertEquals(1, db.dao().task(owner, task.id)!!.serverVersion)
+    }
+
+    @Test
     fun appliedUpdatesContentOutboxAndBatch() = runBlocking {
         val task = seedTask("task-1")
         val api = FakeApi { body -> success(body) }

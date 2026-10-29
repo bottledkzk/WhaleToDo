@@ -149,10 +149,8 @@ class SyncPushEngine(
             markBatch(batchId, "session_wait", "SESSION_CHANGED", attempt)
             return PushOutcome("session_wait", batchId, error = "SESSION_CHANGED")
         }
-        if (response.batchId != batchId) {
-            markBatch(batchId, "invalid", "BATCH_ID_MISMATCH", attempt)
-            return PushOutcome("invalid", batchId, error = "BATCH_ID_MISMATCH")
-        }
+        // A structurally valid 2xx with the wrong batch_id is untrusted; applyResponse
+        // validates it as malformed and keeps the original batch/body recoverable.
         return applyResponse(ownerId, deviceId, batchId, attempt, response)
     }
 
