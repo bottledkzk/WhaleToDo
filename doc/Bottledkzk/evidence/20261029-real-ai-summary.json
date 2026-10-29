@@ -1,0 +1,92 @@
+{
+  "kind": "synthetic_calibration_summary",
+  "all_calls": 138,
+  "all_tokens": 172481,
+  "automatic_passed": 134,
+  "flagged_cases": [
+    {
+      "id": "diary-legacy-estimate-r1",
+      "errors": [
+        "forbidden_content:用时"
+      ]
+    },
+    {
+      "id": "edit-client-opinion-r2",
+      "errors": [
+        "wrong_proposal"
+      ]
+    },
+    {
+      "id": "diary-legacy-estimate-r2",
+      "errors": [
+        "forbidden_content:用时"
+      ]
+    },
+    {
+      "id": "diary-legacy-estimate-r3",
+      "errors": [
+        "forbidden_content:用时"
+      ]
+    }
+  ],
+  "calibration": {
+    "definition": "Normal user scenarios only; exclude identity, injection, missing facts and protected/unauthorized requests. Initial edit + opinion are one task; retain failed-attempt tokens and include the matching successful repair. Additional confirmation repeats do not inflate the task count. This synthetic mix is a pilot, not production traffic.",
+    "included_repairs": [
+      "edit-client-opinion-r2"
+    ],
+    "calls": 97,
+    "tasks": 90,
+    "tokens": 140606,
+    "mean_tokens_per_task": 1562.2888888888888,
+    "target_points_per_task": 0.5,
+    "recommended_tokens_per_point": 3200,
+    "amortized_points_per_task": 0.48821527777777773,
+    "single_wallet_rounded_points_per_task": 0.4888888888888889
+  },
+  "by_mode": {
+    "chat": {
+      "calls": 27,
+      "tokens": 53221,
+      "ordinary_calls": 21,
+      "ordinary_tokens": 49554
+    },
+    "diary": {
+      "calls": 18,
+      "tokens": 11643,
+      "ordinary_calls": 9,
+      "ordinary_tokens": 5897
+    },
+    "edit": {
+      "calls": 36,
+      "tokens": 36648,
+      "ordinary_calls": 19,
+      "ordinary_tokens": 19937
+    },
+    "plan": {
+      "calls": 21,
+      "tokens": 45452,
+      "ordinary_calls": 18,
+      "ordinary_tokens": 43451
+    },
+    "review": {
+      "calls": 12,
+      "tokens": 10955,
+      "ordinary_calls": 6,
+      "ordinary_tokens": 7205
+    },
+    "share_copy": {
+      "calls": 24,
+      "tokens": 14562,
+      "ordinary_calls": 24,
+      "ordinary_tokens": 14562
+    }
+  },
+  "manual_review": {
+    "diary-legacy-estimate-r1..r3": "Scanner false positives: text says no actual-duration record; it does not claim actual minutes. Historical raw flags retained.",
+    "edit-client-opinion-r2": "Follow-up repair included with its actual tokens; explicit target/clock compiled by domain code, validated again before preview."
+  },
+  "raw_archive_sha256": {
+    "round7": "487542433ff9192873aadc6f8f2901de639ace147e224e535df7e2bee1e93b25",
+    "round10": "3846e16d3bc4348a0b64b7016ca86867b9b8b69a33924edf3ad797d6516e1841"
+  }
+}

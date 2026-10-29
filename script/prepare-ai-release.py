@@ -9,8 +9,8 @@ import re
 import subprocess
 import tarfile
 
-GATEWAY_BOUNDARY = '202610240001_agent_usage'
-FULL_BOUNDARY = '202610250001_billing_email'
+GATEWAY_BOUNDARY = '202610290001_agent_billing'
+FULL_BOUNDARY = '202610290001_agent_billing'
 
 
 def git(repo, *args):
@@ -27,7 +27,7 @@ def prepare(repo, output, profile='gateway'):
     commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
     paths = git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').decode().splitlines()
     cutoff = FULL_BOUNDARY if profile == 'full' else GATEWAY_BOUNDARY
-    count = 6 if profile == 'full' else 5
+    count = 7
     files = {}
     fixed = {'server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
              'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh',
@@ -47,7 +47,7 @@ def prepare(repo, output, profile='gateway'):
     if not required <= files.keys():
         raise ValueError('REQUIRED_RELEASE_FILE_MISSING')
     checksums = json.loads(git(repo, 'show', 'HEAD:server/prisma/migrations/checksums.json'))
-    if profile == 'full' and (len(checksums) != 6 or any(p.split('/')[-2] > FULL_BOUNDARY
+    if (len(checksums) != 7 or any(p.split('/')[-2] > FULL_BOUNDARY
             for p in paths if p.startswith('server/prisma/migrations/') and p.endswith('/migration.sql'))):
         raise ValueError('FULL_RELEASE_BOUNDARY_CHANGED')
     checksums = [m for m in checksums if m['name'] <= cutoff]
@@ -68,7 +68,7 @@ def prepare(repo, output, profile='gateway'):
                 'components': ['account_api', 'ai_gateway'] if profile == 'full' else ['ai_gateway'],
                 'gateway_prompt': prompt.group(1), 'node_version': '24.15.0',
                 'migration_boundary': cutoff, 'migration_count': count,
-                'billing_email_migration_included': profile == 'full',
+                'billing_email_migration_included': True,
                 'account_api_start_permitted': profile == 'full',
                 'email_delivery_integrated': False, 'deployed': False, 'online_acceptance_passed': False,
                 'files': {p: hashlib.sha256(data).hexdigest() for p, data in sorted(files.items())}}
@@ -95,6 +95,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--profile', choices=['gateway', 'full'], default='gateway',
-                        help='full includes six migrations and the account service; gateway cannot start the account API')
+                        help='full includes seven migrations and the account service; gateway cannot start the account API')
     args = parser.parse_args()
     print(json.dumps(prepare(Path(__file__).resolve().parent.parent, args.output, args.profile)))

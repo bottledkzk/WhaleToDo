@@ -13,29 +13,32 @@ import { MemoryRepository } from '../src/repo/memory.ts';
 import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
 
-function fixture() {
+function fixture(strategy:'per_request'|'cumulative_tokens'='per_request') {
   const dir = mkdtempSync(join(tmpdir(), 'whaletodo-acceptance-'));
   const options: AcceptanceOptions = { baseUrl: 'https://acceptance.invalid/api/v1', token: 'a'.repeat(43),
     sourceCommit: 'b'.repeat(40), receipt: join(dir, 'receipt.json'), action: 'execute' };
   let balance = 100; let pause = ''; let queryStatus = 200; let owner = '00000000-0000-4000-a000-000000000001';
   let promptVersion = PROMPT_VERSION; let malformed = false;
+  let cumulativeTokens=980,cumulativePoints=1;
   const posts: any[] = [], queries: string[] = []; const accepted = new Map<string, any>();
   function response(status: number, body: unknown) { return new Response(JSON.stringify(body), { status }); }
   function succeeded(input: any) {
     if (!accepted.get(input.client_request_id)?.settled) {
-      balance--; accepted.set(input.client_request_id, { ...input, settled: true });
+      const charged=strategy==='cumulative_tokens'?Math.ceil((cumulativeTokens+20)/1000)-cumulativePoints:1;
+      balance-=charged;cumulativeTokens+=20;cumulativePoints+=charged;accepted.set(input.client_request_id, { ...input, settled: true, charged });
     }
     return response(200, { data: { id: input.client_request_id, mode: input.mode, status: 'succeeded',
-      text: malformed ? '' : input.mode === 'diary' ? '我完成了二十分钟阅读，也整理了书桌。' : '阅读二十分钟，让书桌和思路都更清楚。',
-      usage_tokens: 20, points_charged: 1, continuation: false } });
+      text: malformed ? '' : input.mode === 'diary' ? '我完成了二十分钟阅读，也整理了书桌。' : '阅读二十分钟\n完成一次阅读\n记录下这段阅读时光',
+      usage_tokens: 20, points_charged: accepted.get(input.client_request_id).charged, continuation: false } });
   }
   const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(url)).pathname;
     if (path === '/api/v1/health/live' || path === '/api/v1/ai/health') return response(200, { data: { status: 'ok' } });
     if (path.endsWith('/ai/models')) {
       if (!(init?.headers as any)?.Authorization) return response(401, { error: { code: 'UNAUTHENTICATED' } });
-      return response(200, { data: { prompt_version: promptVersion, tokens_per_point: 1000, items: [{ code: 'deepseek-default' }] } });
+      return response(200, { data: { prompt_version: promptVersion, tokens_per_point: 1000, billing_strategy:strategy,items: [{ code: 'deepseek-default' }] } });
     }
+    if(path.endsWith('/ai/usage'))return response(200,{data:{billing_bucket_tokens:String(cumulativeTokens),billing_bucket_points:String(cumulativePoints),tokens_per_point:1000,billing_strategy:strategy}});
     if (path.endsWith('/me')) return response(200, { data: { user: { id: owner, email: 'private-synthetic@example.invalid' } } });
     if (path.endsWith('/wallet')) return response(200, { data: { available: balance, reserved: 0 } });
     if (path.endsWith('/ai/requests')) {
@@ -116,6 +119,17 @@ test('two explicit synthetic requests settle points without storing token, email
     for (const value of [f.options.token, 'private-synthetic', '我完成了', '阅读二十分钟']) assert.ok(!saved.includes(value));
     await assert.rejects(runAcceptance(f.options, f.fetcher), /RECEIPT_EXISTS/); assert.equal(f.posts.length, 2);
   } finally { f.clean(); }
+});
+
+test('cumulative online verification starts from the frozen lifetime bucket and accepts zero-point settlement',async()=>{
+ const f=fixture('cumulative_tokens');try{
+  f.pause('disconnect');await runAcceptance(f.options,f.fetcher);f.pause('');
+  const result=await runAcceptance({...f.options,action:'resume'},f.fetcher);
+  assert.equal('status' in result&&result.status,'passed');
+  const receipt=JSON.parse(readFileSync(f.options.receipt!,'utf8'));
+  assert.deepEqual(receipt.billing_bucket_before,{tokens:'980',points:'1'});
+  assert.deepEqual(receipt.entries.map((e:any)=>e.charged_points),[0,1]);assert.equal(f.posts.length,2);
+ }finally{f.clean();}
 });
 test('disconnect and repeated query 429/503 preserve the original ID and never re-POST', async () => {
   const f = fixture(); try {

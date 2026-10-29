@@ -3,22 +3,28 @@ export const PROVIDER_URL='https://api.deepseek.com/chat/completions';
 export {MODES,systemPrompt} from './policy.ts';
 export type {Mode} from './policy.ts';
 import {type Mode,type EditChange,systemPrompt,softCompact,parseProposal,fingerprint,publicAssistantText,parseDiary} from './policy.ts';
+import {proposalProblem} from './proposal-guard.ts';
+import {normalizedAgenda} from './agenda.ts';
+import {unorderedDiaryText,diaryFacts} from './diary-facts.ts';
+import {requestedMove} from './move-intent.ts';
 export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string}
-export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[]}
+export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[];usable?:boolean}
 export class ProviderFailure extends Error {
  readonly definite:boolean;
  constructor(definite:boolean){super('Provider request failed');this.definite=definite;}
 }
 export function prepareInput(input:AiInput):AiInput {
  const prompt=softCompact(input.prompt,7000);const context=softCompact(input.context??'',8000);
- const history=(input.history??[]).slice(-8).map(h=>({...h,content:softCompact(h.content,1500).text}));
+ const historyParts=(input.history??[]).slice(-8).map(h=>({role:h.role,part:softCompact(h.content,1500)}));
+ const history=historyParts.map(h=>({role:h.role,content:h.part.text}));
  return {...input,prompt:prompt.text,context:context.text,history,sourceFingerprint:fingerprint(input),
- compacted:prompt.omitted>0||context.omitted>0||(input.history?.length??0)>8};
+ compacted:prompt.omitted>0||context.omitted>0||historyParts.some(h=>h.part.omitted>0)||(input.history?.length??0)>8};
 }
 /** Untrusted history never becomes actual assistant/system messages at the provider boundary. */
 export function providerMessages(input:AiInput) {
+ const agenda=normalizedAgenda(input.context??'');
  return [{role:'system',content:systemPrompt(input.mode,input.share_style)},
-  {role:'user',content:JSON.stringify({request:input.prompt,agenda:input.context??'',history:input.history??[]})}];
+  {role:'user',content:JSON.stringify({request:input.prompt,agenda:input.mode==='diary'?diaryFacts(agenda):agenda,history:input.history??[],...(input.mode==='edit'?{requested_move:requestedMove(input.context??'',input.prompt)}:{})})}];
 }
 export function tokenReservation(input:AiInput,maxOutput:number):number {
  // UTF-8 bytes conservatively bound text tokenization; include fixed framing allowance.
@@ -37,7 +43,7 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const response=await fetcher(PROVIDER_URL,{method:'POST',redirect:'error',
  headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},
  body:JSON.stringify({model:input.model_code==='deepseek-planner'?(config.editModel??'deepseek-v4-pro'):config.model,thinking:{type:'disabled'},stream:false,max_tokens:config.maxOutput,
- ...(['edit','diary'].includes(input.mode)?{response_format:{type:'json_object'}}:{}),
+ ...(['edit','diary','share_copy'].includes(input.mode)?{response_format:{type:'json_object'}}:{}),
  messages:providerMessages(input)}),
  signal:AbortSignal.timeout(config.timeoutMs)});
  if(!response.ok){await response.body?.cancel();throw new ProviderFailure([400,401,402,403,404,413,422,429].includes(response.status));}
@@ -49,15 +55,32 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const inputTokens=result.usage?.prompt_tokens;const outputTokens=result.usage?.completion_tokens;
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};
  if(input.mode==='diary'){
-  if(continuation)return {text:'日记草稿暂不可用，请缩小范围后重新生成。',...usage};
-  try{return {text:publicAssistantText(parseDiary(text)),...usage};}
-  catch{return {text:'日记草稿暂不可用，请缩小范围后重新生成。',...usage};}
+  if(continuation)return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};
+  try{return {text:publicAssistantText(unorderedDiaryText(parseDiary(text),(input.context??'')+'\n'+input.prompt)),...usage};}
+  catch{return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};}
  }
  if(input.mode==='edit'){
- if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试。',...usage};
- const proposal=parseProposal(text);return {text:publicAssistantText(proposal.summary),...usage,changes:proposal.changes};}
+ if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试',...usage,changes:[],usable:false};
+ let proposal;
+ try{proposal=parseProposal(text);}catch{return {text:'提案格式不完整，请补充要求后重试',...usage,changes:[],usable:false};}
+ const intent=requestedMove(input.context??'',input.prompt);
+ if(intent&&'error' in intent)return {text:intent.error,...usage,changes:[],usable:false};
+ // A uniquely bound, explicit user clock is compiled by the domain layer; the model cannot invent epoch math or constraints.
+ if(intent&&(proposal.changes.length===0||proposal.changes.length===1&&proposal.changes[0]!.type==='move_block'&&proposal.changes[0]!.target_id===intent.target_id)){
+  proposal.changes=[{type:'move_block',target_id:intent.target_id,start_ms:intent.start_ms,end_ms:intent.end_ms}];
+ }
+ const problem=proposalProblem(proposal.changes,input.context??'',Date.now(),input.prompt);
+ if(problem)return {text:problem,...usage,changes:[],usable:false};
+ return {text:proposal.changes.length?'以下是待确认的日程提案，请预览后选择采纳或拒绝':publicAssistantText(proposal.summary.trim()||'没有可安全执行的变更，请补充调整要求'),...usage,changes:proposal.changes};}
+ if(input.mode==='share_copy'){
+  try{
+   const value=JSON.parse(text);
+   if(continuation||!value||Object.keys(value).length!==1||!Array.isArray(value.copies)||value.copies.length!==3||value.copies.some((s:unknown)=>typeof s!=='string'||!s.trim()||/[\r\n]/u.test(s)||Array.from(s.trim()).length>50))throw Error('Invalid share copies');
+   return {text:publicAssistantText(value.copies.map((s:string)=>s.trim()).join('\n')),...usage};
+  }catch{return {text:'配文未完整生成，请缩小范围后重试',...usage,usable:false};}
+ }
  const end=Math.max(...['。','！','？','.','!','?'].map(p=>text.lastIndexOf(p)));
  const safeText=continuation?(end>=0?text.slice(0,end+1):'内容未在本次篇幅内完成，请缩小范围后继续。'):text.trim();
- return {text:publicAssistantText(safeText),...usage};
+ return {text:publicAssistantText(safeText),...usage,...(continuation?{usable:false}:{})};
  }catch(err){if(err instanceof ProviderFailure)throw err;throw new ProviderFailure(false);}
 }

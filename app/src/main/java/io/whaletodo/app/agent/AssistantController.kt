@@ -115,9 +115,16 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                 val prompt=if(revision==null)draft.trim() else org.json.JSONObject()
                     .put("instruction","原提案未采纳，请结合本次意见生成新的待确认提案")
                     .put("unaccepted_proposal",org.json.JSONArray(revision.lines()))
+                    .put("unaccepted_changes",org.json.JSONArray(revision.changes.map{change->org.json.JSONObject().apply{when(change){
+                        is AgentChange.RenameTask->{put("type","rename_task");put("target_id",change.taskId);put("title",change.title)}
+                        is AgentChange.CategorizeTask->{put("type","set_category");put("target_id",change.taskId);put("category",change.category)}
+                        is AgentChange.MoveBlock->{put("type","move_block");put("target_id",change.blockId);put("start_ms",change.start);put("end_ms",change.end)}
+                    }}}))
                     .put("feedback",draft.removePrefix("意见：")).toString()
+                val context=if(!source.includeAgenda)"" else if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)
+                    reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else agendaText(snapshot)
                 val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,prompt,
-                    if(source.includeAgenda)agendaText(snapshot)else "",source.editConsent,source.shareStyle,
+                    context,source.editConsent,source.shareStyle,
                     source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner)
                 sent=AgentMessageRow(request.id,source.sessionId,source.owner,"user",source.mode.code,draft.trim(),
                     System.currentTimeMillis(),status="pending",snapshotHash=hash(snapshot),modelCode=source.model.code,editGranted=source.editConsent)
@@ -168,11 +175,28 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
 }
 
 /** All modes consume the same read-only copy; notes, credentials and account data are excluded. */
+/** A task's estimate and done flag are not evidence of actual duration or the completion day. */
+internal fun reflectionFacts(s:DeskSnapshot,records:List<CheckInRow>,owner:String,includeUnfinished:Boolean):String {
+    val zone=ZoneId.of(s.zoneId)
+    val tasks=s.tasks.filter{it.ownerId==owner}.associateBy{it.id}
+    val completed=records.filter{it.ownerId==owner&&Instant.ofEpochMilli(it.completedAt).atZone(zone).toLocalDate()==s.date&&tasks.containsKey(it.taskId)}
+        .sortedByDescending{it.completedAt}.distinctBy{it.taskId}
+    val unfinished=tasks.values.filter{!it.done}
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId)
+        .put("completion_date_known",true).put("actual_duration_recorded",false)
+        .put("completed",org.json.JSONArray(completed.take(40).map{record->org.json.JSONObject()
+            .put("id",record.taskId).put("title",tasks.getValue(record.taskId).title)
+            .put("completed_at",Instant.ofEpochMilli(record.completedAt).toString())}))
+        .put("unfinished",org.json.JSONArray(if(includeUnfinished)unfinished.take(30).map{task->org.json.JSONObject()
+            .put("id",task.id).put("title",task.title).put("estimated_minutes",task.minutes)}else emptyList<org.json.JSONObject>()))
+        .put("partial",completed.size>40||(includeUnfinished&&unfinished.size>30)).toString()
+}
+
 internal fun agendaText(s:DeskSnapshot):String=buildString {
     append("时区=${s.zoneId}; 日期=${s.date}; 默认可用=${DeskOptions.defaults(s.preferences,s.settings)}; 星期时段=${DeskOptions.weekdays(s.preferences)}\n")
     val ordered=s.tasks.sortedWith(compareBy<TaskRow>{it.done}.thenBy{if(it.deadline>0)it.deadline else Long.MAX_VALUE})
     ordered.take(100).forEach {t->
-        append("task id=${t.id} 标题=${t.title.replace('\n',' ')} 类型=${t.category} 工时=${t.minutes}min 截止=${if(t.deadline>0)Instant.ofEpochMilli(t.deadline)else "无"} 完成=${t.done}\n")
+        append("task id=${t.id} 标题=${t.title.replace('\n',' ').replace('\r',' ')} 类型=${t.category} 重要度=${t.importance} 工时=${t.minutes}min 截止=${if(t.deadline>0)Instant.ofEpochMilli(t.deadline)else "无"} 完成=${t.done}\n")
     }
     s.blocks.sortedBy{it.start}.take(100).forEach {b->append("block id=${b.id} task=${b.taskId} 开始=${Instant.ofEpochMilli(b.start)} 结束=${Instant.ofEpochMilli(b.end)} 固定=${b.locked} 完成=${b.done}\n")}
     s.workTimes.take(14).forEach {append("空闲 ${it.date} ${it.startMinute}-${it.endMinute}min\n")}
