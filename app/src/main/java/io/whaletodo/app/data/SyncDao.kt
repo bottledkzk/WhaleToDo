@@ -23,6 +23,9 @@ interface SyncDao {
     @Query("UPDATE sync_batches SET state=:state, lastErrorCode=:error WHERE batchId=:batchId AND ownerId=:ownerId")
     suspend fun updateBatchState(ownerId: String, batchId: String, state: String, error: String?)
 
+    @Query("UPDATE sync_batches SET state=:state, lastErrorCode=:error WHERE batchId=:batchId AND ownerId=:ownerId AND state='sending'")
+    suspend fun updateBatchStateIfSending(ownerId: String, batchId: String, state: String, error: String?): Int
+
     @Query("UPDATE sync_batches SET attemptSessionId=:attemptSessionId, attempts=attempts+1, lastAttemptAt=:at WHERE batchId=:batchId AND ownerId=:ownerId")
     suspend fun recordBatchAttempt(ownerId: String, batchId: String, attemptSessionId: String, at: Long)
 
@@ -53,6 +56,9 @@ interface SyncDao {
 
     @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND batchId IS NULL AND state='pending' AND isHead=1 ORDER BY nextRetryAt,createdAt LIMIT :limit")
     suspend fun pendingHeads(ownerId: String, limit: Int = 200): List<SyncOutboxRow>
+
+    @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND batchId IS NULL AND state='pending' AND isHead=1 ORDER BY createdAt,opId LIMIT :limit")
+    suspend fun pendingHeadsForPush(ownerId: String, limit: Int): List<SyncOutboxRow>
 
     @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND objectType=:objectType AND objectId=:objectId AND isHead=1 LIMIT 1")
     suspend fun head(ownerId: String, objectType: String, objectId: String): SyncOutboxRow?
