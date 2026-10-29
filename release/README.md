@@ -11,6 +11,6 @@
 
 修改源码、签名或附件必须形成新版本和新校验值；相同源码的构建过程可重复执行，APK 二进制是否逐字节相同需单独验证，不作可重现构建承诺。`release.json` 记录源码提交、签名、SDK、大小、SHA256 和功能边界。
 
-0.5.3-preview.1候选包含账户/AI桥接，manifest仍将生产部署/线上验收标为未完成。网站包按候选元数据渲染版本、code和链接，源网页继续引用已存在的公开版本；候选尚未发布时不切官网或替换旧Release附件。详见[生产发布与在线验收](../doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)。
+0.5.3-preview.1候选包含账户/AI桥接、Room6账户分区、PNG导出和验证码/空POST修复。构建不读取生产秘密或探测服务，manifest的production_deployed和email_delivery_integrated为null，状态文字要求查看独立回执；online_acceptance_passed仍为false。网站包按候选元数据渲染版本、code和链接，源网页继续引用已存在的公开版本；候选尚未发布时不切官网或替换旧Release附件。实际生产发布与健康路由见[2026-10-28交接](../doc/Bottledkzk/2026-10-28-生产账户与发行状态交接.md)。
 
 依据：[Android 应用签名](https://developer.android.com/studio/publish/app-signing)、[GitHub Release 管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
