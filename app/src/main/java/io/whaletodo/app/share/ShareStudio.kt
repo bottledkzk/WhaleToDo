@@ -556,7 +556,7 @@ internal fun ShareStyleSheet(
                     }
                 }
                 Text(
-                    "照片仅在本机合成，不会上传。",
+                    "照片仅在本机合成，不会上传",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

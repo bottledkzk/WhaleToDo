@@ -112,7 +112,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
             MyPageRoute.ABOUT->Column(verticalArrangement=Arrangement.spacedBy(14.dp)){
                 WhaleAvatar(Modifier.size(80.dp));Text("WhaleToDo",style=MaterialTheme.typography.headlineSmall)
                 Text("版本 ${remember{context.packageManager.getPackageInfo(context.packageName,0).versionName}}")
-                Text("记录、安排与复盘每一天。")
+                Text("记录、安排与复盘每一天")
                 TextButton(onClick={openProjectLink(context)}){Text("GitHub · WhaleToDo")}
             }
             else->Unit

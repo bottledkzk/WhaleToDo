@@ -323,7 +323,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text("未来7天 · ${proposal.result.blocks.size}个时间块", fontWeight = FontWeight.Bold)
-                    if (proposal.result.blocks.isEmpty()) Text("暂无可安排事项，请补充工时与截止时间。")
+                    if (proposal.result.blocks.isEmpty()) Text("暂无可安排事项，请补充工时与截止时间")
                     proposal.result.blocks.forEach { b ->
                         val title = state.tasks.find { it.id == b.taskId }?.title ?: "事项"
                         Text(
@@ -374,13 +374,13 @@ private fun TodayPage(
             ) {
                 Column(Modifier.fillMaxWidth().padding(22.dp)) {
                     Text(
-                        "给今天，留一点从容。",
+                        "给今天，留一点从容",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White,
                     )
                     Text(
-                        "先记下来，再慢慢安排。",
+                        "先记下来，再慢慢安排",
                         fontSize = 13.sp,
                         color = Color(0xFFD2E8E5),
                         modifier = Modifier.padding(top = 8.dp, bottom = 22.dp),
@@ -409,7 +409,7 @@ private fun TodayPage(
             }
         }
         item { SectionTitle("今天的节奏", "${blocks.sumOf { (it.end-it.start)/60000 }} 分钟") }
-        if (blocks.isEmpty()) item { EmptyCard("今天还没有时间安排", "补齐待办信息后，试试自动安排。") }
+        if (blocks.isEmpty()) item { EmptyCard("今天还没有时间安排", "补齐待办信息后，试试自动安排") }
         items(blocks, key = { it.id }) { b ->
             TimeCard(b, s.tasks.find { it.id == b.taskId }, onEdit)
         }
@@ -420,7 +420,7 @@ private fun TodayPage(
             )
         }
         val inbox = s.tasks.filter { !it.done && (it.minutes == 0 || it.deadline == 0L) }
-        if (inbox.isEmpty()) item { EmptyCard("想到了什么？", "点击 ＋，一句话就能记下来。") }
+        if (inbox.isEmpty()) item { EmptyCard("想到了什么？", "点击 ＋，一句话就能记下来") }
         items(inbox.take(5), key = { it.id }) { TaskCard(it, onEdit, onComplete) }
     }
 }

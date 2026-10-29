@@ -101,7 +101,7 @@ object AgentChanges {
 
 /** Display guard also covers old local conversation history; routing codes never render as UI. */
 object AssistantIdentity {
-    const val introduction = "我是WhaleToDo的鲸鱼AI助手。"
+    const val introduction = "我是WhaleToDo的鲸鱼AI助手"
     private val supplier = Regex("deep[\\s_-]*seek|深度求索|\\bgpt[\\w.-]*|chatgpt|claude|anthropic|gemini|google|openai|qwen|通义千问|\\bglm[\\w.-]*|智谱|\\bkimi\\b|moonshot|豆包|doubao", RegexOption.IGNORE_CASE)
     fun display(text: String): String = if(supplier.containsMatchIn(text)) introduction else text
 }

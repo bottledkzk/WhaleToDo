@@ -9,10 +9,16 @@ import android.provider.Settings
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
@@ -48,9 +54,9 @@ import kotlinx.coroutines.delay
         MyDialog.DIARY->DiaryDialog(s,controller)
         MyDialog.DIARY_DATE->{val date=LocalDate.parse(s.diary?.date?:desk.today.toString());val picker=rememberDatePickerState(date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli())
             DatePickerDialog(onDismissRequest={controller.open(MyDialog.DIARY)},confirmButton={TextButton(onClick={picker.selectedDateMillis?.let{controller.openDiary(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate())}},enabled=picker.selectedDateMillis!=null&&!s.busy){Text("查看日记")}},dismissButton={TextButton(onClick={controller.open(MyDialog.DIARY)}){Text("返回")}}){DatePicker(picker,showModeToggle=false)}}
-        MyDialog.DELETE_DIARY->AlertDialog(onDismissRequest={controller.open(MyDialog.DIARY)},title={Text("删除这篇日记？")},text={Column{Text("${s.diary?.date} 的日记将被删除。");DialogError(s)}},
+        MyDialog.DELETE_DIARY->AlertDialog(onDismissRequest={controller.open(MyDialog.DIARY)},title={Text("删除这篇日记？")},text={Column{Text("${s.diary?.date} 的日记将被删除");DialogError(s)}},
             confirmButton={TextButton(onClick=controller::confirmDeleteDiary,enabled=!s.busy){Text("确认删除")}},dismissButton={TextButton(onClick={controller.open(MyDialog.DIARY)}){Text("保留日记")}})
-        MyDialog.OVERWRITE_DIARY->AlertDialog(onDismissRequest={controller.open(MyDialog.DIARY)},title={Text("替换当日日记？")},text={Column{Text("${s.diary?.date} 已有日记，确认后将保存当前预览。");DialogError(s)}},
+        MyDialog.OVERWRITE_DIARY->AlertDialog(onDismissRequest={controller.open(MyDialog.DIARY)},title={Text("替换当日日记？")},text={Column{Text("${s.diary?.date} 已有日记，确认后将保存当前预览");DialogError(s)}},
             confirmButton={TextButton(onClick={controller.saveDiary(true)},enabled=!s.busy){Text("替换并保存")}},dismissButton={TextButton(onClick={controller.open(MyDialog.DIARY)}){Text("继续编辑")}})
         else->Unit
     }}
@@ -58,21 +64,42 @@ import kotlinx.coroutines.delay
 @Composable private fun DialogError(s:ProfileState){if(s.error.isNotBlank())Text(s.error,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)}
 @Composable private fun SignInDialog(s:ProfileState,c:ProfileController){
     val progress=SignInProgress.from(s.details?.signInDates.orEmpty(),s.details?.businessDate?:LocalDate.now())
-    AlertDialog(onDismissRequest=c::dismiss,title={Text("每日签到")},text={Column(verticalArrangement=Arrangement.spacedBy(14.dp)){
-        Text("连续打卡 ${if(s.access.userId==null)0 else progress.streak} 天",style=MaterialTheme.typography.titleMedium)
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(3.dp)){(1..7).forEach{day->
-            val done=s.access.userId!=null&&progress.completed(day)
-            Column(Modifier.weight(1f).background(if(done)MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,RoundedCornerShape(9.dp)).padding(vertical=9.dp),horizontalAlignment=Alignment.CenterHorizontally){
-                Text("${day}天",fontSize=10.sp);Text(if(done)"✓" else "+${SignInProgress.reward(day)}",fontWeight=FontWeight.Bold,color=if(day==7)Color(0xFFB57B12)else MaterialTheme.colorScheme.primary)
-            }
-        }}
-        Text("第1–6天 +1积分 · 第7天 +5积分",style=MaterialTheme.typography.bodySmall)
+    AlertDialog(onDismissRequest=c::dismiss,shape=RoundedCornerShape(28.dp),title={Text("每日签到")},text={Column(verticalArrangement=Arrangement.spacedBy(20.dp)){
+        Text("连续打卡 ${if(s.access.userId==null)0 else progress.streak} 天",style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
+        SignInMilestones(if(s.access.userId==null)0 else (1..7).count{progress.completed(it)})
         if(s.access.userId==null)Text("登录后领取每日积分",color=MaterialTheme.colorScheme.onSurfaceVariant)
         else if(progress.celebrating)Surface(color=MaterialTheme.colorScheme.secondaryContainer,shape=RoundedCornerShape(12.dp)){Column(Modifier.padding(12.dp)){
-            Text("🎉 坚持一周，做得真棒！",fontWeight=FontWeight.Bold);Text("继续坚持，下周也一起前进。",style=MaterialTheme.typography.bodySmall)}}
+            Text("🎉 坚持一周，做得真棒！",fontWeight=FontWeight.Bold);Text("继续坚持，下周也一起前进",style=MaterialTheme.typography.bodySmall)}}
         DialogError(s)
     }},confirmButton={TextButton(onClick=c::signIn,enabled=!s.busy&&(s.access.userId==null||!progress.signedToday)){
         Text(if(s.access.userId==null)"登录后签到" else if(progress.signedToday)"今日已签到" else "签到领取")}},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("关闭")}})
+}
+@Composable internal fun SignInMilestones(completed:Int){
+    val primary=MaterialTheme.colorScheme.primary
+    val track=MaterialTheme.colorScheme.outlineVariant
+    val filled by animateFloatAsState(((completed-1).coerceAtLeast(0)/6f).coerceIn(0f,1f),tween(450),label="签到进度")
+    Box(Modifier.fillMaxWidth().semantics{contentDescription="七日签到进度";progressBarRangeInfo=ProgressBarRangeInfo(completed.toFloat(),0f..7f)}){
+        Canvas(Modifier.fillMaxWidth().height(32.dp)){
+            val start=size.width/14f;val end=size.width-start;val y=size.height/2
+            drawLine(track,Offset(start,y),Offset(end,y),3.dp.toPx(),StrokeCap.Round)
+            if(filled>0f)drawLine(primary,Offset(start,y),Offset(start+(end-start)*filled,y),3.dp.toPx(),StrokeCap.Round)
+        }
+        Row(Modifier.fillMaxWidth()){
+            (1..7).forEach{day->
+                val done=day<=completed
+                val next=day==completed+1
+                val gift=day==7
+                val background=when{done->primary;gift->MaterialTheme.colorScheme.tertiaryContainer;else->MaterialTheme.colorScheme.surfaceContainerHigh}
+                val foreground=if(done)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                Column(Modifier.weight(1f).semantics{contentDescription="第${day}天${if(gift)"礼物" else ""}，${if(done)"已签到" else "待签到"}"},horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(8.dp)){
+                    Box(Modifier.size(32.dp).background(background,CircleShape).border(if(next)2.dp else 1.dp,if(next)primary else if(done)primary else track,CircleShape),contentAlignment=Alignment.Center){
+                        Text(if(gift)"🎁" else if(done)"✓" else "$day",fontSize=if(gift)19.sp else 14.sp,fontWeight=FontWeight.Bold,color=foreground)
+                    }
+                    Text("${day}天",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
 }
 @Composable private fun PointsDialog(c:ProfileController){val context=LocalContext.current
     AlertDialog(onDismissRequest=c::dismiss,title={Text("积分获取途径")},text={Column(verticalArrangement=Arrangement.spacedBy(9.dp)){
@@ -104,12 +131,18 @@ import kotlinx.coroutines.delay
     var now by remember{mutableLongStateOf(SystemClock.elapsedRealtime())}
     LaunchedEffect(s.codeUntil){while(s.codeUntil>SystemClock.elapsedRealtime()){now=SystemClock.elapsedRealtime();delay(1000)};now=SystemClock.elapsedRealtime()}
     val remaining=if(s.codeEmail==email.trim()&&s.codePurpose==(if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER))((s.codeUntil-now+999)/1000).coerceAtLeast(0)else 0
+    val resendProgress by animateFloatAsState((remaining.toFloat()/s.codeResendSeconds).coerceIn(0f,1f),tween(1000,easing=LinearEasing),label="验证码等待进度")
     AlertDialog(onDismissRequest=c::dismiss,title={Text(if(reset)"重置密码" else if(register)"注册" else "登录")},text={Column(Modifier.heightIn(max=430.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
         OutlinedTextField(email,{if(it.length<=254)email=it},label={Text("邮箱")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.semantics{contentDescription="账户邮箱"})
         if(register)OutlinedTextField(nickname,{nickname=ProfileIdentity.clipNickname(it);customNickname=true},label={Text("用户昵称")},singleLine=true,modifier=Modifier.fillMaxWidth().semantics{contentDescription="注册昵称"})
-        if(register||reset){Row(verticalAlignment=Alignment.CenterVertically){
-            OutlinedTextField(code,{if(it.length<=8)code=it.filter(Char::isDigit)},label={Text("邮箱验证码")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.weight(1f).semantics{contentDescription="邮箱验证码"})
-            TextButton(onClick={c.requestCode(email,if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER)},enabled=!s.busy&&remaining==0L){Text(if(remaining>0)"${remaining}s" else "发送验证码")}}
+        if(register||reset){Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+            OutlinedTextField(code,{if(it.length<=8)code=it.filter(Char::isDigit)},label={Text("验证码")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.weight(1f).semantics{contentDescription="邮箱验证码"})
+            Column(Modifier.width(112.dp),verticalArrangement=Arrangement.spacedBy(5.dp)){
+                FilledTonalButton(onClick={c.requestCode(email,if(reset)CodePurpose.RESET_PASSWORD else CodePurpose.REGISTER)},enabled=!s.busy&&remaining==0L,modifier=Modifier.fillMaxWidth().height(56.dp).semantics{contentDescription="发送邮箱验证码"},shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(8.dp)){
+                    Text(if(remaining>0)"${remaining}s 后重发" else "发送验证码",fontSize=12.sp)
+                }
+                if(remaining>0)LinearProgressIndicator(progress={resendProgress},modifier=Modifier.fillMaxWidth().height(3.dp).semantics{contentDescription="验证码重发倒计时"})
+            }}
         }
         OutlinedTextField(password,{if(it.length<=200)password=it},label={Text(if(reset)"新密码" else "密码")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="账户密码"})
         if(register||reset)OutlinedTextField(confirmation,{if(it.length<=200)confirmation=it},label={Text("确认密码")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),modifier=Modifier.semantics{contentDescription="确认密码"})

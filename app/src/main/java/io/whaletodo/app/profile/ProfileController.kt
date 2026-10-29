@@ -17,9 +17,9 @@ data class DiaryEditor(val date:String,val text:String,val original:DiaryRow?,va
 data class ProfileState(val owner:String="guest",val access:AgentAccess=AgentAccess(),val details:ProfileDetails?=null,
     val page:MyPageRoute=MyPageRoute.HOME,val dialog:MyDialog=MyDialog.NONE,val options:List<UiPreferenceRow> = emptyList(),val deviceOptions:List<UiPreferenceRow> = emptyList(),
     val busy:Boolean=false,val notice:String="",val error:String="",val diary:DiaryEditor?=null,val pendingDiary:DiaryOffer?=null,
-    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L,val zoneDraft:ZoneDraft?=null) {
+    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L,val codeResendSeconds:Int=60,val zoneDraft:ZoneDraft?=null) {
     val nickname:String get()=options.find{it.key=="profile.nickname"}?.value?.takeIf{it.isNotBlank()}?:details?.displayName?.takeIf{it.isNotBlank()}?:ProfileIdentity.defaultNickname(details?.publicId?:owner)
-    val motto:String get()=options.find{it.key=="profile.motto"}?.value?:details?.motto.orEmpty()
+    val motto:String get()=(options.find{it.key=="profile.motto"}?.value?:details?.motto.orEmpty()).ifBlank{ProfileIdentity.DEFAULT_MOTTO}
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -74,7 +74,8 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
         if(!validEmail(email)){mutable.update{it.copy(error="请输入有效邮箱")};return}
         val s=mutable.value;if(s.codeEmail==email.trim()&&s.codePurpose==purpose&&s.codeUntil>SystemClock.elapsedRealtime())return
         action("暂时无法发送验证码，请稍后重试"){owner->val result=bridge.requestCode(email.trim(),purpose)
-            mutable.update{if(it.owner==owner)it.copy(codeEmail=email.trim(),codePurpose=purpose,codeUntil=SystemClock.elapsedRealtime()+result.resendAfterSeconds.coerceIn(1,300)*1000L,notice="验证码已发送")else it}}
+            val waitSeconds=result.resendAfterSeconds.coerceIn(60,300)
+            mutable.update{if(it.owner==owner)it.copy(codeEmail=email.trim(),codePurpose=purpose,codeUntil=SystemClock.elapsedRealtime()+waitSeconds*1000L,codeResendSeconds=waitSeconds,notice="验证码已发送")else it}}
     }
     fun authenticate(email:String,password:String,code:String="",register:Boolean=false,reset:Boolean=false,nickname:String?=null){
         val publicName=if(register&&nickname!=null)runCatching{ProfileIdentity.nickname(nickname)}.getOrElse{mutable.update{it.copy(error="请检查昵称")};return}else null
