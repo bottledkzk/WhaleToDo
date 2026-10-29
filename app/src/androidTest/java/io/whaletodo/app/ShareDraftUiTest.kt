@@ -1,9 +1,10 @@
 package io.whaletodo.app
 
-import android.content.Intent
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
@@ -65,15 +66,26 @@ class ShareDraftUiTest {
                 updatedAt = 1,
             ),
         )
-        val monitor = instrument.addMonitor(MainActivity::class.java.name, null, false)
-        context.startActivity(
-            Intent(context, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+        // vivo blocks instrumentation-initiated activity starts from the background.
+        // A shell start is privileged; then obtain the same-process activity from the
+        // lifecycle registry instead of using monitor/startActivitySync.
+        device.executeShellCommand(
+            "am start -W -n ${context.packageName}/io.whaletodo.app.MainActivity",
         )
-        val activity = instrument.waitForMonitorWithTimeout(monitor, 5000) as MainActivity
-        instrument.removeMonitor(monitor)
+        var activity: MainActivity? = null
+        val deadline = System.currentTimeMillis() + 10_000
+        while (activity == null && System.currentTimeMillis() < deadline) {
+            instrument.runOnMainSync {
+                activity = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<MainActivity>()
+                    .firstOrNull()
+            }
+            if (activity == null) Thread.sleep(100)
+        }
+        assertTrue("MainActivity did not start", activity != null)
         instrument.runOnMainSync {
-            activity.setContent {
+            activity!!.setContent {
                 MaterialTheme {
                     ShareStyleSheet(
                         text = source,
@@ -119,5 +131,7 @@ class ShareDraftUiTest {
         assertTrue(store.cleared)
         assertTrue(device.wait(Until.gone(By.text("草稿候选二")), 5000) || !device.hasObject(By.text("草稿候选二")))
         assertFalse(device.hasObject(By.text("草稿候选二")))
+        // Do not call scenario.close(): vivo can block indefinitely in its activity teardown.
+        // The instrumentation process cleanup closes the scenario.
     }
 }
