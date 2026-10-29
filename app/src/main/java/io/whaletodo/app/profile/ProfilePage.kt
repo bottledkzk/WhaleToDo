@@ -75,7 +75,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
             IconButton(onClick=controller::back,Modifier.semantics{contentDescription=if(s.page==MyPageRoute.SETTINGS)"返回我的" else "返回设置"}){Text("‹",fontSize=30.sp)}
             Text(s.page.title,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.Bold)
         }
-        if(s.error.isNotBlank())Text(s.error,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
+        if(s.error.isNotBlank()&&s.dialog==MyDialog.NONE)Text(s.error,color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodySmall)
         when(s.page){
             MyPageRoute.SETTINGS->LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){
                 item{Text("账户",style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
