@@ -15,8 +15,11 @@ import io.whaletodo.network.SyncPushItem
 import io.whaletodo.network.SyncPushResponse
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class PushOutcome(
@@ -41,7 +44,14 @@ class SyncPushEngine(
     private val dao = db.syncDao()
     private val content = db.dao()
 
-    suspend fun pushOnce(ownerId: String, deviceId: String): PushOutcome {
+    private val ownerLocks = ConcurrentHashMap<String, Mutex>()
+
+    suspend fun pushOnce(ownerId: String, deviceId: String): PushOutcome =
+        ownerLocks.getOrPut(ownerId) { Mutex() }.withLock {
+            pushOnceLocked(ownerId, deviceId)
+        }
+
+    private suspend fun pushOnceLocked(ownerId: String, deviceId: String): PushOutcome {
         val sessionId = currentSessionFor(ownerId)
             ?: return PushOutcome("session_wait", error = "SESSION_CHANGED")
 
@@ -116,8 +126,9 @@ class SyncPushEngine(
         sessionId: String,
         bodyJson: String,
     ): PushOutcome {
+        val attempt = SyncPushAttempts.next(batchId)
         if (currentSessionFor(ownerId) != sessionId) {
-            markBatch(batchId, "session_wait", "SESSION_CHANGED")
+            markBatch(batchId, "session_wait", "SESSION_CHANGED", attempt)
             return PushOutcome("session_wait", batchId, error = "SESSION_CHANGED")
         }
         val response = try {
@@ -125,59 +136,60 @@ class SyncPushEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            return handleApiError(ownerId, batchId, sessionId, e)
+            return handleApiError(ownerId, batchId, sessionId, attempt, e)
         } catch (_: IOException) {
-            markUnknown(ownerId, batchId, sessionId, "NETWORK_ERROR")
+            markUnknown(ownerId, batchId, sessionId, attempt, "NETWORK_ERROR")
             return PushOutcome("unknown", batchId, error = "NETWORK_ERROR")
         } catch (_: Exception) {
-            markUnknown(ownerId, batchId, sessionId, "UNKNOWN_ERROR")
+            markUnknown(ownerId, batchId, sessionId, attempt, "UNKNOWN_ERROR")
             return PushOutcome("unknown", batchId, error = "UNKNOWN_ERROR")
         }
 
         if (currentSessionFor(ownerId) != sessionId) {
-            markBatch(batchId, "session_wait", "SESSION_CHANGED")
+            markBatch(batchId, "session_wait", "SESSION_CHANGED", attempt)
             return PushOutcome("session_wait", batchId, error = "SESSION_CHANGED")
         }
         if (response.batchId != batchId) {
-            markBatch(batchId, "invalid", "BATCH_ID_MISMATCH")
+            markBatch(batchId, "invalid", "BATCH_ID_MISMATCH", attempt)
             return PushOutcome("invalid", batchId, error = "BATCH_ID_MISMATCH")
         }
-        return applyResponse(ownerId, deviceId, batchId, response)
+        return applyResponse(ownerId, deviceId, batchId, attempt, response)
     }
 
     private suspend fun handleApiError(
         ownerId: String,
         batchId: String,
         sessionId: String,
+        attempt: Long,
         error: ApiException,
     ): PushOutcome {
         when {
             error.status == 401 -> {
-                markBatch(batchId, "session_wait", "AUTH_401")
+                markBatch(batchId, "session_wait", "AUTH_401", attempt)
                 return PushOutcome("session_wait", batchId, error = "AUTH_401")
             }
             error.status == 409 -> {
-                markInvalidBatch(ownerId, batchId, "BATCH_CONFLICT_409")
+                markInvalidBatch(ownerId, batchId, attempt, "BATCH_CONFLICT_409")
                 return PushOutcome("invalid", batchId, error = "BATCH_CONFLICT_409")
             }
             error.status == 403 -> {
-                markBatch(batchId, "invalid", "FORBIDDEN_403")
+                markBatch(batchId, "invalid", "FORBIDDEN_403", attempt)
                 return PushOutcome("invalid", batchId, error = "FORBIDDEN_403")
             }
             error.status == 429 -> {
-                markRetryable(ownerId, batchId, sessionId, "RATE_LIMITED_429")
+                markRetryable(ownerId, batchId, sessionId, attempt, "RATE_LIMITED_429")
                 return PushOutcome("retryable", batchId, error = "RATE_LIMITED_429")
             }
             error.status in 500..599 -> {
-                markUnknown(ownerId, batchId, sessionId, "SERVER_5XX")
+                markUnknown(ownerId, batchId, sessionId, attempt, "SERVER_5XX")
                 return PushOutcome("unknown", batchId, error = "SERVER_5XX")
             }
             error.status in 400..499 -> {
-                markInvalidBatch(ownerId, batchId, "HTTP_${error.status}")
+                markInvalidBatch(ownerId, batchId, attempt, "HTTP_${error.status}")
                 return PushOutcome("invalid", batchId, error = "HTTP_${error.status}")
             }
             else -> {
-                markUnknown(ownerId, batchId, sessionId, error.code)
+                markUnknown(ownerId, batchId, sessionId, attempt, error.code)
                 return PushOutcome("unknown", batchId, error = error.code)
             }
         }
@@ -187,14 +199,28 @@ class SyncPushEngine(
         ownerId: String,
         deviceId: String,
         batchId: String,
+        attempt: Long,
         response: SyncPushResponse,
     ): PushOutcome = db.withTransaction {
+        if (!SyncPushAttempts.current(batchId, attempt)) {
+            return@withTransaction PushOutcome("unknown", batchId, error = "STALE_ATTEMPT")
+        }
         val batch = dao.batch(batchId)
             ?: return@withTransaction PushOutcome("invalid", batchId, error = "BATCH_MISSING")
         if (batch.ownerId != ownerId) {
             return@withTransaction PushOutcome("invalid", batchId, error = "OWNER_MISMATCH")
         }
+        // An old response must never re-apply or regress a terminal batch.
+        if (batch.state != "sending") {
+            return@withTransaction PushOutcome(batch.state, batchId)
+        }
         val rows = dao.outboxForBatch(ownerId, batchId)
+        val malformed = validateResponse(batchId, response, rows)
+        if (malformed != null) {
+            // No content/outbox terminal writes: the same batch/body stays recoverable.
+            dao.updateBatchStateIfSending(ownerId, batchId, "unknown", "MALFORMED_RESPONSE")
+            return@withTransaction PushOutcome("unknown", batchId, error = malformed)
+        }
         val byKey = response.items.associateBy { Triple(it.objectType, it.objectId, it.op) }
         var applied = 0
         var conflicts = 0
@@ -202,7 +228,7 @@ class SyncPushEngine(
         val now = clock()
 
         for (row in rows) {
-            val item = byKey[Triple(row.objectType, row.objectId, row.op)] ?: continue
+            val item = byKey.getValue(Triple(row.objectType, row.objectId, row.op))
             when (item.result) {
                 "applied" -> {
                     if (row.op == "delete") {
@@ -273,6 +299,39 @@ class SyncPushEngine(
         )
     }
 
+    private fun validateResponse(
+        batchId: String,
+        response: SyncPushResponse,
+        rows: List<SyncOutboxRow>,
+    ): String? {
+        if (response.batchId != batchId) return "BATCH_ID_MISMATCH"
+        if (response.status !in BATCH_STATUSES) return "UNKNOWN_STATUS"
+        if (response.items.size != rows.size) return "ITEM_COUNT_MISMATCH"
+        val expected = rows.associateBy { Triple(it.objectType, it.objectId, it.op) }
+        val seen = mutableSetOf<Triple<String, String, String>>()
+        var applied = 0
+        for (item in response.items) {
+            val key = Triple(item.objectType, item.objectId, item.op)
+            if (!seen.add(key)) return "DUPLICATE_ITEM"
+            if (key !in expected) return "UNKNOWN_ITEM"
+            if (item.result !in ITEM_RESULTS) return "UNKNOWN_ITEM_RESULT"
+            if (item.result == "applied") {
+                applied++
+                if (item.op != "delete") {
+                    val version = item.serverVersion
+                    if (version == null || version <= 0) return "MISSING_SERVER_VERSION"
+                }
+            }
+        }
+        val computed = when {
+            applied == rows.size -> "applied"
+            applied == 0 -> "rejected"
+            else -> "partial"
+        }
+        if (computed != response.status) return "STATUS_ITEM_MISMATCH"
+        return null
+    }
+
     private suspend fun applyAppliedContent(
         ownerId: String,
         objectType: String,
@@ -339,33 +398,66 @@ class SyncPushEngine(
         )
     }
 
-    private suspend fun markBatch(batchId: String, state: String, error: String?) {
+    private suspend fun markBatch(
+        batchId: String,
+        state: String,
+        error: String?,
+        attempt: Long? = null,
+    ) {
         db.withTransaction {
+            if (attempt != null && !SyncPushAttempts.current(batchId, attempt)) {
+                return@withTransaction
+            }
             val batch = dao.batch(batchId) ?: return@withTransaction
-            dao.updateBatchState(batch.ownerId, batchId, state, error)
+            // Never turn a terminal batch back into session_wait/invalid/unknown.
+            dao.updateBatchStateIfSending(batch.ownerId, batchId, state, error)
         }
     }
 
-    private suspend fun markUnknown(ownerId: String, batchId: String, sessionId: String, error: String) {
+    private suspend fun markUnknown(
+        ownerId: String,
+        batchId: String,
+        sessionId: String,
+        attempt: Long,
+        error: String,
+    ) {
         db.withTransaction {
-            dao.updateBatchState(ownerId, batchId, "unknown", error)
-            dao.recordBatchAttempt(ownerId, batchId, sessionId, clock())
+            if (!SyncPushAttempts.current(batchId, attempt)) return@withTransaction
+            if (dao.updateBatchStateIfSending(ownerId, batchId, "unknown", error) > 0) {
+                dao.recordBatchAttempt(ownerId, batchId, sessionId, clock())
+            }
         }
     }
 
-    private suspend fun markRetryable(ownerId: String, batchId: String, sessionId: String, error: String) {
+    private suspend fun markRetryable(
+        ownerId: String,
+        batchId: String,
+        sessionId: String,
+        attempt: Long,
+        error: String,
+    ) {
         db.withTransaction {
-            dao.updateBatchState(ownerId, batchId, "retryable", error)
-            dao.recordBatchAttempt(ownerId, batchId, sessionId, clock())
+            if (!SyncPushAttempts.current(batchId, attempt)) return@withTransaction
+            if (dao.updateBatchStateIfSending(ownerId, batchId, "retryable", error) > 0) {
+                dao.recordBatchAttempt(ownerId, batchId, sessionId, clock())
+            }
         }
     }
 
-    private suspend fun markInvalidBatch(ownerId: String, batchId: String, error: String) {
+    private suspend fun markInvalidBatch(
+        ownerId: String,
+        batchId: String,
+        attempt: Long,
+        error: String,
+    ) {
         db.withTransaction {
+            if (!SyncPushAttempts.current(batchId, attempt)) return@withTransaction
+            if (dao.updateBatchStateIfSending(ownerId, batchId, "invalid", error) == 0) {
+                return@withTransaction
+            }
             dao.outboxForBatch(ownerId, batchId).forEach {
                 dao.updateOutbox(it.copy(state = "failed", lastErrorCode = error))
             }
-            dao.updateBatchState(ownerId, batchId, "invalid", error)
         }
     }
 
@@ -380,6 +472,19 @@ class SyncPushEngine(
     private companion object {
         val RETRY_STATES = listOf("sending", "retryable", "unknown")
         val BATCH_STATUSES = setOf("applied", "partial", "rejected")
+        val ITEM_RESULTS = setOf("applied", "rejected", "conflict")
         val PAYLOAD_DATE = Regex("\"date\"\\s*:\\s*\"([^\"]+)\"")
     }
+}
+
+/**
+ * Attempt generation is process-wide so two engine instances cannot let an older HTTP
+ * response/failure overwrite a newer attempt or a terminal batch.
+ */
+private object SyncPushAttempts {
+    private val generations = ConcurrentHashMap<String, Long>()
+
+    fun next(batchId: String): Long = generations.merge(batchId, 1L, Long::plus)!!
+
+    fun current(batchId: String, token: Long): Boolean = generations[batchId] == token
 }

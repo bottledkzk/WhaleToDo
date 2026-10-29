@@ -85,16 +85,29 @@ internal fun parsePushResponse(response: ApiResponse): SyncPushResponse {
     val root = runCatching { Json.parseToJsonElement(response.body).jsonObject }
         .getOrElse { throw malformed(response) }
     val data = root["data"] as? JsonObject ?: throw malformed(response)
-    val batchId = data.string("batch_id") ?: throw malformed(response)
-    val status = data.string("status") ?: throw malformed(response)
-    val items = (data["items"] as? JsonArray ?: JsonArray(emptyList())).mapNotNull { raw ->
-        val item = raw as? JsonObject ?: return@mapNotNull null
+    val batchId = data.string("batch_id")?.takeIf { it.isNotBlank() } ?: throw malformed(response)
+    val status = data.string("status")?.takeIf { it in PUSH_STATUSES } ?: throw malformed(response)
+    val rawItems = data["items"] as? JsonArray ?: throw malformed(response)
+    if (rawItems.isEmpty()) throw malformed(response)
+    val seen = mutableSetOf<String>()
+    val items = rawItems.map { raw ->
+        val item = raw as? JsonObject ?: throw malformed(response)
+        val objectType = item.string("object_type") ?: throw malformed(response)
+        val objectId = item.string("object_id") ?: throw malformed(response)
+        val op = item.string("op")?.takeIf { it in PUSH_OPS } ?: throw malformed(response)
+        val result = item.string("result")?.takeIf { it in PUSH_RESULTS } ?: throw malformed(response)
+        val version = (item["server_version"] as? JsonPrimitive)?.intOrNull
+        if (result == "applied" && op != "delete" && (version == null || version <= 0)) {
+            throw malformed(response)
+        }
+        val key = "$objectType\u0000$objectId\u0000$op"
+        if (!seen.add(key)) throw malformed(response)
         SyncPushItem(
-            objectType = item.string("object_type") ?: return@mapNotNull null,
-            objectId = item.string("object_id") ?: return@mapNotNull null,
-            op = item.string("op") ?: return@mapNotNull null,
-            result = item.string("result") ?: return@mapNotNull null,
-            serverVersion = (item["server_version"] as? JsonPrimitive)?.intOrNull,
+            objectType = objectType,
+            objectId = objectId,
+            op = op,
+            result = result,
+            serverVersion = version,
             reason = item.string("reason"),
         )
     }
@@ -105,6 +118,10 @@ internal fun parsePushResponse(response: ApiResponse): SyncPushResponse {
         items = items,
     )
 }
+
+private val PUSH_STATUSES = setOf("applied", "partial", "rejected")
+private val PUSH_RESULTS = setOf("applied", "rejected", "conflict")
+private val PUSH_OPS = setOf("create", "update", "delete")
 
 private fun JsonObject.string(key: String): String? =
     (this[key] as? JsonPrimitive)?.contentOrNull

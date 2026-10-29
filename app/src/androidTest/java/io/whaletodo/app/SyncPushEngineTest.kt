@@ -7,7 +7,6 @@ import io.whaletodo.app.account.AccountSession
 import io.whaletodo.app.data.DeskDatabase
 import io.whaletodo.app.data.SyncOutboxRow
 import io.whaletodo.app.data.TaskRow
-import io.whaletodo.app.sync.PushOutcome
 import io.whaletodo.app.sync.SyncPushEngine
 import io.whaletodo.network.AccountProfile
 import io.whaletodo.network.ApiException
@@ -15,6 +14,9 @@ import io.whaletodo.network.Entitlements
 import io.whaletodo.network.SyncPushApi
 import io.whaletodo.network.SyncPushItem
 import io.whaletodo.network.SyncPushResponse
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -135,6 +137,154 @@ class SyncPushEngineTest {
         assertEquals(1, db.syncDao().batches(owner, "applied").size)
         assertEquals(2, api.bodies.size)
         assertEquals(api.bodies[0], api.bodies[1])
+    }
+
+    @Test
+    fun staleFailureAfterNewAttemptSuccessDoesNotRegressTerminalBatch() = runBlocking {
+        val task = seedTask("task-stale-failure")
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var calls = 0
+        val api = object : SyncPushApi {
+            override suspend fun push(sessionId: String, bodyJson: String): SyncPushResponse {
+                calls++
+                if (calls == 1) {
+                    firstStarted.complete(Unit)
+                    releaseFirst.await()
+                    throw IOException("late first attempt")
+                }
+                return success(bodyJson)
+            }
+        }
+        val first = async { SyncPushEngine(db, session, api).pushOnce(owner, "device-1") }
+        firstStarted.await()
+        val second = SyncPushEngine(db, session, api).pushOnce(owner, "device-1")
+        assertEquals("applied", second.status)
+        assertEquals(1, db.dao().task(owner, task.id)!!.serverVersion)
+
+        releaseFirst.complete(Unit)
+        val late = first.await()
+        assertEquals("unknown", late.status)
+        assertEquals("applied", db.syncDao().batch(second.batchId!!)!!.state)
+        assertEquals(1, db.dao().task(owner, task.id)!!.serverVersion)
+        assertEquals("done", db.syncDao().outbox("op-task-stale-failure")!!.state)
+    }
+
+    @Test
+    fun staleReceiptAfterNewAttemptSuccessDoesNotReapply() = runBlocking {
+        val task = seedTask("task-stale-receipt")
+        val firstStarted = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        var calls = 0
+        val api = object : SyncPushApi {
+            override suspend fun push(sessionId: String, bodyJson: String): SyncPushResponse {
+                calls++
+                if (calls == 1) {
+                    firstStarted.complete(Unit)
+                    releaseFirst.await()
+                }
+                return success(bodyJson)
+            }
+        }
+        val first = async { SyncPushEngine(db, session, api).pushOnce(owner, "device-1") }
+        firstStarted.await()
+        val second = SyncPushEngine(db, session, api).pushOnce(owner, "device-1")
+        assertEquals("applied", second.status)
+        releaseFirst.complete(Unit)
+        assertEquals("unknown", first.await().status)
+
+        assertEquals(1, db.dao().task(owner, task.id)!!.serverVersion)
+        assertEquals("done", db.syncDao().outbox("op-task-stale-receipt")!!.state)
+        assertEquals(1, db.syncDao().batches(owner, "applied").size)
+    }
+
+    @Test
+    fun appliedWithNoItemsStaysRecoverable() = runBlocking {
+        val task = seedTask("task-no-items")
+        var fail = true
+        val api = FakeApi { body ->
+            if (fail) {
+                fail = false
+                response(body, "applied", emptyList())
+            } else {
+                success(body)
+            }
+        }
+        val engine = SyncPushEngine(db, session, api)
+        val first = engine.pushOnce(owner, "device-1")
+        assertEquals("unknown", first.status)
+        assertEquals("unknown", db.syncDao().batch(first.batchId!!)!!.state)
+        assertEquals("inflight", db.syncDao().outbox("op-task-no-items")!!.state)
+        assertEquals(0, db.dao().task(owner, task.id)!!.serverVersion)
+
+        val second = engine.pushOnce(owner, "device-1")
+        assertEquals("applied", second.status)
+        assertEquals(first.batchId, second.batchId)
+        assertEquals(1, db.dao().task(owner, task.id)!!.serverVersion)
+        assertEquals("done", db.syncDao().outbox("op-task-no-items")!!.state)
+    }
+
+    @Test
+    fun missingAndUnknownItemsAreMalformedWithoutApplied() = runBlocking {
+        seedTask("task-a")
+        seedTask("task-b")
+        val malformed = FakeApi { body -> response(body, "applied", items(body, "applied").dropLast(1)) }
+        val outcome = SyncPushEngine(db, session, malformed).pushOnce(owner, "device-1")
+        assertEquals("unknown", outcome.status)
+        assertEquals("unknown", db.syncDao().batch(outcome.batchId!!)!!.state)
+        assertEquals("inflight", db.syncDao().outbox("op-task-a")!!.state)
+        assertEquals(0, db.dao().task(owner, "task-a")!!.serverVersion)
+    }
+
+    @Test
+    fun duplicateItemsAreMalformedWithoutApplied() = runBlocking {
+        seedTask("task-dup")
+        val malformed = FakeApi { body ->
+            val item = items(body, "applied").single()
+            response(body, "applied", listOf(item, item))
+        }
+        val outcome = SyncPushEngine(db, session, malformed).pushOnce(owner, "device-1")
+        assertEquals("unknown", outcome.status)
+        assertEquals("inflight", db.syncDao().outbox("op-task-dup")!!.state)
+        assertEquals(0, db.dao().task(owner, "task-dup")!!.serverVersion)
+    }
+
+    @Test
+    fun unknownResultIsMalformedWithoutApplied() = runBlocking {
+        seedTask("task-bad-result")
+        val malformed = FakeApi { body ->
+            response(body, "applied", items(body, "weird"))
+        }
+        val outcome = SyncPushEngine(db, session, malformed).pushOnce(owner, "device-1")
+        assertEquals("unknown", outcome.status)
+        assertEquals(0, db.dao().task(owner, "task-bad-result")!!.serverVersion)
+        assertEquals("inflight", db.syncDao().outbox("op-task-bad-result")!!.state)
+    }
+
+    @Test
+    fun missingServerVersionIsMalformedWithoutApplied() = runBlocking {
+        seedTask("task-bad-version")
+        val malformed = FakeApi { body ->
+            val item = items(body, "applied").single().copy(serverVersion = null)
+            response(body, "applied", listOf(item))
+        }
+        val outcome = SyncPushEngine(db, session, malformed).pushOnce(owner, "device-1")
+        assertEquals("unknown", outcome.status)
+        assertEquals(0, db.dao().task(owner, "task-bad-version")!!.serverVersion)
+        assertEquals("inflight", db.syncDao().outbox("op-task-bad-version")!!.state)
+    }
+
+    @Test
+    fun unknownObjectIdIsMalformedWithoutApplied() = runBlocking {
+        seedTask("task-unknown-id")
+        val malformed = FakeApi { body ->
+            val item = items(body, "applied").single().copy(objectId = "unknown-object")
+            response(body, "applied", listOf(item))
+        }
+        val outcome = SyncPushEngine(db, session, malformed).pushOnce(owner, "device-1")
+        assertEquals("unknown", outcome.status)
+        assertEquals(0, db.dao().task(owner, "task-unknown-id")!!.serverVersion)
+        assertEquals("inflight", db.syncDao().outbox("op-task-unknown-id")!!.state)
     }
 
     @Test

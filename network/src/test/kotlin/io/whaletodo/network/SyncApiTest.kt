@@ -94,4 +94,27 @@ class SyncApiTest {
         assertEquals(200, error.status)
         assertEquals("INTERNAL", error.code)
     }
+
+    @Test
+    fun rejectsEmptyItemsMissingItemsDuplicatesUnknownResultAndMissingVersion() {
+        val malformedBodies = listOf(
+            """{"data":{"batch_id":"b","status":"applied","items":[]}}""",
+            """{"data":{"batch_id":"b","status":"applied"}}""",
+            """{"data":{"batch_id":"b","status":"applied","items":[
+                {"object_type":"task","object_id":"o","op":"create","result":"applied","server_version":1},
+                {"object_type":"task","object_id":"o","op":"create","result":"applied","server_version":1}
+            ]}}""",
+            """{"data":{"batch_id":"b","status":"applied","items":[
+                {"object_type":"task","object_id":"o","op":"create","result":"weird","server_version":1}
+            ]}}""",
+            """{"data":{"batch_id":"b","status":"applied","items":[
+                {"object_type":"task","object_id":"o","op":"create","result":"applied"}
+            ]}}""",
+        )
+        malformedBodies.forEachIndexed { index, body ->
+            assertThrows("case=$index", ApiException::class.java) {
+                parsePushResponse(ApiResponse(200, body, "req-$index"))
+            }
+        }
+    }
 }

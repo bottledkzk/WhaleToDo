@@ -23,6 +23,9 @@ interface SyncDao {
     @Query("UPDATE sync_batches SET state=:state, lastErrorCode=:error WHERE batchId=:batchId AND ownerId=:ownerId")
     suspend fun updateBatchState(ownerId: String, batchId: String, state: String, error: String?)
 
+    @Query("UPDATE sync_batches SET state=:state, lastErrorCode=:error WHERE batchId=:batchId AND ownerId=:ownerId AND state='sending'")
+    suspend fun updateBatchStateIfSending(ownerId: String, batchId: String, state: String, error: String?): Int
+
     @Query("UPDATE sync_batches SET attemptSessionId=:attemptSessionId, attempts=attempts+1, lastAttemptAt=:at WHERE batchId=:batchId AND ownerId=:ownerId")
     suspend fun recordBatchAttempt(ownerId: String, batchId: String, attemptSessionId: String, at: Long)
 
