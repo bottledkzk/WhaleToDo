@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import { PrismaRepository } from '../src/repo/prisma.ts';
-import { CODE_TTL_MS, codeDigest, createTicketToken, TICKET_TTL_MS } from '../src/domain/email.ts';
+import { CODE_TTL_MS, codeDigest, createTicketToken, RESEND_INTERVAL_MS, TICKET_TTL_MS } from '../src/domain/email.ts';
 
 const ownerUrl = process.env.VERIFY_DATABASE_URL!;
 const appUrl = process.env.VERIFY_APP_URL!;
@@ -72,7 +72,7 @@ after(async () => {
 test('发码只存 HMAC 摘要，email/global 限流行按实际列名写入', async () => {
   const res = await send();
   assert.equal(res.sent, true);
-  assert.equal(res.retryAfterMs, 0);
+  assert.equal(res.retryAfterMs, RESEND_INTERVAL_MS);
 
   const rows = await owner.query(
     'SELECT purpose, email_normalized, code_hmac, attempts, consumed_at FROM email_verifications',
@@ -128,7 +128,7 @@ test('61 秒间隔连发 5 次成功，第 6 次被小时配额拒绝', async ()
   for (let i = 0; i < 5; i += 1) {
     const result = await send(EMAIL, CODE, now + i * 61_000);
     assert.equal(result.sent, true, `第 ${i + 1} 次应成功`);
-    assert.equal(result.retryAfterMs, 0);
+    assert.equal(result.retryAfterMs, RESEND_INTERVAL_MS);
   }
 
   const sixth = await send(EMAIL, CODE, now + 5 * 61_000);

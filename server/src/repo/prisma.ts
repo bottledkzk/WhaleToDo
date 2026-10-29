@@ -102,6 +102,19 @@ export class PrismaRepository implements AccountRepository {
     this.now = now;
   }
 
+  /**
+   * 真实就绪探测：只验证数据库连接可用。失败原因一律吞掉，
+   * 不向上抛 SQL/驱动原文，health/ready 只拿布尔结果。
+   */
+  async ready(): Promise<boolean> {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /* ---------------- 用户 ---------------- */
 
   async findUserByUsername(username: string): Promise<RepoUser | null> {
@@ -1158,7 +1171,7 @@ export class PrismaRepository implements AccountRepository {
           INSERT INTO email_verifications (id, purpose, email_normalized, code_hmac, attempts, expires_at, created_at)
           VALUES (${randomUUID()}::uuid, ${input.purpose}, ${input.email}, ${input.codeDigest}, 0,
                   ${new Date(input.now + input.ttlMs)}, ${now})`;
-        return { sent: true, retryAfterMs: 0 };
+        return { sent: true, retryAfterMs: RESEND_INTERVAL_MS };
       });
     } catch (err) {
       // 并发同邮箱发码撞 email_verifications_unconsumed：按冷却中返回，不 500。

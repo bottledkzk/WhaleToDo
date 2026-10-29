@@ -136,6 +136,11 @@ export class MemoryRepository {
     this.now = now;
   }
 
+  /** 内存实现无外部依赖，始终就绪。 */
+  ready(): boolean {
+    return true;
+  }
+
   findUserByUsername(username: string): User | null {
     const id = this.store.usernameIndex.get(username.toLowerCase());
     return id ? this.store.users.get(id) ?? null : null;
@@ -831,7 +836,7 @@ export class MemoryRepository {
       consumedAt: null,
       createdAt: input.now,
     });
-    return { sent: true, retryAfterMs: 0 };
+    return { sent: true, retryAfterMs: RESEND_INTERVAL_MS };
   }
 
   async verifyEmailCode(input: {

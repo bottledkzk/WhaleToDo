@@ -166,12 +166,24 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   /* ---------- 健康检查（无鉴权） ---------- */
   app.get('/api/v1/health/live', async (req) => ok(req.requestId, { status: 'ok' }));
 
-  app.get('/api/v1/health/ready', async (req) => ok(req.requestId, {
-    status: 'ok',
-    database: 'memory',                 // 接入 Prisma 后改为真实探测
-    payment_provider: config.paymentProvider,
-    business_timezone: config.businessTimezone,
-  }));
+  app.get('/api/v1/health/ready', async (req, reply) => {
+    // 只暴露布尔结果：探测异常与驱动/SQL 原文都不得进入响应。
+    let ready = true;
+    if (repo.ready) {
+      try {
+        ready = await repo.ready();
+      } catch {
+        ready = false;
+      }
+    }
+    if (!ready) return reply.code(503).send({ status: 'unavailable', database: 'unavailable' });
+    return ok(req.requestId, {
+      status: 'ok',
+      database: 'available',
+      payment_provider: config.paymentProvider,
+      business_timezone: config.businessTimezone,
+    });
+  });
 
   /* ---------- 注册 ---------- */
   app.post('/api/v1/auth/register', async (req, reply) => {

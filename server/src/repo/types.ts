@@ -89,6 +89,11 @@ export class OrderConflict extends Error {
  *    否则中途失败会出现"旧令牌已废、新令牌没发"的锁死状态
  */
 export interface AccountRepository {
+  /**
+   * 可选就绪探测：依赖可用返回 true。实现必须吞掉底层错误，不得把 SQL、连接串
+   * 或驱动原文带出去；health/ready 只用布尔结果。
+   */
+  ready?(): Promise<boolean>;
   findUserByUsername(username: string): Promise<RepoUser | null>;
   findUserById(id: string): Promise<RepoUser | null>;
   createUser(username: string, password: string, displayName?: string): Promise<RepoUser>;

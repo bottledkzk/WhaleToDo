@@ -48,6 +48,29 @@ describe('健康检查与元信息', () => {
     assert.equal(ready.statusCode, 200);
     assert.equal(body.data.business_timezone, 'Asia/Shanghai');
     assert.equal(body.data.payment_provider, 'mock');
+    assert.equal(body.data.database, 'available');
+  });
+
+  test('health/ready 失败返回 503 且不泄露探测细节', async () => {
+    const base = fromSync(repo);
+
+    for (const ready of [
+      async () => false,
+      async () => { throw new Error('SELECT 1 failed: postgresql://user:secret@db/app'); },
+    ]) {
+      const downApp = buildApp({ config: loadConfig(testEnv), repo: { ...base, ready } });
+      try {
+        const res = await downApp.inject({ method: 'GET', url: '/api/v1/health/ready' });
+        assert.equal(res.statusCode, 503);
+        assert.deepEqual(res.json(), { status: 'unavailable', database: 'unavailable' });
+        const text = JSON.stringify(res.json());
+        assert.ok(!text.includes('postgresql'));
+        assert.ok(!text.includes('SELECT'));
+        assert.ok(!text.includes('secret'));
+      } finally {
+        await downApp.close();
+      }
+    }
   });
 
   test('每个响应都带 request_id', async () => {

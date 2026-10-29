@@ -8,7 +8,7 @@ import { buildApp } from '../src/http/app.ts';
 import { createMemoryStore, MemoryRepository } from '../src/repo/memory.ts';
 import { fromSync } from '../src/repo/from-sync.ts';
 import { loadConfig } from '../src/config.ts';
-import { createTicketToken } from '../src/domain/email.ts';
+import { createTicketToken, RESEND_INTERVAL_MS } from '../src/domain/email.ts';
 
 const testEnv = {
   NODE_ENV: 'test',
@@ -71,7 +71,7 @@ describe('邮箱验证码（内存路径）', () => {
     const first = await sendCode();
     assert.equal(first.statusCode, 202, first.body);
     assert.equal(first.json().data.sent, true);
-    assert.equal(first.json().data.retry_after_ms, 0);
+    assert.equal(first.json().data.retry_after_ms, RESEND_INTERVAL_MS);
     assert.match(latestCode(), /^\d{6}$/);
     assert.equal(sentCodes.length, 1);
 
@@ -108,7 +108,7 @@ describe('邮箱验证码（内存路径）', () => {
     const first = await sendCode(' Alice@Example.Test ');
     assert.equal(first.statusCode, 202, first.body);
     assert.equal(first.json().data.sent, true);
-    assert.equal(first.json().data.retry_after_ms, 0);
+    assert.equal(first.json().data.retry_after_ms, RESEND_INTERVAL_MS);
     assert.equal(sentCodes.length, 1);
     assert.equal(repo.store.emailCodes.get(`register:${canonical}`)?.email, canonical);
 
