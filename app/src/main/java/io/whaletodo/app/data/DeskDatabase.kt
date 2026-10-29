@@ -150,6 +150,33 @@ interface DeskDao {
     @Query("SELECT * FROM daily_work_times WHERE owner_id=:owner ORDER BY date")
     suspend fun workTimes(owner: String = "guest"): List<DailyWorkTimeRow>
 
+    @Query("SELECT * FROM tasks WHERE owner_id=:owner AND id=:id")
+    suspend fun task(owner: String, id: String): TaskRow?
+
+    @Query("SELECT * FROM blocks WHERE owner_id=:owner AND id=:id")
+    suspend fun block(owner: String, id: String): BlockRow?
+
+    @Query("SELECT * FROM checkins WHERE owner_id=:owner AND id=:id")
+    suspend fun checkIn(owner: String, id: String): CheckInRow?
+
+    @Query("SELECT * FROM daily_work_times WHERE owner_id=:owner AND date=:date")
+    suspend fun workTime(owner: String, date: String): DailyWorkTimeRow?
+
+    @Query("DELETE FROM tasks WHERE owner_id=:owner AND id=:id")
+    suspend fun deleteTask(owner: String, id: String)
+
+    @Query("DELETE FROM blocks WHERE owner_id=:owner AND id=:id")
+    suspend fun deleteBlock(owner: String, id: String)
+
+    @Query("DELETE FROM checkins WHERE owner_id=:owner AND id=:id")
+    suspend fun deleteCheckIn(owner: String, id: String)
+
+    @Query("DELETE FROM settings WHERE owner_id=:owner AND id=1")
+    suspend fun deleteSettings(owner: String)
+
+    @Query("DELETE FROM daily_work_times WHERE owner_id=:owner AND date=:date")
+    suspend fun deleteWorkTime(owner: String, date: String)
+
     @Query("SELECT * FROM agent_sessions WHERE ownerId=:owner AND archived=0 ORDER BY updated DESC")
     suspend fun sessions(owner: String): List<AgentSessionRow>
     @Query("SELECT * FROM agent_messages WHERE sessionId=:session AND ownerId=:owner ORDER BY created,id")
@@ -166,6 +193,8 @@ interface DeskDao {
     @Upsert suspend fun save(task: TaskRow)
 
     @Upsert suspend fun save(block: BlockRow)
+
+    @Upsert suspend fun save(checkIn: CheckInRow)
 
     @Upsert suspend fun save(setting: SettingRow)
 

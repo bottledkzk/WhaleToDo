@@ -54,6 +54,9 @@ interface SyncDao {
     @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND batchId IS NULL AND state='pending' AND isHead=1 ORDER BY nextRetryAt,createdAt LIMIT :limit")
     suspend fun pendingHeads(ownerId: String, limit: Int = 200): List<SyncOutboxRow>
 
+    @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND batchId IS NULL AND state='pending' AND isHead=1 ORDER BY createdAt,opId LIMIT :limit")
+    suspend fun pendingHeadsForPush(ownerId: String, limit: Int): List<SyncOutboxRow>
+
     @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND objectType=:objectType AND objectId=:objectId AND isHead=1 LIMIT 1")
     suspend fun head(ownerId: String, objectType: String, objectId: String): SyncOutboxRow?
 
