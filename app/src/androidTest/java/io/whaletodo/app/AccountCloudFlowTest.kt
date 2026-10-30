@@ -30,10 +30,10 @@ class AccountCloudFlowTest {
   override suspend fun write(owner:String,kind:String,revision:Int,payload:String):CloudDocument {calls+="POST:$owner:$kind";if(offline)throw java.io.IOException();beforeWrite?.invoke();return synchronized(this){check((docs["$owner:$kind"]?.revision?:0)==revision);put(owner,kind,payload)}}
  }
  private data class Fixture(val db:DeskDatabase,val repo:DeskRepository,val scope:CoroutineScope,val agent:Agent,val controller:AccountCloudController)
- private fun fixture(cloud:Cloud,owner:String="owner-a",vip:Boolean=true):Fixture {
+ private fun fixture(cloud:Cloud,owner:String="owner-a",vip:Boolean=true,onScheduleChanged:suspend ()->Unit={}):Fixture {
   val db=Room.inMemoryDatabaseBuilder(InstrumentationRegistry.getInstrumentation().targetContext,DeskDatabase::class.java).build()
   val repo=DeskRepository(db);val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default);val agent=Agent(owner,vip)
-  return Fixture(db,repo,scope,agent,AccountCloudController(repo,scope,cloud,agent))
+  return Fixture(db,repo,scope,agent,AccountCloudController(repo,scope,cloud,agent,onScheduleChanged))
  }
  private suspend fun await(predicate:()->Boolean){withTimeout(10000){while(!predicate())delay(25)}}
  private fun close(vararg fixtures:Fixture){fixtures.forEach{it.scope.cancel();it.db.close()}}
@@ -124,6 +124,17 @@ class AccountCloudFlowTest {
    val remote=local.copy(tasks=listOf(TaskRow("cloud","云端",30)),blocks=listOf(BlockRow("cb","cloud",1500,2500)))
    val (merged,skipped)=local.compatible(remote)
    assertEquals(2,merged.tasks.size);assertEquals(1,merged.blocks.size);assertEquals(1,skipped)
+  }finally{close(a)}
+ }
+ @Test fun reminderFailureAfterImportDoesNotMisreportCommittedDataAsUnchanged()=runBlocking {
+  val cloud=Cloud();val a=fixture(cloud,onScheduleChanged={error("Synthetic reminder failure")})
+  try{
+   await{a.controller.state.value.owner=="owner-a"}
+   val incoming=ScheduleBackup.capture(a.repo,"owner-a").copy(tasks=listOf(TaskRow("cloud","云端事项",30,ownerId="owner-a")))
+   cloud.put("owner-a","schedule",incoming.json());a.controller.prepareDownload("replace");await{a.controller.state.value.preview!=null}
+   a.controller.confirm();await{!a.controller.state.value.busy}
+   assertEquals("云端事项",a.repo.dao.tasks("owner-a").single().title)
+   assertTrue(a.controller.state.value.notice.contains("已同步"));assertTrue(a.controller.state.value.notice.contains("提醒"));assertEquals("",a.controller.state.value.error)
   }finally{close(a)}
  }
 }

@@ -59,6 +59,7 @@ internal class AccountCloudController(
   if(mutable.value.busy)return
   mutable.update{it.copy(busy=true,error="")}
   scope.launch{try{
+   var remindersPending=false
    check(allowed(preview.owner)){"账户或 VIP 已变化"}
    if(preview.upload){
     check(ScheduleBackup.capture(repo,preview.owner).json()==preview.localJson){"本地日程已变化，请重新预览"}
@@ -67,9 +68,9 @@ internal class AccountCloudController(
     // Re-read before application: an old preview may not restore a backup that has since changed.
     check(bridge.read(preview.owner,"schedule").revision==preview.revision){"云端备份已变化，请重新预览"}
     ScheduleBackup.apply(repo,preview.owner,preview.localJson,preview.result){allowed(preview.owner)}
-    onScheduleChanged()
+    remindersPending=runCatching{onScheduleChanged()}.isFailure
    }
-   mutable.update{if(current(preview.owner))it.copy(preview=null,notice=if(preview.upload)"云端备份已完成" else "云端日程已同步")else it}
+   mutable.update{if(current(preview.owner))it.copy(preview=null,notice=if(preview.upload)"云端备份已完成" else if(remindersPending)"云端日程已同步，提醒重建待重试" else "云端日程已同步")else it}
   }catch(e:CancellationException){throw e}catch(e:Exception){mutable.update{if(current(preview.owner))it.copy(error=message(e),preview=null)else it}}
   finally{mutable.update{if(current(preview.owner))it.copy(busy=false)else it}}}
  }
