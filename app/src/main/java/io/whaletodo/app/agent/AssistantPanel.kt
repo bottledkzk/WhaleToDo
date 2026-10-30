@@ -61,6 +61,7 @@ import kotlinx.coroutines.delay
         if(s.notice.isNotEmpty())Text(s.notice,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.primary,modifier=Modifier.padding(vertical=5.dp))
         if(s.messages.any{it.role=="assistant"})Text("本会话 ${s.messages.count{it.role=="assistant"}} 次 · ${TokenDisplay.k(s.messages.sumOf{it.totalTokens})} tokens",
             style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        if(s.advice!=null&&s.mode==AgentMode.PLAN)TextButton(onClick=controller::previewAdvice,enabled=s.busySince==null&&s.pendingId==null){Text("优化并预览安排")}
         Row(verticalAlignment=Alignment.CenterVertically){
             Box {AssistChip(onClick={modeMenu=true},label={Text("${s.mode.label} ▾")},enabled=s.busySince==null)
                 DropdownMenu(modeMenu,{modeMenu=false}){AgentMode.entries.forEach {m->DropdownMenuItem(text={Text(m.label)},onClick={controller.mode(m);modeMenu=false})}}}
@@ -124,6 +125,22 @@ import kotlinx.coroutines.delay
                 TextButton(onClick = controller::dismissPreview, enabled=s.busySince==null) { Text("Refuse") }
             } }
         )
+    }
+    s.arrangement?.let { proposal ->
+        val plan=proposal.arrangement
+        val zone=java.time.ZoneId.of(plan.preview.source.zoneId)
+        val format=java.time.format.DateTimeFormatter.ofPattern("M/d HH:mm").withZone(zone)
+        AlertDialog(onDismissRequest=controller::dismissArrangement,title={Text("采纳安排？")},text={
+            Column(Modifier.heightIn(max=420.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(9.dp)){
+                Text("${plan.taskIds.size}件事项 · ${zone.id}",fontWeight=FontWeight.Bold)
+                if(plan.rest>0)Text("连续工作最多${plan.maxWork}分钟 · 休息${plan.rest}分钟")
+                plan.preview.result.blocks.filter{it.taskId in plan.taskIds}.forEach{b->
+                    val title=plan.preview.source.tasks.find{it.id==b.taskId}?.title.orEmpty()
+                    Text("${format.format(b.window.start)}–${format.format(b.window.end)}  $title${if(b.locked)" · 固定" else ""}",style=MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },confirmButton={TextButton(onClick=controller::applyArrangement,enabled=s.busySince==null){Text("Accept")}},
+            dismissButton={TextButton(onClick=controller::dismissArrangement,enabled=s.busySince==null){Text("Refuse")}})
     }
     s.revision?.let { proposal ->
         var opinion by remember(proposal.id) {mutableStateOf("")}

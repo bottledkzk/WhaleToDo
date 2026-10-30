@@ -9,12 +9,15 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 data class EditPreview(val id: String, val owner: String, val source: DeskSnapshot, val changes: List<AgentChange>, val modelCode: String)
+data class PlanAdvice(val id: String, val owner: String, val session: String, val source: DeskSnapshot, val question: String, val answer: String, val compiled: AdviceArrangement? = null)
+data class AdvicePreview(val id: String, val owner: String, val session: String, val arrangement: AdviceArrangement, val modelCode: String)
 data class AssistantState(val owner: String = "guest", val access: AgentAccess = AgentAccess(),
     val sessionId: String = UUID.randomUUID().toString(), val title: String = "新对话",
     val mode: AgentMode = AgentMode.CHAT, val model: AgentModel = AgentModel("unavailable","鲸鱼AI"),
     val models: List<AgentModel> = emptyList(), val shareStyle: String = "minimal", val includeAgenda: Boolean = true, val editConsent: Boolean = false,
     val messages: List<AgentMessageRow> = emptyList(), val sessions: List<AgentSessionRow> = emptyList(),
-    val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null, val revision: EditPreview? = null)
+    val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null, val revision: EditPreview? = null,
+    val advice: PlanAdvice? = null, val arrangement: AdvicePreview? = null)
 
 class AssistantController(private val repo: DeskRepository, private val scope: CoroutineScope,
     private val bridge: AgentBridge = AgentBridgeHub.bridge,
@@ -35,14 +38,51 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     fun newSession() { if(mutable.value.busySince!=null)return
         mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda) }
     }
-    fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),editConsent=false,preview=null,revision=null) } }
+    fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),editConsent=false,preview=null,revision=null,advice=null,arrangement=null) } }
     fun style(style: String) { if(ShareStyle.entries.any{it.code==style}) mutable.update {it.copy(shareStyle=style)} }
-    fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null) } }
+    fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null,advice=null,arrangement=null) } }
     fun consent(enabled:Boolean) { mutable.update { it.copy(editConsent=enabled,preview=null) } }
     fun dismissGate(){ mutable.update { it.copy(gate=null) } }
     fun dismissPreview(){mutable.update { it.copy(preview=null,revision=null,editConsent=false,notice="已保留原日程") }}
     fun requestRevision(){mutable.update { it.copy(revision=it.preview,preview=null,editConsent=false) }}
     fun dismissRevision(){mutable.update { it.copy(revision=null,editConsent=false,notice="已保留原日程") }}
+    fun dismissArrangement(){mutable.update { it.copy(arrangement=null,notice="已保留原日程") }}
+    fun previewAdvice() {
+        val advice=mutable.value.advice?:return
+        if(mutable.value.busySince!=null||mutable.value.pendingId!=null)return
+        mutable.update{it.copy(busySince=SystemClock.elapsedRealtime(),notice="")}
+        scope.launch {try {
+            bridge.refreshCapabilities()
+            val current=mutable.value
+            if(current.owner!=advice.owner||current.sessionId!=advice.session)return@launch
+            val model=AgentPolicy.route(bridge.models,bridge.access.value,AgentMode.EDIT)
+            val gate=AgentPolicy.proposalGate(bridge.access.value,model)
+            if(gate!=null){mutable.update{it.copy(gate=gate)};return@launch}
+            check(repo.snapshot(advice.owner)==advice.source){"日程已变化，请重新生成建议"}
+            val plan=advice.compiled?:withContext(Dispatchers.Default){arrangeAdvice(advice.source,advice.question,advice.answer,System.currentTimeMillis())}
+            mutable.update{if(it.owner==advice.owner&&it.sessionId==advice.session)it.copy(arrangement=AdvicePreview("advice:${advice.id}",advice.owner,advice.session,plan,model.code))else it}
+        }catch(e:CancellationException){throw e}
+        catch(e:Exception){mutable.update{if(it.owner==advice.owner)it.copy(notice=e.message?:"暂时无法预览安排，请调整要求")else it}}
+        finally{mutable.update{if(it.owner==advice.owner)it.copy(busySince=null)else it}}}
+    }
+    fun applyArrangement() {
+        val draft=mutable.value.arrangement?:return
+        if(mutable.value.busySince!=null)return
+        mutable.update{it.copy(busySince=SystemClock.elapsedRealtime())}
+        scope.launch{try {
+            bridge.refreshCapabilities()
+            val current=mutable.value
+            check(current.owner==draft.owner&&current.sessionId==draft.session){"账户或会话已变化"}
+            val model=bridge.models.find{it.code==draft.modelCode}?:throw IllegalStateException("当前暂不可编辑日程")
+            val gate=AgentPolicy.proposalGate(bridge.access.value,model)
+            if(gate!=null){mutable.update{it.copy(gate=gate)};return@launch}
+            repo.applyAdvice(draft.id,draft.owner,draft.arrangement)
+            runCatching{onScheduleChanged()}
+            mutable.update{if(it.owner==draft.owner)it.copy(arrangement=null,advice=null,notice="已应用安排")else it}
+        }catch(e:CancellationException){throw e}
+        catch(e:Exception){mutable.update{if(it.owner==draft.owner)it.copy(arrangement=null,notice=e.message?:"安排已失效，请重新预览")else it}}
+        finally{mutable.update{if(it.owner==draft.owner)it.copy(busySince=null)else it}}}
+    }
     fun revisePreview(opinion:String) {
         val s=mutable.value;val proposal=s.revision?:return
         if(opinion.isBlank()||opinion.length>2000||s.owner!=proposal.owner||s.mode!=AgentMode.EDIT)return
@@ -56,7 +96,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     fun openSession(row: AgentSessionRow) { scope.launch {
         if(mutable.value.busySince!=null||row.ownerId!=mutable.value.owner)return@launch
         val messages=repo.dao.messages(row.id,row.ownerId)
-        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,editConsent=false,
+        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,editConsent=false,advice=null,arrangement=null,
             pendingId=messages.lastOrNull{m->m.role=="user"&&m.status=="pending"}?.id,
             mode=AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode,
             model=AgentPolicy.route(bridge.models,it.access,AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode)) else it }
@@ -76,7 +116,11 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     private suspend fun receive(sent:AgentMessageRow,source:DeskSnapshot?,reply:AssistantReply) {
         if(mutable.value.owner!=sent.ownerId||mutable.value.sessionId!=sent.sessionId)return
         require(reply.text.isNotBlank()) { "助手暂未返回可用内容" }
-        val answer=AgentMessageRow(sent.id+":answer",sent.sessionId,sent.ownerId,"assistant",sent.mode,AssistantIdentity.display(reply.text),
+        val wantsTimeline=sent.mode==AgentMode.PLAN.code&&source!=null&&sent.snapshotHash==hash(source)&&!reply.continuation&&
+            Regex("连续|具体.*(?:时间|时段)|时间表|排程|一起优化").containsMatchIn(sent.text)
+        val compiled=if(wantsTimeline)withContext(Dispatchers.Default){runCatching{arrangeAdvice(source!!,sent.text,reply.text,System.currentTimeMillis())}}else null
+        val display=compiled?.fold({it.display()},{"当前要求下尚不能形成完整安排：${it.message?:"请明确事项、工时与时间要求"}"})?:reply.text
+        val answer=AgentMessageRow(sent.id+":answer",sent.sessionId,sent.ownerId,"assistant",sent.mode,AssistantIdentity.display(display),
             System.currentTimeMillis(),reply.totalTokens,reply.inputTokens,reply.outputTokens,reply.chargedPoints)
         if(repo.dao.messages(sent.sessionId,sent.ownerId).none{it.id==answer.id})saveMessage(answer,sent.text)
         repo.dao.requestStatus(sent.id,sent.ownerId,"complete")
@@ -88,6 +132,8 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(messages=rows,pendingId=null,
             preview=if(canPreview)EditPreview(sent.id,sent.ownerId,source!!,reply.changes,model!!.code)else null,
             editConsent=false,revision=null,
+            advice=if(sent.mode==AgentMode.PLAN.code&&source!=null&&sent.snapshotHash==hash(source)&&!reply.continuation&&compiled?.isFailure!=true)PlanAdvice(sent.id,sent.ownerId,sent.sessionId,source,sent.text,display,compiled?.getOrNull())else null,
+            arrangement=null,
             notice=if(reply.changes.isNotEmpty()&&!canPreview)"原提案已失效，可重新生成" else if(reply.continuation)"本次内容较长，可缩小范围后继续" else "")}
         if(sent.mode==AgentMode.DIARY.code&&mutable.value.owner==sent.ownerId&&mutable.value.sessionId==sent.sessionId){
             val diary=DiaryContent.fromAssistant(reply.text)
@@ -102,7 +148,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         if(definite)repo.dao.requestStatus(sent.id,sent.ownerId,"failed")
         mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(pendingId=if(definite)null else sent.id,
             gate=(error as? AgentGateException)?.reason,
-            notice=if(definite)"本次未完成，可调整后再试" else "请求状态待确认，请查询结果；不会自动重复调用")}
+            notice=if(definite)(error as? AgentServiceException)?.userMessage?:"本次未完成，可调整后再试" else "请求状态待确认，请查询结果；不会自动重复调用")}
     }
     fun send(draft:String, revision:EditPreview?=null) {
         val source=mutable.value
@@ -110,7 +156,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         if(source.mode.edits&&!source.includeAgenda){mutable.update{it.copy(notice="请开启日程读取后生成提案")};return}
         val gate=AgentPolicy.gate(source.access,source.mode,source.model,source.editConsent)
         if(gate!=null){mutable.update{it.copy(gate=gate)};return}
-        mutable.update{it.copy(busySince=SystemClock.elapsedRealtime(),notice="",preview=null,revision=null)}
+        mutable.update{it.copy(busySince=SystemClock.elapsedRealtime(),notice="",preview=null,revision=null,advice=null,arrangement=null)}
         scope.launch {
             var sent:AgentMessageRow?=null
             try {
@@ -191,7 +237,8 @@ internal fun reflectionFacts(s:DeskSnapshot,records:List<CheckInRow>,owner:Strin
         .put("completion_date_known",true).put("actual_duration_recorded",false)
         .put("completed",org.json.JSONArray(completed.take(40).map{record->org.json.JSONObject()
             .put("id",record.taskId).put("title",tasks.getValue(record.taskId).title)
-            .put("completed_at",Instant.ofEpochMilli(record.completedAt).toString())}))
+            .put("completed_at",Instant.ofEpochMilli(record.completedAt).atZone(zone).toOffsetDateTime().toString())
+            .put("completed_local",Instant.ofEpochMilli(record.completedAt).atZone(zone).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")))}))
         .put("unfinished",org.json.JSONArray(if(includeUnfinished)unfinished.take(30).map{task->org.json.JSONObject()
             .put("id",task.id).put("title",task.title).put("estimated_minutes",task.minutes)}else emptyList<org.json.JSONObject>()))
         .put("partial",completed.size>40||(includeUnfinished&&unfinished.size>30)).toString()

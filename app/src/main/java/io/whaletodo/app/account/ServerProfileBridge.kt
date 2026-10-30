@@ -30,7 +30,11 @@ class ServerProfileBridge(
 
     override suspend fun login(email: String, password: String) = call {
         val clean = email.trim()
-        auth.loginWithEmail(clean, password)
+        try { auth.loginWithEmail(clean, password) }
+        catch(e: ApiException) {
+            if(e.status==401 && !e.message.contains("账户已切换")) throw ProfileException("邮箱或密码错误，请重新输入")
+            throw e
+        }
         credentials.saveEmail(clean)
         val expected = credentials.read()?.sessionId ?: return@call
         if (!session.begin(expected)) throw ProfileException("账户已切换，请重试")
@@ -193,7 +197,7 @@ class ServerProfileBridge(
         "UNAUTHENTICATED" -> if (e.message.contains("账户已切换")) {
             "账户已切换，请重试"
         } else {
-            "邮箱或密码错误，或登录已过期，请重新登录"
+            "登录已过期，请重新登录"
         }
         "RATE_LIMITED" -> "操作过于频繁，请稍后再试"
         "CONFLICT" -> "该邮箱已被注册"

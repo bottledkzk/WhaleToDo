@@ -24,6 +24,7 @@ class AgentServiceException(
     val definitelyRejected: Boolean,
     /** True only when the request definitely was not accepted by the server. */
     val definitelyNotSent: Boolean = false,
+    val userMessage: String? = null,
 ) : Exception("助手暂时不可用")
 class AgentGateException(
     val reason: GateReason,
