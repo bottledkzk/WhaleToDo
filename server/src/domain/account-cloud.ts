@@ -9,7 +9,7 @@ export function cloudKind(value:string):CloudKind {
 const invalid=():never=>{throw new ApiError('VALIDATION_ERROR','云端内容格式无效或超过限制');};
 function obj(v:unknown):Record<string,any>{if(!v||typeof v!=='object'||Array.isArray(v))invalid();return v as Record<string,any>;}
 function keys(v:Record<string,unknown>,allowed:string[]){if(Object.keys(v).some(k=>!allowed.includes(k)))invalid();}
-function text(v:unknown,max:number){if(typeof v!=='string'||[...v].length>max)invalid();}
+function text(v:unknown,max:number,unicode=false){if(typeof v!=='string'||(unicode?[...v].length:v.length)>max)invalid();}
 function num(v:unknown,min=0,max=Number.MAX_SAFE_INTEGER){if(typeof v!=='number'||!Number.isSafeInteger(v)||v<min||v>max)invalid();}
 function bool(v:unknown){if(typeof v!=='boolean')invalid();}
 function date(v:unknown){text(v,10);const d=new Date((v as string)+'T00:00:00Z');if(!/^\d{4}-\d{2}-\d{2}$/.test(v as string)||!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==v)invalid();}
@@ -22,9 +22,9 @@ export function validateCloudPayload(kind:CloudKind,input:unknown):Record<string
   keys(p,['entries']);const entries=obj(p.entries);
   if(Object.keys(entries).length>1500)invalid();
   for(const [k,v] of Object.entries(entries)){
-   if(k==='profile.motto'){text(v,30);if(/[\p{Cc}\u2028\u2029]/u.test(v as string))invalid();}
-   else if(k==='profile.nickname'){text(v,16);if(!(v as string).trim()||/[\p{Cc}\u2028\u2029]/u.test(v as string)||[...(v as string)].reduce((n,c)=>n+(/\p{Script=Han}/u.test(c)?2:1),0)>16)invalid();}
-   else if(k.startsWith('diary:')){date(k.slice(6));text(v,800);if(!(v as string).trim())invalid();}
+   if(k==='profile.motto'){text(v,30,true);if(/[\p{Cc}\u2028\u2029]/u.test(v as string))invalid();}
+   else if(k==='profile.nickname'){text(v,16,true);if(!(v as string).trim()||/[\p{Cc}\u2028\u2029]/u.test(v as string)||[...(v as string)].reduce((n,c)=>n+(/\p{Script=Han}/u.test(c)?2:1),0)>16)invalid();}
+   else if(k.startsWith('diary:')){date(k.slice(6));text(v,800,true);if(!(v as string).trim())invalid();}
    else invalid();
   }
   return structuredClone(p);
