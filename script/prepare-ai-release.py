@@ -9,8 +9,8 @@ import re
 import subprocess
 import tarfile
 
-GATEWAY_BOUNDARY = '202610290001_agent_billing'
-FULL_BOUNDARY = '202610290001_agent_billing'
+GATEWAY_BOUNDARY = '202610300001_account_cloud'
+FULL_BOUNDARY = '202610300001_account_cloud'
 
 
 def git(repo, *args):
@@ -27,7 +27,7 @@ def prepare(repo, output, profile='gateway'):
     commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
     paths = git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').decode().splitlines()
     cutoff = FULL_BOUNDARY if profile == 'full' else GATEWAY_BOUNDARY
-    count = 7
+    count = 8
     files = {}
     fixed = {'server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
              'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh',
@@ -47,7 +47,7 @@ def prepare(repo, output, profile='gateway'):
     if not required <= files.keys():
         raise ValueError('REQUIRED_RELEASE_FILE_MISSING')
     checksums = json.loads(git(repo, 'show', 'HEAD:server/prisma/migrations/checksums.json'))
-    if (len(checksums) != 7 or any(p.split('/')[-2] > FULL_BOUNDARY
+    if (len(checksums) != 8 or any(p.split('/')[-2] > FULL_BOUNDARY
             for p in paths if p.startswith('server/prisma/migrations/') and p.endswith('/migration.sql'))):
         raise ValueError('FULL_RELEASE_BOUNDARY_CHANGED')
     checksums = [m for m in checksums if m['name'] <= cutoff]

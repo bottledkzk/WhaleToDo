@@ -75,7 +75,7 @@ class ServerAgentBridge(
                         modelList = emptyList()
                         mutableAccess.value = AgentAccess()
                     }
-                    owner != lastOwner -> {
+                    owner != lastOwner || base.vip != mutableAccess.value.vip -> {
                         lastOwner = owner
                         refreshJob?.cancel()
                         modelList = emptyList()
@@ -110,6 +110,8 @@ class ServerAgentBridge(
         refreshJob?.cancel()
         refresh(base, expectedSession)
     }
+
+    override suspend fun refreshCapabilities() = refresh()
 
     private suspend fun refresh(base: AgentAccess, expectedSession: String) = withContext(io) {
         val owner = base.userId ?: return@withContext
@@ -297,7 +299,7 @@ class ServerAgentBridge(
             outputTokens = view.outputTokens,
             chargedPoints = view.pointsCharged,
             continuation = view.continuation,
-            changes = view.proposal?.changes?.mapNotNull(::toChange).orEmpty(),
+            changes = view.proposal?.changes?.map { toChange(it) ?: throw AgentServiceException(true) }.orEmpty(),
         )
     }
 
@@ -308,6 +310,10 @@ class ServerAgentBridge(
             val start = change.startMs
             val end = change.endMs
             if (start == null || end == null) null else AgentChange.MoveBlock(change.targetId, start, end)
+        }
+        "schedule_task" -> {
+            val start=change.startMs;val end=change.endMs
+            if(start==null||end==null)null else AgentChange.ScheduleTask(change.targetId,start,end)
         }
         else -> null
     }

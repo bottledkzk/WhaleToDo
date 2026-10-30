@@ -24,7 +24,7 @@ test('locked, started, absent targets, deadline, availability and overlap remain
  assert.ok(proposalProblem([change],JSON.stringify({...snapshot,blocks:[...snapshot.blocks,{...snapshot.blocks[0],id:'other',start_ms:change.start_ms,end_ms:change.end_ms}]}),now));
 });
 test('a valid but wrong local clock time cannot masquerade as the requested move',()=>{
- const context=JSON.stringify({...snapshot,timezone:'UTC'});
+ const context=JSON.stringify({...snapshot,date:'2030-01-01',timezone:'UTC'});
  assert.ok(proposalProblem([change],context,now,'移动到04:00'));
  assert.equal(proposalProblem([change],context,now,'移动到02:00'),null);
 });

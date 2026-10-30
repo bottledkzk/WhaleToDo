@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 interface AgentBridge {
     val access: StateFlow<AgentAccess>
     val models: List<AgentModel>
+    suspend fun refreshCapabilities() = Unit
     suspend fun reply(request: AssistantRequest): AssistantReply
     suspend fun query(requestId: String, expectedOwner: String? = null): AssistantReply =
         throw AgentPendingException(requestId)

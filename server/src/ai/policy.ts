@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-export const PROMPT_VERSION='agent-20261029-v4';
+export const PROMPT_VERSION='agent-20261030-v5';
 export const MODES=['chat','plan','review','diary','share_copy','edit'] as const;
 export type Mode=typeof MODES[number];
-export interface EditChange {type:'rename_task'|'set_category'|'move_block';target_id:string;title?:string;category?:string;start_ms?:number;end_ms?:number}
+export interface EditChange {type:'rename_task'|'set_category'|'move_block'|'schedule_task';target_id:string;title?:string;category?:string;start_ms?:number;end_ms?:number}
 export interface CompactResult {text:string;omitted:number}
 /** Only complete segments are retained; unsegmented oversized input is rejected before provider billing. */
 export function softCompact(text:string,maxBytes:number):CompactResult {
@@ -37,7 +37,7 @@ export function systemPrompt(mode:Mode,shareStyle:string="minimal"):string {
  review:readOnly+'根据日程与已完成信息复盘，区分事实和推测。进展、障碍、下一步各一段，预计工时不能写成实际耗时，完成状态不能证明完成日期；按所附日期的真实打卡复盘。约400字。',
  diary:readOnly+'只根据明确记录写可编辑日记，不补造心情、地点或经历。只输出JSON对象{"diary":"纯净日记正文"}，diary最多800个Unicode字符，信息少时只写短句，禁止为凑篇幅扩写。task 的 estimated_minutes/工时是计划预算，不是实际用时；只有明确的实际完成事实才能写成“用了多少分钟”。done 状态也不能证明是在今天完成；完成日期未知时不得擅自写成今天发生，明确没有指定日期完成记录时仅说明记录不足。禁止添加未记录的心情、身体感受、天气、地点、时段、页数或先后顺序；没有给出感受就不写“心里安静”“静下心”等感受。正文采用用户第一人称，不含标题、代码块、前言、任务汇报、生成说明、模型身份、保存操作或对用户的回复。不输出保存授权字段，保存必须由应用给用户预览、编辑并确认。',
  share_copy:readOnly+'生成3条分享短句，每条不超过50字，避免账户、地点、私人备注和未证实的个人经历。30分钟不代表30页，来源没有页数时绝不出现任何数字页数，连比喻中的“三十页之外”也禁止。不得补造页数、心情、灯下或今晚等场景；意象必须明确写为比喻（像、仿佛），不得写成实际经历。只输出JSON对象{"copies":["第一条短句","第二条短句","第三条短句"]}，copies必须恰好3项，每项一个短句且不含换行，不要其他字段、标题或解释。',
- edit:'本模式仅允许提出日程变更：服务端已校验身份、指定编辑能力及本次日常编辑授权，但这不等于用户已经采纳。只为本次明确诉求生成JSON对象：{"summary":"简短说明","changes":[...] }。非空changes表示请求应用弹出Accept / Refuse / 意见确认框，绝不执行写入或自动选择Accept；有意见时重新生成待确认提案，旧提案不可继续采纳。request 若包含 unaccepted_changes，其 target_id 明确绑定本次意见指向的原对象；只在 agenda 中再次核对相同对象后按 feedback 重新提出，不能因为日程还有其他任务就丢掉已经明确的目标。changes最多12项，type只能rename_task(字段target_id,title)、set_category(target_id,category)、move_block(target_id,start_ms,end_ms)。ID仅使用agenda中已有ID；分类仅none/study/exercise/entertainment/work/social/travel/rest。先逐个核对target的locked/done状态，任何locked=true、done=true或所属task已完成的对象都不能修改，必须changes为空并说明拒绝原因。summary描述尚待确认的建议，不能使用“已将/已经修改/已经移动”等执行完成语气。不得变更locked、done、截止或工时，移动必须保留时长且处于可用时间/截止之前。不得修改他人数据、账户、设置或权限；不能新增任意工具/调用/确认字段。如没有明确且安全的变更则changes为空并解释原因。'};
+ edit:'本模式仅允许提出日程变更：服务端已校验身份、指定编辑能力及本次日常编辑授权，但这不等于用户已经采纳。只为本次明确诉求生成JSON对象：{"summary":"简短说明","changes":[...] }。非空changes表示请求应用弹出Accept / Refuse / 意见确认框，绝不执行写入或自动选择Accept；有意见时重新生成待确认提案，旧提案不可继续采纳。request 若包含 unaccepted_changes，其 target_id 明确绑定本次意见指向的原对象；只在 agenda 中再次核对相同对象后按 feedback 重新提出，不能因为日程还有其他任务就丢掉已经明确的目标。changes最多12项，type只能rename_task(字段target_id,title)、set_category(target_id,category)、move_block(target_id,start_ms,end_ms)、schedule_task(target_id,start_ms,end_ms，给未安排事项新增一个时段)。ID仅使用agenda中已有ID；分类仅none/study/exercise/entertainment/work/social/travel/rest。先逐个核对target的locked/done状态，任何locked=true、done=true或所属task已完成的对象都不能修改，必须changes为空并说明拒绝原因。summary描述尚待确认的建议，不能使用“已将/已经修改/已经移动”等执行完成语气。不得变更locked、done、截止或工时，移动必须保留时长且处于可用时间/截止之前。schedule_task 仅能用于未完成且完全没有安排的已有事项，时长必须等于其预计工时，不创建新事项。requested_move 若提供确定的日期和毫秒，必须原样使用；遇日期歧义必须询问，不能把明天排成今天。不得修改他人数据、账户、设置或权限；不能新增任意工具/调用/确认字段。如没有明确且安全的变更则changes为空并解释原因。'};
  const styles:Record<string,string>={github:'程序员风，像简短提交记录，克制使用代码意象。',healing:'温柔治愈，肯定具体的小进展，不强行积极。',literary:'文学风，有适度意象，不杜撰事实。',minimal:'极简，只留核心事实，不补造感受。',ornate:'华丽但易读，少量修辞，不堆砌。',starry:'星空意象，轻盈安静。',red:'明快有力量，避免口号堆砌。',fitness:'锻炼风，强调行动、恢复与循序渐进，不羞辱身体。'};
  return base+spec[mode]+(mode==='share_copy'?(styles[shareStyle]??styles.minimal):'');
 }
@@ -45,11 +45,11 @@ export function parseProposal(text:string):{summary:string;changes:EditChange[]}
  const obj=JSON.parse(text);if(!obj||typeof obj!=='object'||Object.keys(obj).some(k=>!['summary','changes'].includes(k))||typeof obj.summary!=='string'||obj.summary.length>600||!Array.isArray(obj.changes)||obj.changes.length>12)throw new Error('Invalid proposal');
  for(const c of obj.changes){
  if(!c||typeof c.target_id!=='string'||c.target_id.length<1||c.target_id.length>128)throw new Error('Invalid target');
- const keys=c.type==='rename_task'?['type','target_id','title']:c.type==='set_category'?['type','target_id','category']:c.type==='move_block'?['type','target_id','start_ms','end_ms']:[];
+ const keys=c.type==='rename_task'?['type','target_id','title']:c.type==='set_category'?['type','target_id','category']:['move_block','schedule_task'].includes(c.type)?['type','target_id','start_ms','end_ms']:[];
  if(!keys.length||Object.keys(c).some(k=>!keys.includes(k))||keys.some(k=>!(k in c)))throw new Error('Unsupported change');
  if(c.type==='rename_task'&&(typeof c.title!=='string'||!c.title.trim()||c.title.length>120))throw new Error('Invalid title');
  if(c.type==='set_category'&&!['none','study','exercise','entertainment','work','social','travel','rest'].includes(c.category))throw new Error('Invalid category');
- if(c.type==='move_block'&&(!Number.isSafeInteger(c.start_ms)||!Number.isSafeInteger(c.end_ms)||c.start_ms<=0||c.end_ms<=c.start_ms))throw new Error('Invalid window');
+ if(['move_block','schedule_task'].includes(c.type)&&(!Number.isSafeInteger(c.start_ms)||!Number.isSafeInteger(c.end_ms)||c.start_ms<=0||c.end_ms<=c.start_ms))throw new Error('Invalid window');
  }
  return obj;
 }

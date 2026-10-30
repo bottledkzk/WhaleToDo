@@ -101,7 +101,12 @@ function check(test,reply){
 
 add('diary-legacy-estimate','diary','根据今天的记录写日记，不把预计工时当作实际用时',{context:workload(15),noActualDuration:true});
 
-const selected=cases.filter(x=>!arg('--case')||x.id===arg('--case'));
+const calendarAgenda={...agenda,date:scenarioDate,action_version:2,tasks:[{...agenda.tasks[0],deadline_ms:at(17)+3*86400000}],available:[0,1,2,3].map(d=>({start_ms:at(9)+d*86400000,end_ms:at(17)+d*86400000}))};
+add('edit-calendar-new','edit','把阅读第3章安排到明天10:00',{context:JSON.stringify({...calendarAgenda,blocks:[]}),expect:{type:'schedule_task',target_id:task,start_ms:at(10)+86400000,end_ms:at(10)+86400000+1800000}});
+add('edit-calendar-move','edit','把阅读第3章移到后天下午3点半',{context:JSON.stringify(calendarAgenda),expect:{type:'move_block',target_id:block,start_ms:at(15)+2*86400000+1800000,end_ms:at(16)+2*86400000}});
+add('edit-calendar-opinion','edit',JSON.stringify({feedback:'改为后天11点',unaccepted_changes:[{type:'schedule_task',target_id:task,start_ms:at(10)+86400000,end_ms:at(10)+86400000+1800000}]}),{context:JSON.stringify({...calendarAgenda,blocks:[]}),expect:{type:'schedule_task',target_id:task,start_ms:at(11)+2*86400000,end_ms:at(11)+2*86400000+1800000}});
+
+const selected=cases.filter(x=>(!arg('--case')||x.id===arg('--case'))&&(!arg('--case-prefix')||x.id.startsWith(arg('--case-prefix'))));
 const chosen=Array.from({length:repeats},(_,i)=>selected.map(x=>({...x,base_id:x.id,id:repeats>1?x.id+'-r'+(i+1):x.id,repeat:i+1}))).flat();
 if(!chosen.length)throw Error('Unknown case');
 const inputs=chosen.map(test=>({test,input:prepareInput({client_request_id:randomUUID(),model_code:test.mode==='edit'?'deepseek-planner':'deepseek-default',mode:test.mode,prompt:test.prompt,context:test.context,history:test.history??[],share_style:test.share_style,edit_consent:test.mode==='edit'})}));

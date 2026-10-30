@@ -23,7 +23,7 @@ class ReleasePackageTest(unittest.TestCase):
         self.repo = self.root / 'source'
         self.repo.mkdir()
         self.names = ['202610230001_initial', '202610230002_tenant_policies', '202610230003_schema_scope',
-                      '202610230004_slot_default', '202610240001_agent_usage', '202610250001_billing_email', package.FULL_BOUNDARY]
+                      '202610230004_slot_default', '202610240001_agent_usage', '202610250001_billing_email', '202610290001_agent_billing', package.FULL_BOUNDARY]
         paths = ['server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
                  'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh', 'script/verify-restore.sh',
                  'env/systemd/whaletodo-ai.service', 'env/systemd/ai-limits.env.example', 'env/systemd/whaletodo-api.service',
@@ -54,9 +54,9 @@ class ReleasePackageTest(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=Synthetic Test', '-c', 'user.email=synthetic@example.invalid',
                         'commit', '-qm', 'Synthetic fixture'], check=True)
 
-    def test_full_bundle_has_seven_migrations_without_secrets_or_dependencies(self):
+    def test_full_bundle_has_eight_migrations_without_secrets_or_dependencies(self):
         output = self.root / 'full.tar.gz'
-        self.assertEqual(package.prepare(self.repo, output, 'full')['migration_count'], 7)
+        self.assertEqual(package.prepare(self.repo, output, 'full')['migration_count'], 8)
         with tarfile.open(output) as archive:
             manifest = json.load(archive.extractfile('manifest.json'))
             self.assertTrue(manifest['account_api_start_permitted'])
@@ -76,7 +76,7 @@ class ReleasePackageTest(unittest.TestCase):
         self.assertEqual(a.read_bytes(), b.read_bytes())
         with tarfile.open(a) as archive:
             manifest = json.load(archive.extractfile('manifest.json'))
-            self.assertEqual(manifest['migration_count'], 7)
+            self.assertEqual(manifest['migration_count'], 8)
             self.assertFalse(manifest['account_api_start_permitted'])
             self.assertNotIn('env/systemd/whaletodo-api.service', archive.getnames())
         with self.assertRaisesRegex(ValueError, 'OUTPUT_ALREADY_EXISTS'): package.prepare(self.repo, a)

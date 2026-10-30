@@ -126,9 +126,9 @@ describe('RLS（交接文档要求的接入方式）', () => {
 });
 
 describe('Prisma schema 与实际迁移一致', () => {
-  test('schema 声明了 22 个模型', () => {
+  test('schema 声明了 23 个模型', () => {
     const models = [...schema.matchAll(/^model\s+(\w+)/gm)].map((m) => m[1]!);
-    assert.equal(models.length, 22, `实际模型数：${models.length}（${models.join(', ')}）`);
+    assert.equal(models.length, 23, `实际模型数：${models.length}（${models.join(', ')}）`);
   });
 
   test('关键字段名与适配器实现一致', () => {

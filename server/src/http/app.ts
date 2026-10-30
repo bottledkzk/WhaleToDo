@@ -5,6 +5,7 @@ import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { ApiError } from '../lib/security.ts';
 import { businessDate } from '../config.ts';
 import { parsePushBody, SyncBatchConflict, SyncPayloadTooLarge } from '../domain/sync.ts';
+import {cloudKind,validateCloudPayload} from '../domain/account-cloud.ts';
 import {
   assertEmail, assertPurpose, CODE_TTL_MS, codeDigest, createTicketToken,
   generateCode, invalidCodeError, TICKET_TTL_MS, ticketDigest,
@@ -800,9 +801,28 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     });
   });
 
-  /* ---------- 同步（五种对象类型，批次幂等 + 版本冲突） ---------- */
-  app.post('/api/v1/sync/push', async (req) => {
+  // Schedule documents are read/written only by explicit UI actions. Profile is independently automatic.
+  app.get('/api/v1/account/cloud/:kind',async(req)=>{
+    await requireAuth(req);const kind=cloudKind((req.params as {kind:string}).kind);
+    if(!repo.cloudRead)throw new ApiError('UPSTREAM_UNAVAILABLE','云端内容暂不可用');
+    return ok(req.requestId,await repo.cloudRead(req.userId!,kind));
+  });
+  app.post('/api/v1/account/cloud/:kind',{bodyLimit:1_600_000},async(req)=>{
+    await requireAuth(req);const kind=cloudKind((req.params as {kind:string}).kind);
+    const body=(req.body??{}) as Record<string,unknown>;
+    if(Object.keys(body).some(k=>!['revision','payload'].includes(k))||!Number.isSafeInteger(body.revision)||Number(body.revision)<0||Number(body.revision)>=2147483647)throw new ApiError('VALIDATION_ERROR','云端版本无效');
+    const payload=validateCloudPayload(kind,body.payload);
+    if(!repo.cloudWrite)throw new ApiError('UPSTREAM_UNAVAILABLE','云端内容暂不可用');
+    return ok(req.requestId,await repo.cloudWrite(req.userId!,kind,Number(body.revision),payload));
+  });
+  async function requireSyncVip(req:FastifyRequest){
     await requireAuth(req);
+    const expiry=repo.vipExpiresAt?await repo.vipExpiresAt(req.userId!):null;
+    if(expiry===null||expiry<=Date.now())throw new ApiError('FORBIDDEN','日程云端备份与同步需要 VIP');
+  }
+  /* ---------- Legacy schedule transport also respects the VIP boundary ---------- */
+  app.post('/api/v1/sync/push', async (req) => {
+    await requireSyncVip(req);
     if (!repo.pushSyncBatch) throw new ApiError('INTERNAL', '当前仓储未实现同步');
     const { batchId, deviceId, mutations } = parsePushBody(req.body);
     const fingerprint = fingerprintOf(config.idempotencySecret, mutations);
@@ -830,7 +850,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   app.get('/api/v1/sync/pull', async (req) => {
-    await requireAuth(req);
+    await requireSyncVip(req);
     if (!repo.pullSyncChanges) throw new ApiError('INTERNAL', '当前仓储未实现同步');
     const q = (req.query ?? {}) as { cursor?: string; limit?: string };
     if (q.cursor !== undefined && !/^\d{1,16}$/.test(q.cursor)) {

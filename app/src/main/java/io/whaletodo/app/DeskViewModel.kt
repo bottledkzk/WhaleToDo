@@ -34,6 +34,8 @@ data class DeskState(
 @OptIn(ExperimentalCoroutinesApi::class)
 class DeskViewModel(app: Application) : AndroidViewModel(app) {
     internal val repository = DeskRepository(DeskDatabase.open(app))
+    internal val cloud = io.whaletodo.app.sync.AccountCloudController(repository,viewModelScope,
+        onScheduleChanged={ReminderCenter.resyncAll(getApplication())})
     private val currentOwner = AgentBridgeHub.bridge.access
         .map { it.userId?.takeIf { owner -> owner.isNotBlank() } ?: "guest" }
         .distinctUntilChanged()

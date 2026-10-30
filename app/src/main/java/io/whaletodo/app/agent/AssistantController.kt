@@ -49,6 +49,10 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         send("意见：${opinion.trim()}",proposal)
     }
     fun refresh(){scope.launch { refreshHistory() }}
+    fun refreshCapabilities(){scope.launch{
+        bridge.refreshCapabilities()
+        mutable.update{it.copy(models=bridge.models,access=bridge.access.value,model=AgentPolicy.route(bridge.models,bridge.access.value,it.mode),notice=if(bridge.models.any{m->m.canEdit})"日程编辑能力已就绪" else "当前账户暂不可编辑日程")}
+    }}
     fun openSession(row: AgentSessionRow) { scope.launch {
         if(mutable.value.busySince!=null||row.ownerId!=mutable.value.owner)return@launch
         val messages=repo.dao.messages(row.id,row.ownerId)
@@ -119,10 +123,11 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                         is AgentChange.RenameTask->{put("type","rename_task");put("target_id",change.taskId);put("title",change.title)}
                         is AgentChange.CategorizeTask->{put("type","set_category");put("target_id",change.taskId);put("category",change.category)}
                         is AgentChange.MoveBlock->{put("type","move_block");put("target_id",change.blockId);put("start_ms",change.start);put("end_ms",change.end)}
+                        is AgentChange.ScheduleTask->{put("type","schedule_task");put("target_id",change.taskId);put("start_ms",change.start);put("end_ms",change.end)}
                     }}}))
                     .put("feedback",draft.removePrefix("意见：")).toString()
                 val context=if(!source.includeAgenda)"" else if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)
-                    reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else agendaText(snapshot)
+                    reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else if(source.mode.edits)editableAgenda(snapshot) else agendaText(snapshot)
                 val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,prompt,
                     context,source.editConsent,source.shareStyle,
                     source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner)
@@ -182,7 +187,7 @@ internal fun reflectionFacts(s:DeskSnapshot,records:List<CheckInRow>,owner:Strin
     val completed=records.filter{it.ownerId==owner&&Instant.ofEpochMilli(it.completedAt).atZone(zone).toLocalDate()==s.date&&tasks.containsKey(it.taskId)}
         .sortedByDescending{it.completedAt}.distinctBy{it.taskId}
     val unfinished=tasks.values.filter{!it.done}
-    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId)
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",2)
         .put("completion_date_known",true).put("actual_duration_recorded",false)
         .put("completed",org.json.JSONArray(completed.take(40).map{record->org.json.JSONObject()
             .put("id",record.taskId).put("title",tasks.getValue(record.taskId).title)
@@ -211,8 +216,26 @@ internal fun EditPreview.lines():List<String> = changes.map { c ->
         is AgentChange.MoveBlock -> {
             val block=source.blocks.find{it.id==c.blockId}
             val title=source.tasks.find{it.id==block?.taskId}?.title.orEmpty()
-            val format=java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.of(source.zoneId))
-            "$title：${format.format(Instant.ofEpochMilli(c.start))} — ${format.format(Instant.ofEpochMilli(c.end))}"
+            val format=java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.of(source.zoneId))
+            val old=block?.let{"${format.format(Instant.ofEpochMilli(it.start))} — ${format.format(Instant.ofEpochMilli(it.end))} → "}.orEmpty()
+            "$title：$old${format.format(Instant.ofEpochMilli(c.start))} — ${format.format(Instant.ofEpochMilli(c.end))}"
+        }
+        is AgentChange.ScheduleTask -> {
+            val title=source.tasks.find{it.id==c.taskId}?.title.orEmpty()
+            val format=java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.of(source.zoneId))
+            "新增安排 $title：${format.format(Instant.ofEpochMilli(c.start))} — ${format.format(Instant.ofEpochMilli(c.end))}"
         }
     }
+}
+
+/** Explicit milliseconds and availability make server and local date guards use the same facts. */
+internal fun editableAgenda(s:DeskSnapshot):String {
+    val zone=ZoneId.of(s.zoneId)
+    val windows=DailyWindows.build(s.date,14,zone,DeskOptions.defaults(s.preferences,s.settings),s.workTimes.associate{LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute)},DeskOptions.weekdays(s.preferences))
+    val tasks=s.tasks.sortedBy{it.id}.take(100)
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId)
+        .put("tasks",org.json.JSONArray(tasks.map{org.json.JSONObject().put("id",it.id).put("title",it.title).put("minutes",it.minutes).put("deadline_ms",it.deadline).put("importance",it.importance).put("done",it.done).put("category",it.category)}))
+        .put("blocks",org.json.JSONArray(s.blocks.take(100).map{org.json.JSONObject().put("id",it.id).put("task_id",it.taskId).put("start_ms",it.start).put("end_ms",it.end).put("locked",it.locked).put("done",it.done)}))
+        .put("available",org.json.JSONArray(windows.map{org.json.JSONObject().put("start_ms",it.start.toEpochMilli()).put("end_ms",it.end.toEpochMilli())}))
+        .put("partial",s.tasks.size>100||s.blocks.size>100).toString()
 }

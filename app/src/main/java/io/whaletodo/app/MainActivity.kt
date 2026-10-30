@@ -227,7 +227,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                     onComplete = { if (it.done) vm.reopen(it) else rating = it },
                     onShare = { text -> shareDraft = text })
                 3 -> AssistantPanel(vm.assistant, onAccount = { vm.profile.open(MyDialog.LOGIN);tab=4 }, onVip = { vm.profile.open(MyDialog.RECHARGE_VIP);tab=4 }, onPoints = { vm.profile.open(MyDialog.POINTS);tab=4 })
-                4 -> ProfilePage(vm.profile,state)
+                4 -> ProfilePage(vm.profile,state,vm.cloud)
 
             }
         }

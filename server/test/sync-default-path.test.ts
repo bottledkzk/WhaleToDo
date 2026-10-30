@@ -28,7 +28,7 @@ beforeEach(async () => {
   if (app) await app.close();
   // 等价默认 createRepository()：未设置 DATABASE_URL 时的 fromSync(new MemoryRepository())
   const repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  app = buildApp({ config: loadConfig(testEnv), repo: fromSync(repo) });
+  app = buildApp({ config: loadConfig(testEnv), repo: {...fromSync(repo),vipExpiresAt:async()=>Date.now()+3600000} });
 });
 
 // fastify 的 inject 有重载，Parameters<...>[0] 会选中零参数重载；直接用 light-my-request 类型
@@ -103,6 +103,7 @@ describe('同步默认路径（无 DATABASE_URL → fromSync 内存仓储）', (
     const base = fromSync(new MemoryRepository(createMemoryStore(), () => Date.now()));
     const failingRepo: AccountRepository = {
       ...base,
+      vipExpiresAt:async()=>Date.now()+3600000,
       pushSyncBatch: async () => { throw new SyncPayloadTooLarge(); },
     };
     const appWithFailingRepo = buildApp({ config: loadConfig(testEnv), repo: failingRepo });

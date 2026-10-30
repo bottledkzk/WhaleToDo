@@ -107,6 +107,14 @@ data class DiaryRow(val ownerId:String,val date:String,val content:String,val up
 
 @Dao
 interface DeskDao {
+    @Query("SELECT COUNT(*) FROM sync_batches WHERE ownerId=:owner AND state NOT IN ('applied','partial','rejected')") suspend fun unresolvedSyncBatches(owner:String):Int
+    @Query("SELECT * FROM diaries WHERE ownerId=:owner ORDER BY date") suspend fun diaries(owner:String):List<DiaryRow>
+    @Query("DELETE FROM diaries WHERE ownerId=:owner") suspend fun clearDiaries(owner:String)
+    @Query("SELECT * FROM task_reminders WHERE ownerId=:owner ORDER BY taskId") suspend fun reminders(owner:String):List<TaskReminderRow>
+    @Query("DELETE FROM task_reminders WHERE ownerId=:owner") suspend fun clearReminders(owner:String)
+    @Query("DELETE FROM tasks WHERE owner_id=:owner") suspend fun clearTasks(owner:String)
+    @Query("DELETE FROM checkins WHERE owner_id=:owner") suspend fun clearCheckIns(owner:String)
+    @Query("DELETE FROM daily_work_times WHERE owner_id=:owner") suspend fun clearWorkTimes(owner:String)
     @Query("SELECT * FROM ui_preferences WHERE ownerId=:owner ORDER BY `key`") fun observeOptions(owner:String):Flow<List<UiPreferenceRow>>
     @Query("SELECT * FROM ui_preferences WHERE ownerId='device' ORDER BY `key`") suspend fun deviceOptions():List<UiPreferenceRow>
     @Query("SELECT * FROM ui_preferences WHERE ownerId=:owner ORDER BY `key`") suspend fun options(owner:String):List<UiPreferenceRow>

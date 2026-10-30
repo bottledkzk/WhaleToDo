@@ -14,6 +14,8 @@ function toRepoSession(s: RepoSession): RepoSession {
 
 export function fromSync(repo: MemoryRepository): AccountRepository {
   return {
+    cloudRead:async (userId,kind)=>repo.cloudRead(userId,kind),
+    cloudWrite:async (userId,kind,revision,payload)=>repo.cloudWrite(userId,kind,revision,payload),
     // 内存实现无外部依赖；ready 只在 health/ready 使用。
     ready: async () => repo.ready(),
     findUserByUsername: async (username) => {

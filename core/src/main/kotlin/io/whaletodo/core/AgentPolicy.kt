@@ -60,8 +60,9 @@ sealed interface AgentChange {
     data class RenameTask(val taskId: String, val title: String) : AgentChange
     data class CategorizeTask(val taskId: String, val category: String) : AgentChange
     data class MoveBlock(val blockId: String, val start: Long, val end: Long) : AgentChange
+    data class ScheduleTask(val taskId: String, val start: Long, val end: Long) : AgentChange
 }
-data class AgentTaskFact(val id: String, val done: Boolean, val deadline: Long)
+data class AgentTaskFact(val id: String, val done: Boolean, val deadline: Long,val minutes:Int=0)
 data class AgentBlockFact(val id: String, val taskId: String, val start: Long, val end: Long, val locked: Boolean, val done: Boolean)
 object AgentChanges {
     fun validate(changes: List<AgentChange>, tasks: List<AgentTaskFact>, blocks: List<AgentBlockFact>,
@@ -71,6 +72,7 @@ object AgentChanges {
             is AgentChange.RenameTask -> "title:${it.taskId}"
             is AgentChange.CategorizeTask -> "category:${it.taskId}"
             is AgentChange.MoveBlock -> "block:${it.blockId}"
+            is AgentChange.ScheduleTask -> "schedule:${it.taskId}"
         } }
         require(keys.distinct().size == keys.size) { "提案包含重复变更" }
         changes.forEach { c -> when(c) {
@@ -90,10 +92,18 @@ object AgentChanges {
                 require(task.deadline == 0L || c.end <= task.deadline) { "安排超出截止时间" }
                 require(windows.any { c.start >= it.start.toEpochMilli() && c.end <= it.end.toEpochMilli() }) { "安排超出可用时段" }
             }
+            is AgentChange.ScheduleTask -> {
+                val task=tasks.singleOrNull{it.id==c.taskId}?:error("事项不存在")
+                require(!task.done&&task.minutes in 1..1440&&blocks.none{it.taskId==task.id}){"事项已有安排、已完成或缺少有效预计工时"}
+                require(c.start>now&&c.end>c.start&&c.end-c.start==task.minutes*60000L){"请保留预计工时并选择未来时段"}
+                require(task.deadline==0L||c.end<=task.deadline){"安排超出截止时间"}
+                require(windows.any{c.start>=it.start.toEpochMilli()&&c.end<=it.end.toEpochMilli()}){"安排超出可用时段"}
+            }
         } }
         val moved = changes.filterIsInstance<AgentChange.MoveBlock>().associateBy { it.blockId }
-        val finalBlocks = blocks.map { b -> moved[b.id]?.let { b.copy(start=it.start, end=it.end) } ?: b }
-        finalBlocks.forEachIndexed { i, a -> if (a.id in moved) {
+        val added=changes.filterIsInstance<AgentChange.ScheduleTask>().map{AgentBlockFact("new:${it.taskId}",it.taskId,it.start,it.end,false,false)}
+        val finalBlocks = blocks.map { b -> moved[b.id]?.let { b.copy(start=it.start, end=it.end) } ?: b }+added
+        finalBlocks.forEachIndexed { i, a -> if (a.id in moved||a in added) {
             require(finalBlocks.withIndex().none { (j,b) -> i != j && a.start < b.end && a.end > b.start }) { "提案与其他安排重叠" }
         } }
     }

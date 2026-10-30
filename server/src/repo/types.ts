@@ -89,6 +89,8 @@ export class OrderConflict extends Error {
  *    否则中途失败会出现"旧令牌已废、新令牌没发"的锁死状态
  */
 export interface AccountRepository {
+  cloudRead?(userId:string,kind:import('../domain/account-cloud.ts').CloudKind):Promise<import('../domain/account-cloud.ts').CloudDocument>;
+  cloudWrite?(userId:string,kind:import('../domain/account-cloud.ts').CloudKind,revision:number,payload:Record<string,unknown>):Promise<import('../domain/account-cloud.ts').CloudDocument>;
   /**
    * 可选就绪探测：依赖可用返回 true。实现必须吞掉底层错误，不得把 SQL、连接串
    * 或驱动原文带出去；health/ready 只用布尔结果。

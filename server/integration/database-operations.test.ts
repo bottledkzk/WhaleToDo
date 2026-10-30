@@ -27,8 +27,8 @@ beforeEach(async()=>{
  await owner.query("INSERT INTO orders(id,user_id,product_id,amount_minor,currency,status,environment,product_snapshot) VALUES($1,$2,'ops_test',100,'CNY','PENDING','mock',$3)",[order,a,snapshot]);
 });
 after(async()=>{await owner.query('TRUNCATE users CASCADE');await owner.query("DELETE FROM products WHERE product_id='ops_test'");await Promise.all([owner.end(),runtime.end(),ai.end(),prisma.$disconnect()]);});
-test('22 business tables and no automatic production environment',async()=>{
- assert.equal((await owner.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='whaletodo' AND table_name<>'_prisma_migrations'")).rows[0].n,22);
+test('23 business tables and no automatic production environment',async()=>{
+ assert.equal((await owner.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='whaletodo' AND table_name<>'_prisma_migrations'")).rows[0].n,23);
  await fails(()=>owner.query("INSERT INTO orders(id,user_id,product_id,amount_minor,currency,status,product_snapshot) VALUES($1,$2,'ops_test',100,'CNY','PENDING',$3)",[randomUUID(),a,snapshot]),'23502');
 });
 test('order and callback RLS fails closed, only owner reads',async()=>{

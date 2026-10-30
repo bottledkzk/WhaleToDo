@@ -6,6 +6,8 @@
 //  - demo_slot 由数据库函数 next_demo_slot() 生成，插入时不传
 //  - RLS 表（tasks/plan_blocks/...）不在此接口内，后续由内容仓储在事务里 set_config 处理
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
+import {ApiError} from '../lib/security.ts';
+import type {CloudKind,CloudDocument} from '../domain/account-cloud.ts';
 import { randomUUID, randomBytes, createHmac } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import type {
@@ -94,6 +96,35 @@ function toRepoSession(s: SessionRow): RepoSession {
 }
 
 export class PrismaRepository implements AccountRepository {
+  async cloudRead(userId:string,kind:CloudKind):Promise<CloudDocument>{
+    return this.prisma.$transaction(async tx=>{
+      await tx.$executeRaw`SELECT set_config('app.user_id',${userId},true)`;
+      if(kind==='schedule')await this.cloudVip(tx,userId);
+      const rows=await tx.$queryRaw<{revision:number;payload:Record<string,unknown>;updated_at:Date}[]>`SELECT revision,payload,updated_at FROM account_documents WHERE user_id=${userId}::uuid AND kind=${kind}`;
+      const r=rows[0];return r?{revision:r.revision,payload:r.payload,updated_at:r.updated_at.getTime()}:{revision:0,payload:{},updated_at:null};
+    });
+  }
+  private async cloudVip(tx:Prisma.TransactionClient,userId:string){
+    const rows=await tx.$queryRaw<{active:boolean}[]>`SELECT EXISTS(SELECT 1 FROM entitlements WHERE user_id=${userId}::uuid AND kind='vip' AND expires_at>now()) AS active`;
+    if(!rows[0]?.active)throw new ApiError('FORBIDDEN','日程云端备份与同步需要 VIP');
+  }
+  async cloudWrite(userId:string,kind:CloudKind,revision:number,payload:Record<string,unknown>):Promise<CloudDocument>{
+    return this.prisma.$transaction(async tx=>{
+      await tx.$executeRaw`SELECT set_config('app.user_id',${userId},true)`;
+      // Existing user row serializes first insert as well as compare-and-swap updates.
+      await tx.$queryRaw`SELECT id FROM users WHERE id=${userId}::uuid FOR UPDATE`;
+      if(kind==='schedule')await this.cloudVip(tx,userId);
+      const previous=await tx.$queryRaw<{revision:number;payload:Record<string,unknown>;updated_at:Date}[]>`SELECT revision,payload,updated_at FROM account_documents WHERE user_id=${userId}::uuid AND kind=${kind}`;
+      const old=previous[0];
+      if((old?.revision??0)!==revision){
+        const same=await tx.$queryRaw<{same:boolean}[]>`SELECT payload=${JSON.stringify(payload)}::jsonb AS same FROM account_documents WHERE user_id=${userId}::uuid AND kind=${kind}`;
+        if(old&&same[0]?.same)return {revision:old.revision,payload:old.payload,updated_at:old.updated_at.getTime()};
+        throw new ApiError('CONFLICT','云端内容已变化，请重新读取后确认');
+      }
+      const rows=await tx.$queryRaw<{revision:number;payload:Record<string,unknown>;updated_at:Date}[]>`INSERT INTO account_documents(user_id,kind,revision,payload) VALUES(${userId}::uuid,${kind},${revision+1},${JSON.stringify(payload)}::jsonb) ON CONFLICT(user_id,kind) DO UPDATE SET revision=EXCLUDED.revision,payload=EXCLUDED.payload,updated_at=now() RETURNING revision,payload,updated_at`;
+      const row=rows[0]!;return {revision:row.revision,payload:row.payload,updated_at:row.updated_at.getTime()};
+    });
+  }
   private readonly prisma: PrismaClient;
   private readonly now: () => number;
 
