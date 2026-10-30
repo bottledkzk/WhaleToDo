@@ -1,0 +1,45 @@
+{
+  "kind": "synthetic_real_model_calendar_receipt",
+  "anchor_date": "2026-10-31",
+  "task_id": "00000000-0000-4000-8000-000000000002",
+  "block_id": "00000000-0000-4000-8000-000000000003",
+  "total_tokens": 3692,
+  "cases": [
+    {
+      "case_id": "edit-calendar-new",
+      "usage_tokens": 1178,
+      "changes": [
+        {
+          "type": "schedule_task",
+          "target_id": "00000000-0000-4000-8000-000000000002",
+          "start_ms": 1793498400000,
+          "end_ms": 1793500200000
+        }
+      ]
+    },
+    {
+      "case_id": "edit-calendar-move",
+      "usage_tokens": 1275,
+      "changes": [
+        {
+          "type": "move_block",
+          "target_id": "00000000-0000-4000-8000-000000000003",
+          "start_ms": 1793604600000,
+          "end_ms": 1793606400000
+        }
+      ]
+    },
+    {
+      "case_id": "edit-calendar-opinion",
+      "usage_tokens": 1239,
+      "changes": [
+        {
+          "type": "schedule_task",
+          "target_id": "00000000-0000-4000-8000-000000000002",
+          "start_ms": 1793588400000,
+          "end_ms": 1793590200000
+        }
+      ]
+    }
+  ]
+}

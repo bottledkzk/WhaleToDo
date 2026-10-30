@@ -58,7 +58,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
         }
     }
 }
-@Composable internal fun ProfilePage(controller:ProfileController,desk:DeskState){
+@Composable internal fun ProfilePage(controller:ProfileController,desk:DeskState,cloud:io.whaletodo.app.sync.AccountCloudController?=null){
     val s by controller.state.collectAsState()
     BackHandler(s.dialog!=MyDialog.NONE||s.page!=MyPageRoute.HOME){controller.back()}
     val context=LocalContext.current
@@ -80,6 +80,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
             MyPageRoute.SETTINGS->LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){
                 item{Text("账户",style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
                 item{ProfileRow("○","账户信息"){controller.navigate(MyPageRoute.ACCOUNT)}}
+                item{ProfileRow("☁","账户同步","备份与同步"){controller.navigate(MyPageRoute.CLOUD)}}
                 item{ProfileRow("⌘","账户密码","重置密码"){controller.open(MyDialog.RESET_PASSWORD)}}
                 item{Text("偏好",Modifier.padding(top=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
                 item{ProfileRow("◐","外观设定"){controller.navigate(MyPageRoute.APPEARANCE)}}
@@ -89,6 +90,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
                 item{ProfileRow("ⓘ","关于"){controller.navigate(MyPageRoute.ABOUT)}}
             }
             MyPageRoute.ACCOUNT->AccountPanel(s,controller)
+            MyPageRoute.CLOUD->cloud?.let{io.whaletodo.app.sync.AccountCloudPanel(it)}
             MyPageRoute.APPEARANCE->{
                 val prefs=remember{context.getSharedPreferences("appearance",Context.MODE_PRIVATE)}
                 var theme by remember{mutableStateOf(prefs.getString("theme","system"))}

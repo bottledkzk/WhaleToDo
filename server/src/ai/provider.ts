@@ -66,8 +66,8 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const intent=requestedMove(input.context??'',input.prompt);
  if(intent&&'error' in intent)return {text:intent.error,...usage,changes:[],usable:false};
  // A uniquely bound, explicit user clock is compiled by the domain layer; the model cannot invent epoch math or constraints.
- if(intent&&(proposal.changes.length===0||proposal.changes.length===1&&proposal.changes[0]!.type==='move_block'&&proposal.changes[0]!.target_id===intent.target_id)){
-  proposal.changes=[{type:'move_block',target_id:intent.target_id,start_ms:intent.start_ms,end_ms:intent.end_ms}];
+ if(intent&&(proposal.changes.length===0||proposal.changes.length===1&&proposal.changes[0]!.type===(intent.schedule_task?'schedule_task':'move_block')&&proposal.changes[0]!.target_id===intent.target_id)){
+  proposal.changes=[{type:intent.schedule_task?'schedule_task':'move_block',target_id:intent.target_id,start_ms:intent.start_ms,end_ms:intent.end_ms}];
  }
  const problem=proposalProblem(proposal.changes,input.context??'',Date.now(),input.prompt);
  if(problem)return {text:problem,...usage,changes:[],usable:false};
@@ -76,7 +76,9 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
   try{
    const value=JSON.parse(text);
    if(continuation||!value||Object.keys(value).length!==1||!Array.isArray(value.copies)||value.copies.length!==3||value.copies.some((s:unknown)=>typeof s!=='string'||!s.trim()||/[\r\n]/u.test(s)||Array.from(s.trim()).length>50))throw Error('Invalid share copies');
-   return {text:publicAssistantText(value.copies.map((s:string)=>s.trim()).join('\n')),...usage};
+   const copies=value.copies.map((s:string)=>publicAssistantText(s.trim()));
+   if(copies.some((s:string)=>!s.trim()||/[\r\n]/u.test(s)||Array.from(s).length>50)||new Set(copies).size!==3)throw Error('Invalid branded share copies');
+   return {text:copies.join('\n'),...usage};
   }catch{return {text:'配文未完整生成，请缩小范围后重试',...usage,usable:false};}
  }
  const end=Math.max(...['。','！','？','.','!','?'].map(p=>text.lastIndexOf(p)));

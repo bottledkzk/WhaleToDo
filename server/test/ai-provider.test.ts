@@ -44,6 +44,11 @@ test('share output is exactly three bounded plain lines or an unbilled unusable 
  }
 });
 
+test('branding cannot collapse a billed three-copy result into a single identity line',async()=>{
+ const result=await callDeepSeek(config,{...input,mode:'share_copy'},reply({choices:[{message:{content:JSON.stringify({copies:['DeepSeek 建议','GPT 建议','Claude 建议']})},finish_reason:'stop'}],usage:{total_tokens:30}}) as typeof fetch);
+ assert.equal(result.usable,false);assert.equal(result.tokens,30);
+});
+
 test('actual model wrong-epoch counterexample uses the explicit clock before all domain checks',async()=>{
  const start=Date.UTC(2030,0,1,1),expected=Date.UTC(2030,0,1,2,30);
  const facts={date:'2030-01-01',timezone:'Asia/Shanghai',tasks:[{id:'t',done:false,deadline_ms:Date.UTC(2030,0,1,9)}],blocks:[{id:'b',task_id:'t',start_ms:start,end_ms:start+1800000,locked:false,done:false}]};

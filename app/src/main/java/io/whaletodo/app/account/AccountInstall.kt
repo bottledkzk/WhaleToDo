@@ -39,6 +39,7 @@ fun installAccount(context: Context) {
         val client = ApiClient(config, credentials)
         val auth = AuthApi(client, credentials)
         val session = AccountSession { credentials.read()?.sessionId }
+        AccountCloudBridgeHub.bridge = ServerAccountCloudBridge(io.whaletodo.network.ServerAccountCloudApi(client),session)
         val agent = ServerAgentBridge(AiApi(client), auth, session, accountScope)
         val profile = ServerProfileBridge(auth, session, credentials) { owner, sessionId ->
             // begin 之后的立即取消（owner=null）时 currentSessionId 仍是新代次；

@@ -19,6 +19,7 @@ data class DeskSnapshot(
 data class PlanPreview(val source: DeskSnapshot, val result: ScheduleResult)
 
 class DeskRepository(private val db: DeskDatabase) {
+    internal suspend fun <T> transaction(action:suspend ()->T):T=db.withTransaction {action()}
     val dao = db.dao()
     fun close() = db.close()
 
@@ -109,6 +110,7 @@ class DeskRepository(private val db: DeskDatabase) {
             is AgentChange.RenameTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(title=c.title.trim(), ownerId=owner)
             is AgentChange.CategorizeTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(category=c.category, ownerId=owner)
             is AgentChange.MoveBlock -> blocks[c.blockId] = blocks.getValue(c.blockId).copy(start=c.start,end=c.end,ownerId=owner)
+            is AgentChange.ScheduleTask -> {val blockId=UUID.nameUUIDFromBytes("$owner:$id:${c.taskId}".toByteArray()).toString();blocks[blockId]=BlockRow(blockId,c.taskId,c.start,c.end,ownerId=owner)}
         } }
         updated.values.forEach { dao.save(it) }
         dao.clearBlocks(owner);dao.insertBlocks(blocks.values.map { it.copy(ownerId = owner) })
@@ -129,7 +131,7 @@ class DeskRepository(private val db: DeskDatabase) {
         val windows = DailyWindows.build(source.date, 14, zone,
             DeskOptions.defaults(source.preferences,source.settings),
             source.workTimes.associate { LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute) }, DeskOptions.weekdays(source.preferences))
-        AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline) },
+        AgentChanges.validate(changes, source.tasks.map { AgentTaskFact(it.id,it.done,it.deadline,it.minutes) },
             source.blocks.map { AgentBlockFact(it.id,it.taskId,it.start,it.end,it.locked,it.done) }, System.currentTimeMillis(),windows)
     }
 

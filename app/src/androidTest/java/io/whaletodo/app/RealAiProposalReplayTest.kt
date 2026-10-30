@@ -65,6 +65,7 @@ class RealAiProposalReplayTest {
                 is AgentChange.RenameTask->assertEquals(c.title,db.dao().tasks(owner).single().title)
                 is AgentChange.CategorizeTask->assertEquals(c.category,db.dao().tasks(owner).single().category)
                 is AgentChange.MoveBlock->{assertEquals(c.start,db.dao().blocks(owner).single().start);assertEquals(c.end,db.dao().blocks(owner).single().end)}
+                is AgentChange.ScheduleTask->{assertEquals(c.start,db.dao().blocks(owner).single().start);assertEquals(c.end,db.dao().blocks(owner).single().end)}
             }}
             try{repo.applyAgent(id,owner,before,edits);fail("Duplicate acceptance must be rejected")}catch(_:IllegalStateException){}
             assertEquals(1,db.dao().receiptCount(id,owner))

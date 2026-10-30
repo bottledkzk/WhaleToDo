@@ -63,4 +63,15 @@ class AgentPolicyTest {
         assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(AgentChange.RenameTask("t","A"),AgentChange.RenameTask("t","B")),tasks,listOf(block),now,windows)}
         assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(AgentChange.MoveBlock("b",now+13*3600000,now+14*3600000)),tasks,listOf(block),now,windows)}
     }
+    @Test fun newScheduleNeedsUnscheduledTaskAndExactEstimatedDuration(){
+        val task=AgentTaskFact("new",false,now+8*3600000,30)
+        val c=AgentChange.ScheduleTask("new",now+2*3600000,now+2*3600000+1800000)
+        AgentChanges.validate(listOf(c),listOf(task),emptyList(),now,windows)
+        for(unsafe in listOf(c.copy(end=c.end+60000),c.copy(start=now-1800000,end=now),c.copy(start=now+13*3600000,end=now+13*3600000+1800000))){
+            assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(unsafe),listOf(task),emptyList(),now,windows)}
+        }
+        assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(c),listOf(task.copy(done=true)),emptyList(),now,windows)}
+        assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(c),listOf(task),listOf(block.copy(taskId="new")),now,windows)}
+        assertThrows(IllegalArgumentException::class.java){AgentChanges.validate(listOf(c),listOf(task),listOf(block.copy(start=c.start,end=c.end)),now,windows)}
+    }
 }

@@ -8,7 +8,7 @@ import java.time.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
-enum class MyPageRoute(val title:String) { HOME("我的"),SETTINGS("设置"),ACCOUNT("账户信息"),APPEARANCE("外观设定"),WORKING("Working时间"),REGION("时间和地区"),DEVICE("设备与兼容性"),ABOUT("关于") }
+enum class MyPageRoute(val title:String) { HOME("我的"),SETTINGS("设置"),ACCOUNT("账户信息"),CLOUD("账户同步"),APPEARANCE("外观设定"),WORKING("Working时间"),REGION("时间和地区"),DEVICE("设备与兼容性"),ABOUT("关于") }
 enum class MyDialog { NONE,WORKING_CLOCK,AVATAR,CHECKIN,POINTS,RECHARGE_POINTS,RECHARGE_VIP,LOGIN,REGISTER,RESET_PASSWORD,REMINDERS,DIARY,DIARY_DATE,DELETE_DIARY,OVERWRITE_DIARY,UTC_ZONES,ZONE_CONFIRM }
 data class ZoneDraft(val choice:DeskZoneChoice,val previous:DeskZoneChoice,val from:String,val to:String)
 

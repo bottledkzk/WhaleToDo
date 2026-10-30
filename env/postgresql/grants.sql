@@ -33,3 +33,5 @@ GRANT INSERT,UPDATE ON whaletodo.email_verifications,whaletodo.email_throttle,
 REVOKE DELETE ON whaletodo.orders,whaletodo.payment_events,whaletodo.email_verifications,
  whaletodo.email_throttle,whaletodo.email_verify_tickets FROM whaletodo_app;
 REVOKE CREATE ON SCHEMA whaletodo FROM PUBLIC,whaletodo_app,whaletodo_ai;
+GRANT SELECT,INSERT,UPDATE ON whaletodo.account_documents TO whaletodo_app;
+REVOKE ALL ON whaletodo.account_documents FROM whaletodo_ai;

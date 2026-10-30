@@ -113,10 +113,10 @@ class AiApi(private val client: ApiClient) {
             contextCompacted = data.bool("context_compacted") ?: false,
             proposal = data.obj("proposal")?.let { proposal ->
                 AiProposal(
-                    changes = proposal.array("changes").mapNotNull { change ->
-                        val obj = change as? JsonObject ?: return@mapNotNull null
-                        val type = obj.string("type") ?: return@mapNotNull null
-                        val target = obj.string("target_id") ?: return@mapNotNull null
+                    changes = (proposal["changes"] as? JsonArray ?: throw malformed(response)).map { change ->
+                        val obj = change as? JsonObject ?: throw malformed(response)
+                        val type = obj.string("type") ?: throw malformed(response)
+                        val target = obj.string("target_id") ?: throw malformed(response)
                         AiChange(
                             type = type,
                             targetId = target,

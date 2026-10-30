@@ -1,6 +1,9 @@
 // 内存仓储：用于本地开发与集成测试（无数据库依赖）。
 // Prisma 仓储在下一阶段接入，接口保持一致，便于替换。
 import { cycleDay, pointsFor, streakBefore } from '../domain/rewards.ts';
+import {isDeepStrictEqual} from 'node:util';
+import {ApiError} from '../lib/security.ts';
+import type {CloudKind,CloudDocument} from '../domain/account-cloud.ts';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { hashPasswordAsync, verifyPasswordAsync, issueTokens, hashToken } from '../lib/security.ts';
 import { digestEquals, MAX_ATTEMPTS, MAX_SENDS_PER_HOUR, RESEND_INTERVAL_MS } from '../domain/email.ts';
@@ -127,6 +130,20 @@ export function createMemoryStore(): MemoryStore {
 }
 
 export class MemoryRepository {
+  private cloudDocuments=new Map<string,CloudDocument>();
+  cloudRead(userId:string,kind:CloudKind):CloudDocument{
+    if(kind==='schedule'&&!this.vipExpiryAt(userId))throw new ApiError('FORBIDDEN','日程云端备份与同步需要 VIP');
+    return structuredClone(this.cloudDocuments.get(userId+':'+kind)??{revision:0,payload:{},updated_at:null});
+  }
+  cloudWrite(userId:string,kind:CloudKind,revision:number,payload:Record<string,unknown>):CloudDocument{
+    const old=this.cloudRead(userId,kind);
+    if(old.revision!==revision){
+      if(isDeepStrictEqual(old.payload,payload))return old;
+      throw new ApiError('CONFLICT','云端内容已变化，请重新读取后确认');
+    }
+    const next={revision:revision+1,payload:structuredClone(payload),updated_at:this.now()};
+    this.cloudDocuments.set(userId+':'+kind,next);return structuredClone(next);
+  }
   readonly store: MemoryStore;
   private readonly now: () => number;
 
