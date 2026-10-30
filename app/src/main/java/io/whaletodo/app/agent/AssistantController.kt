@@ -233,7 +233,7 @@ internal fun editableAgenda(s:DeskSnapshot):String {
     val zone=ZoneId.of(s.zoneId)
     val windows=DailyWindows.build(s.date,14,zone,DeskOptions.defaults(s.preferences,s.settings),s.workTimes.associate{LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute)},DeskOptions.weekdays(s.preferences))
     val tasks=s.tasks.sortedBy{it.id}.take(100)
-    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId)
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",2)
         .put("tasks",org.json.JSONArray(tasks.map{org.json.JSONObject().put("id",it.id).put("title",it.title).put("minutes",it.minutes).put("deadline_ms",it.deadline).put("importance",it.importance).put("done",it.done).put("category",it.category)}))
         .put("blocks",org.json.JSONArray(s.blocks.take(100).map{org.json.JSONObject().put("id",it.id).put("task_id",it.taskId).put("start_ms",it.start).put("end_ms",it.end).put("locked",it.locked).put("done",it.done)}))
         .put("available",org.json.JSONArray(windows.map{org.json.JSONObject().put("start_ms",it.start.toEpochMilli()).put("end_ms",it.end.toEpochMilli())}))

@@ -24,7 +24,7 @@ class AgentCalendarApplyTest {
     override val access=MutableStateFlow(AgentAccess(owner,true,20,true,setOf("deepseek-planner")))
     override val models=listOf(AgentModel("deepseek-planner","编辑",true))
     override suspend fun reply(request:AssistantRequest):AssistantReply {
-     modelCalls++;val wire=JSONObject(request.context);assertEquals(source.zoneId,wire.getString("timezone"));assertTrue(wire.getJSONArray("available").length()>0)
+     modelCalls++;val wire=JSONObject(request.context);assertEquals("Actual edit requests must advertise schedule_task support",2,wire.optInt("action_version",1));assertEquals(source.zoneId,wire.getString("timezone"));assertTrue(wire.getJSONArray("available").length()>0)
      return AssistantReply("以下是待确认的日程提案",500,chargedPoints=0,changes=listOf(AgentChange.ScheduleTask("reading",start,start+1800000)))
     }
    }
