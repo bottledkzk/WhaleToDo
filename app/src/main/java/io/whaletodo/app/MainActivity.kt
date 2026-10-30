@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
         ReminderCenter.init(this)
         enableEdgeToEdge()
         setContent {
+            AvatarPickerHost()
             val prefs = remember { getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
             var theme by remember { mutableStateOf(prefs.getString("theme", "system")) }
             DisposableEffect(prefs) {

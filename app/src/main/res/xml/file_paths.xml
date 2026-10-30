@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="shared" path="shared/"/>
+    <cache-path name="avatar_camera" path="avatar-camera/"/>
+    <files-path name="avatars" path="avatars/"/>
 </paths>
