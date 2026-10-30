@@ -127,8 +127,8 @@ class AuthApi(
     }
 
     /** 权益（当前服务端返回 VIP 占位与钱包余额） */
-    fun entitlements(): Entitlements {
-        val response = client.get("/me/entitlements")
+    fun entitlements(sessionId: String? = null): Entitlements {
+        val response = if (sessionId == null) client.get("/me/entitlements") else client.getAsSession("/me/entitlements", sessionId)
         val expires = Json.stringField(response.body, "expires_at")
             ?.let { runCatching { Instant.parse(it) }.getOrNull() }
         return Entitlements(
@@ -157,8 +157,8 @@ class AuthApi(
     }
 
     /** 钱包余额 */
-    fun wallet(): WalletBalance {
-        val response = client.get("/wallet")
+    fun wallet(sessionId: String? = null): WalletBalance {
+        val response = if (sessionId == null) client.get("/wallet") else client.getAsSession("/wallet", sessionId)
         return WalletBalance(
             available = jsonInt(response, "available") ?: throw missing(response, "available"),
             reserved = jsonInt(response, "reserved") ?: 0,

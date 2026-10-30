@@ -59,6 +59,10 @@ fun installAccount(context: Context) {
             }
         }
         ProfileBridgeHub.bridge = profile
+        io.whaletodo.app.payment.PaymentBridgeHub.bridge = io.whaletodo.app.payment.ServerPaymentBridge(
+            io.whaletodo.network.ServerPaymentApi(client), auth, session,
+            io.whaletodo.app.payment.DevicePaymentPendingStore(context.applicationContext, BuildConfig.API_BASE_URL),
+        )
         AgentBridgeHub.bridge = agent
         AccountRuntime(profile, agent)
     }

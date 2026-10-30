@@ -62,8 +62,8 @@ class ApiClient(
     ): ApiResponse = request("POST", path, body, auth, idempotencyKey)
 
     /** 以指定会话发送 POST；TokenStore 已换号时不发 HTTP。 */
-    fun postAsSession(path: String, body: String?, sessionId: String): ApiResponse =
-        request("POST", path, body, auth = true, idempotencyKey = null, boundSessionId = sessionId)
+    fun postAsSession(path: String, body: String?, sessionId: String, idempotencyKey: String? = null): ApiResponse =
+        request("POST", path, body, auth = true, idempotencyKey = idempotencyKey, boundSessionId = sessionId)
 
     /** 以指定会话发送 GET；TokenStore 已换号时不发 HTTP。 */
     fun getAsSession(path: String, sessionId: String): ApiResponse =

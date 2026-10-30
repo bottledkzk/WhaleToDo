@@ -4,6 +4,7 @@ import android.os.SystemClock
 import io.whaletodo.app.agent.*
 import io.whaletodo.app.data.*
 import io.whaletodo.core.*
+import io.whaletodo.app.payment.*
 import java.time.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -17,7 +18,8 @@ data class DiaryEditor(val date:String,val text:String,val original:DiaryRow?,va
 data class ProfileState(val owner:String="guest",val access:AgentAccess=AgentAccess(),val details:ProfileDetails?=null,
     val page:MyPageRoute=MyPageRoute.HOME,val dialog:MyDialog=MyDialog.NONE,val options:List<UiPreferenceRow> = emptyList(),val deviceOptions:List<UiPreferenceRow> = emptyList(),
     val busy:Boolean=false,val notice:String="",val error:String="",val diary:DiaryEditor?=null,val pendingDiary:DiaryOffer?=null,
-    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L,val codeResendSeconds:Int=60,val zoneDraft:ZoneDraft?=null) {
+    val workingDay:Int?=null,val codeEmail:String="",val codePurpose:CodePurpose?=null,val codeUntil:Long=0L,val codeResendSeconds:Int=60,val zoneDraft:ZoneDraft?=null,
+    val checkout:PaymentCheckout?=null) {
     val nickname:String get()=options.find{it.key=="profile.nickname"}?.value?.takeIf{it.isNotBlank()}?:details?.displayName?.takeIf{it.isNotBlank()}?:ProfileIdentity.defaultNickname(details?.publicId?:owner)
     val motto:String get()=(options.find{it.key=="profile.motto"}?.value?:details?.motto.orEmpty()).ifBlank{ProfileIdentity.DEFAULT_MOTTO}
 }
@@ -25,7 +27,7 @@ data class ProfileState(val owner:String="guest",val access:AgentAccess=AgentAcc
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProfileController(private val repo:DeskRepository,private val scope:CoroutineScope,
     private val bridge:ProfileBridge=ProfileBridgeHub.bridge,private val agent:AgentBridge=AgentBridgeHub.bridge,
-    private val onRemindersChanged:suspend ()->Unit={}) {
+    private val onRemindersChanged:suspend ()->Unit={},private val payments:PaymentBridge=PaymentBridgeHub.bridge) {
     private val mutable=MutableStateFlow(ProfileState())
     val state:StateFlow<ProfileState> = mutable.asStateFlow()
     init {
@@ -38,7 +40,9 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
             combine(repo.dao.observeOptions(owner),repo.dao.observeOptions("device")){own,device->Triple(owner,own,device)}
         }.collect{(owner,own,device)->mutable.update{if(it.owner==owner)it.copy(options=own,deviceOptions=device)else it}}}
     }
-    fun open(dialog:MyDialog){if(!mutable.value.busy)mutable.update{it.copy(dialog=dialog,error="")}}
+    fun open(dialog:MyDialog){if(!mutable.value.busy){mutable.update{it.copy(dialog=dialog,error="")}
+        if(dialog==MyDialog.RECHARGE_POINTS||dialog==MyDialog.RECHARGE_VIP)loadPayments()
+    }}
     fun navigate(page:MyPageRoute){mutable.update{it.copy(page=page,dialog=MyDialog.NONE,error="",zoneDraft=null)}}
     fun leavePage(){mutable.update{it.copy(page=MyPageRoute.HOME,dialog=MyDialog.NONE,error="",zoneDraft=null,diary=null)}}
     fun saveIdentity(nickname:Boolean,text:String):Boolean {
@@ -95,7 +99,19 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
     }
     fun signOut()=action{_->bridge.signOut()}
     fun openWorking(day:Int?){mutable.update{it.copy(workingDay=day,dialog=MyDialog.WORKING_CLOCK,error="")}}
-    fun rechargeUnavailable(){mutable.update{it.copy(error="充值尚未开放")}}
+    fun loadPayments(){if(mutable.value.access.userId==null)return
+        action {owner->val value=payments.inspect(owner);mutable.update{if(it.owner==owner)it.copy(checkout=value)else it}}
+    }
+    fun preparePayment(productId:String)=action{owner->
+        val catalog=mutable.value.checkout?.catalog?:throw ProfileException("请先加载商品")
+        if(!catalog.mockEnabled)throw ProfileException("充值尚未开放")
+        mutable.update{if(it.owner==owner)it.copy(checkout=it.checkout?.copy(pendingProductId=productId))else it}
+        val order=payments.prepare(owner,productId)
+        mutable.update{if(it.owner==owner)it.copy(checkout=it.checkout?.copy(order=order,pendingProductId=productId))else it}
+    }
+    fun confirmMockPayment()=action{owner->val order=payments.confirm(owner)
+        mutable.update{if(it.owner==owner)it.copy(checkout=it.checkout?.copy(order=order,pendingProductId=null),notice="模拟支付已确认，账户权益已刷新")else it}
+    }
     fun saveWorking(start:Int,end:Int,weekday:Int?){
         require(weekday==null||weekday in 1..7);MinuteRange(start,end)
         action{owner->repo.dao.save(UiPreferenceRow("device","working.${weekday?:"default"}","$start,$end"));dismissAfter(owner)}
