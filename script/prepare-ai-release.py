@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 
 GATEWAY_BOUNDARY = '202610300001_account_cloud'
-FULL_BOUNDARY = '202610300001_account_cloud'
+FULL_BOUNDARY = '202610300002_mock_catalog'
 
 
 def git(repo, *args):
@@ -27,7 +27,7 @@ def prepare(repo, output, profile='gateway'):
     commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
     paths = git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').decode().splitlines()
     cutoff = FULL_BOUNDARY if profile == 'full' else GATEWAY_BOUNDARY
-    count = 8
+    count = 9 if profile == 'full' else 8
     files = {}
     fixed = {'server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
              'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh',
@@ -47,7 +47,7 @@ def prepare(repo, output, profile='gateway'):
     if not required <= files.keys():
         raise ValueError('REQUIRED_RELEASE_FILE_MISSING')
     checksums = json.loads(git(repo, 'show', 'HEAD:server/prisma/migrations/checksums.json'))
-    if (len(checksums) != 8 or any(p.split('/')[-2] > FULL_BOUNDARY
+    if (len(checksums) != 9 or any(p.split('/')[-2] > FULL_BOUNDARY
             for p in paths if p.startswith('server/prisma/migrations/') and p.endswith('/migration.sql'))):
         raise ValueError('FULL_RELEASE_BOUNDARY_CHANGED')
     checksums = [m for m in checksums if m['name'] <= cutoff]
@@ -95,6 +95,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--profile', choices=['gateway', 'full'], default='gateway',
-                        help='full includes seven migrations and the account service; gateway cannot start the account API')
+                        help='full includes nine migrations and the account service; gateway cannot start the account API')
     args = parser.parse_args()
     print(json.dumps(prepare(Path(__file__).resolve().parent.parent, args.output, args.profile)))
