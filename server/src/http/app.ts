@@ -548,6 +548,8 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     if (!repo.listProducts) throw new ApiError('INTERNAL', '当前仓储未实现商品列表');
     const products = await repo.listProducts();
     return ok(req.requestId, {
+      payment_provider: config.paymentProvider,
+      mock_checkout: config.paymentProvider === 'mock' && ['test', 'demo'].includes(config.nodeEnv),
       products: products.map((p) => ({
         product_id: p.productId,
         title: p.title,
@@ -636,6 +638,29 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   if (config.paymentProvider === 'mock') {
+    // A user explicitly confirms a demo order. Amount and entitlements never come from the client.
+    app.post('/api/v1/orders/:id/mock-pay', async (req) => {
+      await requireAuth(req);
+      if (!['test', 'demo'].includes(config.nodeEnv)) throw new ApiError('FORBIDDEN', '模拟支付仅用于演示环境');
+      if (!repo.getOrder || !repo.applyPayment) throw new ApiError('INTERNAL', '订单仓储不可用');
+      const id = String((req.params as { id?: string }).id ?? '');
+      if (!ORDER_ID_RE.test(id)) throw new ApiError('FORBIDDEN', '订单不存在');
+      const order = await repo.getOrder(req.userId!, id);
+      if (!order) throw new ApiError('FORBIDDEN', '订单不存在');
+      if (order.environment !== 'mock') throw new ApiError('FORBIDDEN', '订单不是模拟订单');
+      if (Object.keys((req.body ?? {}) as object).length) throw new ApiError('VALIDATION_ERROR', '模拟确认不接受金额或权益参数');
+      const event = { order_id: id, amount_minor: order.amountMinor, currency: order.currency, status: 'succeeded' };
+      const result = await repo.applyPayment({
+        userId: req.userId!, provider: 'mock', eventId: `checkout:${id}`, orderId: id,
+        amountMinor: order.amountMinor, currency: order.currency,
+        payloadHash: paymentPayloadHash(event), now: Date.now(),
+      });
+      if (result !== 'applied' && result !== 'replay') throw new ApiError('CONFLICT', '订单状态不允许本次支付');
+      const paid = await repo.getOrder(req.userId!, id);
+      if (!paid || paid.status !== 'PAID') throw new ApiError('CONFLICT', '请重新查询订单状态');
+      return ok(req.requestId, { order: orderJson(paid), simulated: true });
+    });
+
     app.post('/api/v1/payments/mock/webhook', async (req) => {
       await requireAuth(req);
       if (!repo.applyPayment) throw new ApiError('INTERNAL', '当前仓储未实现支付回调');

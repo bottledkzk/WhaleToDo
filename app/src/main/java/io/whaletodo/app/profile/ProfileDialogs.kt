@@ -110,17 +110,39 @@ import kotlinx.coroutines.delay
     }},confirmButton={TextButton(onClick=c::dismiss){Text("关闭")}})
 }
 @Composable private fun RechargeDialog(s:ProfileState,c:ProfileController){
-    val vip=s.dialog==MyDialog.RECHARGE_VIP;var selected by remember{mutableIntStateOf(0)}
+    val vip=s.dialog==MyDialog.RECHARGE_VIP;var selected by remember{mutableStateOf("")}
+    val checkout=s.checkout;val order=checkout?.order
+    val products=checkout?.catalog?.products.orEmpty().filter{if(vip)it.vipDays>0 else it.points>0}
+    val product=checkout?.pendingProductId?:selected.takeIf{id->products.any{it.id==id}}?:products.firstOrNull()?.id
+    fun price(amount:Int,currency:String)="$currency ${java.math.BigDecimal(amount).movePointLeft(2).toPlainString()}"
     AlertDialog(onDismissRequest=c::dismiss,title={Text("充值")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-            FilterChip(!vip,{c.open(MyDialog.RECHARGE_POINTS)},{Text("积分购买")});FilterChip(vip,{c.open(MyDialog.RECHARGE_VIP)},{Text("会员充值")})}
-        (if(vip)listOf("月度会员","季度会员","年度会员")else listOf("100积分","500积分","1000积分")).forEachIndexed{i,label->
-            OutlinedCard(onClick={selected=i},border=BorderStroke(if(selected==i)2.dp else 1.dp,if(selected==i)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth()){
-                Row(Modifier.fillMaxWidth().padding(15.dp),verticalAlignment=Alignment.CenterVertically){Text(label,Modifier.weight(1f));Text(if(selected==i)"✓" else "○")}}
+            FilterChip(!vip,{c.open(MyDialog.RECHARGE_POINTS)},{Text("积分购买")},enabled=!s.busy);FilterChip(vip,{c.open(MyDialog.RECHARGE_VIP)},{Text("会员充值")},enabled=!s.busy)}
+        if(s.access.userId==null)Text("登录后查看账户可用方案")
+        else if(checkout==null)Text(if(s.busy)"正在加载方案" else "方案暂不可用，请重试")
+        else if(!checkout.catalog.mockEnabled)Text("充值尚未开放")
+        else {
+            Text("模拟支付 · MOCK",fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.primary)
+            Text("无真实扣款，模拟权益仅限当前演示账号",style=MaterialTheme.typography.bodySmall)
+            Column(Modifier.heightIn(max=260.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
+                if(order==null)products.forEach{p->OutlinedCard(onClick={selected=p.id},enabled=!s.busy&&checkout.pendingProductId==null,modifier=Modifier.fillMaxWidth()){
+                    Column(Modifier.padding(12.dp)){Text(p.title+(if(product==p.id)" ✓" else ""));Text(price(p.priceMinor,p.currency),style=MaterialTheme.typography.bodySmall)}
+                }}
+                if(order!=null){Text(order.title);Text(price(order.amountMinor,order.currency));Text("订单 ${order.id.takeLast(8)} · ${when(order.status){"PAID"->"已完成";"PENDING"->"待确认";"CLOSED"->"已关闭";else->"已退款"}}")}
+                else if(checkout.pendingProductId!=null)Text("已保留原订单请求，请恢复下单后核对")
+            }
+            if(order!=null||checkout.pendingProductId!=null)TextButton(onClick=c::loadPayments,enabled=!s.busy){Text("查询订单状态")}
         }
-        Text(if(vip)"会员权益与价格待公布" else "价格待公布",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        if(s.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
         DialogError(s)
-    }},confirmButton={TextButton(onClick={if(s.access.userId==null)c.open(MyDialog.LOGIN)else c.rechargeUnavailable()}){Text(if(s.access.userId==null)"登录后继续" else "查看方案")}},dismissButton={TextButton(onClick=c::dismiss){Text("关闭")}})
+    }},confirmButton={TextButton(onClick={when{
+        s.access.userId==null->c.open(MyDialog.LOGIN)
+        checkout==null->c.loadPayments()
+        order?.status=="PENDING"->c.confirmMockPayment()
+        product!=null->c.preparePayment(product)
+    }},enabled=!s.busy&&(s.access.userId==null||checkout==null||checkout.catalog.mockEnabled&&order?.status!="PAID"&&(order==null||order.status=="PENDING")&&product!=null)){
+        Text(when{s.access.userId==null->"登录后继续";checkout==null->"重试加载";!checkout.catalog.mockEnabled->"暂未开放";order?.status=="PAID"->"已完成";order!=null->"确认模拟支付";checkout.pendingProductId!=null->"恢复下单";else->"创建模拟订单"})
+    }},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("关闭")}})
 }
 @Composable private fun AuthDialog(s:ProfileState,c:ProfileController){
     val register=s.dialog==MyDialog.REGISTER;val reset=s.dialog==MyDialog.RESET_PASSWORD

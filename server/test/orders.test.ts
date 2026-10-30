@@ -90,6 +90,40 @@ async function pay(token: string, orderId: string, eventId: string, amountMinor:
 }
 
 describe('商品与订单（内存路径）', () => {
+  test('显式模拟确认：并发与重放只发一次权益，使用原订单快照', async () => {
+    const token = await registerAndLogin('checkout_once');
+    const id = (await createOrder(token, 'points_300', 'checkout-create')).json().data.order.id;
+    const changed = repo.store.products.get('points_300')!;
+    changed.points = 9000; changed.priceMinor = 9999;
+    const confirm = () => inject({ method: 'POST', url: `/api/v1/orders/${id}/mock-pay`, headers: { authorization: `Bearer ${token}` }, payload: {} });
+    const responses = await Promise.all([confirm(), confirm(), confirm()]);
+    for (const r of responses) { assert.equal(r.statusCode, 200, r.body); assert.equal(r.json().data.order.status, 'PAID'); assert.equal(r.json().data.simulated, true); }
+    const wallet = await inject({ method: 'GET', url: '/api/v1/wallet', headers: { authorization: `Bearer ${token}` } });
+    assert.equal(wallet.json().data.available, 300);
+    assert.equal(responses[0].json().data.order.amount_minor, 300);
+    assert.equal((await inject({ method: 'GET', url: '/api/v1/products' })).json().data.mock_checkout, true);
+  });
+
+  test('模拟确认拒绝越权、客户端金额和非模拟订单', async () => {
+    const a = await registerAndLogin('checkout_a'); const b = await registerAndLogin('checkout_b');
+    const id = (await createOrder(a)).json().data.order.id;
+    const confirm = (token:string, payload:object = {}) => inject({ method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${token}`},payload });
+    assert.equal((await confirm(b)).statusCode,403);
+    assert.equal((await confirm(a,{amount_minor:0,points:100000})).statusCode,400);
+    repo.store.orders.get(id)!.environment = 'production';
+    assert.equal((await confirm(a)).statusCode,403);
+    assert.equal(repo.store.orders.get(id)!.status,'PENDING');
+  });
+
+  test('关闭支付时不开放模拟确认，也不声明模拟能力', async () => {
+    const disabled=buildApp({config:loadConfig(DISABLED_ENV),repo:fromSync(repo)});
+    try {
+      assert.equal((await disabled.inject({method:'GET',url:'/api/v1/products'})).json().data.mock_checkout,false);
+      assert.equal((await disabled.inject({method:'POST',url:'/api/v1/orders/00000000-0000-0000-0000-000000000000/mock-pay',payload:{}})).statusCode,404);
+      assert.throws(()=>loadConfig({...MOCK_ENV,NODE_ENV:'production'}));
+    }finally{await disabled.close();}
+  });
+
   test('商品列表只返回 active，按 product_id 升序且字段齐全', async () => {
     const res = await inject({ method: 'GET', url: '/api/v1/products' });
     assert.equal(res.statusCode, 200);

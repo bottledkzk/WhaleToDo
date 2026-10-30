@@ -47,8 +47,15 @@ android {
             manifestPlaceholders["appLabel"] = "WhaleToDo 验证"
             matchingFallbacks += listOf("debug")
         }
+        create("paymentDemo") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".paymentdemo"
+            manifestPlaceholders["appLabel"] = "WhaleToDo 模拟支付"
+            buildConfigField("String", "API_BASE_URL", buildConfigString(configuredApiBase ?: "http://10.0.2.2:18080/api/v1"))
+            matchingFallbacks += listOf("debug")
+        }
     }
-    testBuildType = "verification"
+    testBuildType = providers.gradleProperty("testBuildType").orNull?.also { require(it in listOf("verification", "paymentDemo")) } ?: "verification"
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { compose = true; buildConfig = true }
@@ -58,6 +65,7 @@ kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarg
 dependencies {
     implementation(project(":core"))
     implementation(project(":network"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))
     implementation("androidx.activity:activity-compose:1.11.0")
     implementation("androidx.compose.material3:material3")
