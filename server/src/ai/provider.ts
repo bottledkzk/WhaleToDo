@@ -7,6 +7,7 @@ import {proposalProblem} from './proposal-guard.ts';
 import {normalizedAgenda} from './agenda.ts';
 import {unorderedDiaryText,diaryFacts} from './diary-facts.ts';
 import {requestedMove} from './move-intent.ts';
+import {truthfulShareCopies} from './share-facts.ts';
 export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[];usable?:boolean}
 export class ProviderFailure extends Error {
@@ -61,14 +62,12 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  }
  if(input.mode==='edit'){
  if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试',...usage,changes:[],usable:false};
- let proposal;
- try{proposal=parseProposal(text);}catch{return {text:'提案格式不完整，请补充要求后重试',...usage,changes:[],usable:false};}
  const intent=requestedMove(input.context??'',input.prompt);
  if(intent&&'error' in intent)return {text:intent.error,...usage,changes:[],usable:false};
- // A uniquely bound, explicit user clock is compiled by the domain layer; the model cannot invent epoch math or constraints.
- if(intent&&(proposal.changes.length===0||proposal.changes.length===1&&proposal.changes[0]!.type===(intent.schedule_task?'schedule_task':'move_block')&&proposal.changes[0]!.target_id===intent.target_id)){
-  proposal.changes=[{type:intent.schedule_task?'schedule_task':'move_block',target_id:intent.target_id,start_ms:intent.start_ms,end_ms:intent.end_ms}];
- }
+ // A uniquely bound explicit clock is a domain command, independent of model JSON, IDs or epoch arithmetic.
+ let proposal:{summary:string;changes:EditChange[]};
+ if(intent)proposal={summary:'待确认的安排',changes:[{type:intent.schedule_task?'schedule_task':'move_block',target_id:intent.target_id,start_ms:intent.start_ms,end_ms:intent.end_ms}]};
+ else try{proposal=parseProposal(text);}catch{return {text:'提案格式不完整，请补充要求后重试',...usage,changes:[],usable:false};}
  const problem=proposalProblem(proposal.changes,input.context??'',Date.now(),input.prompt);
  if(problem)return {text:problem,...usage,changes:[],usable:false};
  return {text:proposal.changes.length?'以下是待确认的日程提案，请预览后选择采纳或拒绝':publicAssistantText(proposal.summary.trim()||'没有可安全执行的变更，请补充调整要求'),...usage,changes:proposal.changes};}
@@ -76,7 +75,9 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
   try{
    const value=JSON.parse(text);
    if(continuation||!value||Object.keys(value).length!==1||!Array.isArray(value.copies)||value.copies.length!==3||value.copies.some((s:unknown)=>typeof s!=='string'||!s.trim()||/[\r\n]/u.test(s)||Array.from(s.trim()).length>50))throw Error('Invalid share copies');
-   const copies=value.copies.map((s:string)=>publicAssistantText(s.trim()));
+   const rawCopies=value.copies.map((s:string)=>publicAssistantText(s.trim()));
+   if(new Set(rawCopies).size!==3)throw Error('Duplicate share copies');
+   const copies=truthfulShareCopies(rawCopies,(input.context??'')+'\n'+input.prompt);
    if(copies.some((s:string)=>!s.trim()||/[\r\n]/u.test(s)||Array.from(s).length>50)||new Set(copies).size!==3)throw Error('Invalid branded share copies');
    return {text:copies.join('\n'),...usage};
   }catch{return {text:'配文未完整生成，请缩小范围后重试',...usage,usable:false};}
