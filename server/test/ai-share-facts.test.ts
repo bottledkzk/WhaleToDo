@@ -11,3 +11,8 @@ test('task estimates cannot be rewritten as recorded actual duration; valid fact
  const text=truthfulShareCopies(['坚持了两小时，收获满满','今天完成了报告','明天继续把下一步做好'],'✓ 报告\n预计120分钟');
  assert.ok(!text[0]!.includes('两小时'));assert.equal(text[1],'今天完成了报告');
 });
+test('unfinished task copy cannot claim personal progress through indirect past-tense praise',()=>{
+ const text=truthfulShareCopies(['答辩截止就在今晚，你已一步步走到这里，很不容易。','终于走到答辩这一步，辛苦了','接下来逐项准备答辩'],'○ 演示·项目答辩\n截止 10/31 20:00');
+ assert.ok(!text.join('').includes('已一步步'));assert.ok(!text.join('').includes('辛苦了'));
+ assert.equal(text[2],'接下来逐项准备答辩');assert.equal(new Set(text).size,3);
+});
