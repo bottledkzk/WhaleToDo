@@ -10,12 +10,14 @@ internal data class SharePending(
     val styleCode: String,
     val state: String,
     val createdAt: Long,
+    val sourceFingerprint: String = "",
 )
 
 internal interface SharePendingStore {
     fun load(ownerId: String): SharePending?
     fun save(pending: SharePending)
-    fun clear(ownerId: String)
+    /** Removes only the matching request when requestId is supplied. */
+    fun clear(ownerId: String, requestId: String? = null)
 }
 
 /**
@@ -36,6 +38,7 @@ internal class SharedPreferencesSharePendingStore(context: Context) : SharePendi
                 styleCode = json.getString("styleCode"),
                 state = json.getString("state"),
                 createdAt = json.getLong("createdAt"),
+                sourceFingerprint = json.optString("sourceFingerprint", ""),
             ).takeIf { it.ownerId == ownerId && it.requestId.isNotBlank() }
         }.getOrNull()
     }
@@ -47,12 +50,16 @@ internal class SharedPreferencesSharePendingStore(context: Context) : SharePendi
             .put("styleCode", pending.styleCode)
             .put("state", pending.state)
             .put("createdAt", pending.createdAt)
+            .put("sourceFingerprint", pending.sourceFingerprint)
         val ok = prefs.edit().putString(key(pending.ownerId), json.toString()).commit()
         if (!ok) throw IllegalStateException("SHARE_PENDING_NOT_PERSISTED")
     }
 
-    override fun clear(ownerId: String) {
-        prefs.edit().remove(key(ownerId)).commit()
+    override fun clear(ownerId: String, requestId: String?) {
+        val current = load(ownerId)
+        if (requestId == null || current?.requestId == requestId) {
+            prefs.edit().remove(key(ownerId)).commit()
+        }
     }
 
     private fun key(ownerId: String) = "owner:$ownerId"

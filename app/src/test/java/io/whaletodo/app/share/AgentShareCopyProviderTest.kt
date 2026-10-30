@@ -37,8 +37,24 @@ class AgentShareCopyProviderTest {
         override fun save(pending: SharePending) {
             values[pending.ownerId] = pending
         }
-        override fun clear(ownerId: String) {
-            values.remove(ownerId)
+        override fun clear(ownerId: String, requestId: String?) {
+            if (requestId == null || values[ownerId]?.requestId == requestId) {
+                values.remove(ownerId)
+            }
+        }
+    }
+
+    private class FakeDraftStore : ShareDraftStore {
+        val values = mutableMapOf<String, ShareDraft>()
+        var failSave = false
+        override fun load(ownerId: String, sourceFingerprint: String): ShareDraft? =
+            values["$ownerId:$sourceFingerprint"]
+        override fun save(draft: ShareDraft) {
+            if (failSave) throw IllegalStateException("SYNTHETIC_DRAFT_SAVE_FAILURE")
+            values["${draft.ownerId}:${draft.sourceFingerprint}"] = draft
+        }
+        override fun clear(ownerId: String, sourceFingerprint: String) {
+            values.remove("$ownerId:$sourceFingerprint")
         }
     }
 
@@ -73,6 +89,7 @@ class AgentShareCopyProviderTest {
         val provider: AgentShareCopyProvider,
         val bridge: FakeBridge,
         val store: FakeStore,
+        val drafts: FakeDraftStore,
     )
 
     private fun successReply(): AssistantReply = AssistantReply("第一句\n第二句\n第三句", 3)
@@ -80,12 +97,13 @@ class AgentShareCopyProviderTest {
     private fun harness(
         access: AgentAccess = normalAccess,
         store: FakeStore = FakeStore(),
+        drafts: FakeDraftStore = FakeDraftStore(),
         models: List<AgentModel> = listOf(model),
         reply: suspend (AssistantRequest) -> AssistantReply = { successReply() },
         query: suspend (String) -> AssistantReply = { successReply() },
     ): Harness {
         val bridge = FakeBridge(access, models, reply, query)
-        return Harness(AgentShareCopyProvider(store, bridge), bridge, store)
+        return Harness(AgentShareCopyProvider(store, drafts, bridge), bridge, store, drafts)
     }
 
     private fun pendingHarness(
@@ -140,10 +158,18 @@ class AgentShareCopyProviderTest {
         })
         val result = runBlocking { harness.provider.suggest(ShareStyle.LITERARY, "源文本") }
 
-        assertEquals(listOf("第一句", "第二句", "第三句"), result)
+        assertEquals(listOf("第一句", "第二句", "第三句"), result.suggestions)
+        assertEquals(20, result.usage)
+        assertNull(result.chargedPoints)
         assertEquals(1, harness.bridge.replyCalls)
         assertEquals(0, harness.bridge.queryCalls)
         assertNull(harness.store.load("owner-1"))
+        val fingerprint = ShareDraft.fingerprint("源文本")
+        val draft = harness.drafts.load("owner-1", fingerprint)
+        assertNotNull(draft)
+        assertEquals(result.requestId, draft!!.requestId)
+        assertEquals(ShareStyle.LITERARY.code, draft.styleCode)
+        assertEquals(listOf("第一句", "第二句", "第三句"), draft.suggestions)
         val request = harness.bridge.lastRequest!!
         assertEquals(AgentMode.SHARE_COPY.code, request.mode)
         assertEquals(model.code, request.model)
@@ -199,7 +225,7 @@ class AgentShareCopyProviderTest {
 
         val result = runBlocking { harness.provider.recover("owner-1") }
 
-        assertEquals(listOf("第一句", "第二句", "第三句"), result)
+        assertEquals(listOf("第一句", "第二句", "第三句"), result?.suggestions)
         assertEquals(1, harness.bridge.replyCalls)
         assertEquals(1, harness.bridge.queryCalls)
         assertEquals(id, harness.bridge.lastQueryId)
@@ -281,7 +307,7 @@ class AgentShareCopyProviderTest {
         assertNull(store.load("owner-1"))
 
         val result = runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "新请求") }
-        assertEquals(3, result.size)
+        assertEquals(3, result.suggestions.size)
         assertEquals(2, harness.bridge.replyCalls)
         assertNull(store.load("owner-1"))
         assertNotNull(harness.bridge.lastRequest)
@@ -307,7 +333,7 @@ class AgentShareCopyProviderTest {
         )
         assertNull(runBlocking { ownerB.provider.pending("owner-b") })
         val bResult = runBlocking { ownerB.provider.suggest(ShareStyle.MINIMAL, "B 源文本") }
-        assertEquals(3, bResult.size)
+        assertEquals(3, bResult.suggestions.size)
         assertNotNull(store.load("owner-a"))
         assertEquals(pendingA.requestId, store.load("owner-a")?.requestId)
         assertNull(store.load("owner-b"))
@@ -321,7 +347,7 @@ class AgentShareCopyProviderTest {
         val restarted = harness(store = first.store)
         assertEquals(id, runBlocking { restarted.provider.pending("owner-1") })
         val result = runBlocking { restarted.provider.recover("owner-1") }
-        assertEquals(3, result?.size)
+        assertEquals(3, result?.suggestions?.size)
         assertEquals(1, restarted.bridge.queryCalls)
         assertEquals(0, restarted.bridge.replyCalls)
         assertNull(first.store.load("owner-1"))
@@ -363,7 +389,7 @@ class AgentShareCopyProviderTest {
 
         val result = runBlocking { harness.provider.recover("owner-1") }
 
-        assertEquals(3, result?.size)
+        assertEquals(3, result?.suggestions?.size)
         assertEquals(id, harness.bridge.lastQueryId)
         assertEquals(1, harness.bridge.replyCalls)
         assertEquals(1, harness.bridge.queryCalls)
@@ -392,7 +418,7 @@ class AgentShareCopyProviderTest {
         harness.bridge.access.value = normalAccess
         val result = runBlocking { harness.provider.recover("owner-1") }
 
-        assertEquals(3, result?.size)
+        assertEquals(3, result?.suggestions?.size)
         assertEquals(id, harness.bridge.lastQueryId)
         assertEquals(1, harness.bridge.replyCalls)
         assertEquals(1, harness.bridge.queryCalls)
@@ -412,7 +438,7 @@ class AgentShareCopyProviderTest {
         assertEquals(1, harness.bridge.replyCalls)
 
         val result = runBlocking { harness.provider.recover("owner-1") }
-        assertEquals(3, result?.size)
+        assertEquals(3, result?.suggestions?.size)
         assertEquals(id, harness.bridge.lastQueryId)
         assertEquals(1, harness.bridge.queryCalls)
         assertNull(harness.store.load("owner-1"))
@@ -490,6 +516,86 @@ class AgentShareCopyProviderTest {
         assertEquals(1, harness.bridge.queryCalls)
         assertEquals("owner-1", harness.bridge.lastQueryOwner)
         assertEquals(1, harness.bridge.replyCalls)
+    }
+
+    @Test
+    fun `success persists receipt before clearing pending and keeps zero points distinct`() {
+        val harness = harness(reply = {
+            AssistantReply("一句\n二句", totalTokens = 0, chargedPoints = 0)
+        })
+        val result = runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        val fingerprint = ShareDraft.fingerprint("源文本")
+
+        assertNull(result.usage)
+        assertEquals(0, result.chargedPoints)
+        assertNull(harness.store.load("owner-1"))
+        val draft = harness.drafts.load("owner-1", fingerprint)!!
+        assertEquals(result.requestId, draft.requestId)
+        assertEquals(0, draft.chargedPoints)
+        assertNull(draft.usage)
+        assertEquals(listOf("一句", "二句"), draft.suggestions)
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(0, harness.bridge.queryCalls)
+        assertNull(runBlocking { harness.provider.recover("owner-1", fingerprint) })
+        assertEquals(1, harness.bridge.replyCalls)
+    }
+
+    @Test
+    fun `draft save failure keeps original pending and recover saves without a new POST`() {
+        val drafts = FakeDraftStore().apply { failSave = true }
+        val harness = harness(drafts = drafts)
+        val error = assertThrows(AgentPendingException::class.java) {
+            runBlocking { harness.provider.suggest(ShareStyle.MINIMAL, "源文本") }
+        }
+        val fingerprint = ShareDraft.fingerprint("源文本")
+        assertEquals(error.requestId, harness.store.load("owner-1")?.requestId)
+        assertEquals(1, harness.bridge.replyCalls)
+
+        drafts.failSave = false
+        val recovered = runBlocking { harness.provider.recover("owner-1", fingerprint) }
+        assertNotNull(recovered)
+        assertEquals(error.requestId, recovered!!.requestId)
+        assertNull(harness.store.load("owner-1"))
+        assertNotNull(drafts.load("owner-1", fingerprint))
+        assertEquals(1, harness.bridge.replyCalls)
+        assertEquals(1, harness.bridge.queryCalls)
+    }
+
+    @Test
+    fun `source fingerprint isolates drafts and a new process can reload them`() {
+        val drafts = FakeDraftStore()
+        val first = harness(drafts = drafts)
+        runBlocking { first.provider.suggest(ShareStyle.MINIMAL, "来源 A") }
+        val fingerprintA = ShareDraft.fingerprint("来源 A")
+        val fingerprintB = ShareDraft.fingerprint("来源 B")
+        assertNotNull(drafts.load("owner-1", fingerprintA))
+        assertNull(drafts.load("owner-1", fingerprintB))
+
+        val restarted = harness(drafts = drafts)
+        val restored = restarted.drafts.load("owner-1", fingerprintA)
+        assertNotNull(restored)
+        assertEquals(first.store.load("owner-1"), null)
+        runBlocking { restarted.provider.suggest(ShareStyle.MINIMAL, "来源 A") }
+        assertEquals(1, restarted.bridge.replyCalls)
+    }
+
+    @Test
+    fun `drafts are owner isolated and never auto-send on reload`() {
+        val drafts = FakeDraftStore()
+        val ownerA = harness(access = normalAccess.copy(userId = "owner-a"), drafts = drafts)
+        val ownerB = harness(access = normalAccess.copy(userId = "owner-b"), drafts = drafts)
+        runBlocking { ownerA.provider.suggest(ShareStyle.MINIMAL, "同一来源") }
+        runBlocking { ownerB.provider.suggest(ShareStyle.MINIMAL, "同一来源") }
+        val fingerprint = ShareDraft.fingerprint("同一来源")
+
+        val draftA = drafts.load("owner-a", fingerprint)
+        val draftB = drafts.load("owner-b", fingerprint)
+        assertNotNull(draftA)
+        assertNotNull(draftB)
+        assertFalse(draftA!!.requestId == draftB!!.requestId)
+        assertEquals(1, ownerA.bridge.replyCalls)
+        assertEquals(1, ownerB.bridge.replyCalls)
+        assertEquals(0, ownerA.bridge.queryCalls)
     }
 
     @Test
