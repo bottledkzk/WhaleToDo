@@ -19,7 +19,11 @@ export function requestedMove(context:string,request:string):Move|{error:string}
  if(!/移到|移动到|挪到|改为|调整到|安排到|安排在|改到/u.test(feedback))return null;
  if(/之前|之后|以前|以后|左右|大后天|下个月|下月|明年|每[天周月]/u.test(feedback))return clarification;
  const clocks=[...feedback.matchAll(/(?<!\d)(?:(上午|下午|晚上|中午)\s*)?([01]?\d|2[0-3])(?::([0-5]\d)|点(?:(半)|([0-5]?\d)分?)?)(?![:\d])/gu)];
- if(clocks.length!==1)return clarification;
+ if(clocks.length!==1&&clocks.length!==2)return clarification;
+ if(clocks.length===2){
+  const between=feedback.slice(clocks[0]!.index!+clocks[0]![0].length,clocks[1]!.index);
+  if(!/^\s*(?:到|至|[-–—~～])\s*$/u.test(between))return clarification;
+ }
  const parsed=normalizedAgenda(context) as any;
  const agenda=parsed?.agenda&&typeof parsed.agenda==='object'?parsed.agenda:parsed;
  const today=agenda?.date??agenda?.today,zone=agenda?.timezone;
@@ -46,9 +50,13 @@ export function requestedMove(context:string,request:string):Move|{error:string}
  if(!Number.isSafeInteger(block.start_ms)||!Number.isSafeInteger(block.end_ms)||block.end_ms<=block.start_ms)return clarification;
  try{
   const format=new Intl.DateTimeFormat('sv-SE',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
-  let hour=Number(clocks[0]![2]);const minute=Number(clocks[0]![3]??(clocks[0]![4]?'30':clocks[0]![5]??'0'));
-  const period=clocks[0]![1];
-  if(period){if(hour>12||hour===0)return clarification;if(/下午|晚上|中午/u.test(period)&&hour<12)hour+=12;if(period==='上午'&&hour===12)hour=0;}
+  const clockParts=(match:RegExpMatchArray,inherited?:string)=>{
+   let hour=Number(match[2]);const minute=Number(match[3]??(match[4]?'30':match[5]??'0'));
+   const period=match[1]??inherited;
+   if(period){if(hour>12||hour===0)return null;if(/下午|晚上|中午/u.test(period)&&hour<12)hour+=12;if(period==='上午'&&hour===12)hour=0;}
+   return String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0')+':00';
+  };
+  const clock=clockParts(clocks[0]!);if(!clock)return clarification;
   let date=scheduleTask?today:format.format(block.start_ms).slice(0,10);
   const dates=[...feedback.matchAll(/(\d{4})(?:[-/]|年)(\d{1,2})(?:[-/]|月)(\d{1,2})日?|(\d{1,2})月(\d{1,2})日?|(今天|明天|后天)|(本周|下周|这周|周|星期)([一二三四五六日天])/gu)];
   if(dates.length>1)return clarification;
@@ -61,14 +69,23 @@ export function requestedMove(context:string,request:string):Move|{error:string}
     date=new Date(day(today)!+offset*86400000).toISOString().slice(0,10);}
   }else if(/昨天|大后天|下个|下月|下周|周末|月底|明年|每[天周月]|之前|之后|左右|或者|或是|未来|\d{1,2}[-/]\d{1,2}|[一二三四五六七八九十0-9]+天后/u.test(feedback))return clarification;
   if(day(date)===null)return {error:'日期无效，请核对年月日'};
-  const clock=String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0')+':00',wanted=date+' '+clock;
-  const localUtc=Date.parse(date+'T'+clock+'Z'),matches=new Set<number>();
-  for(const delta of [-86400000,0,86400000]){
-   const probe=localUtc+delta,offset=Date.parse(format.format(probe).replace(' ','T')+'Z')-probe,target=localUtc-offset;
-   if(format.format(target)===wanted)matches.add(target);
+  const resolve=(wallClock:string)=>{
+   const wanted=date+' '+wallClock,localUtc=Date.parse(date+'T'+wallClock+'Z'),matches=new Set<number>();
+   for(const delta of [-86400000,0,86400000]){
+    const probe=localUtc+delta,offset=Date.parse(format.format(probe).replace(' ','T')+'Z')-probe,target=localUtc-offset;
+    if(format.format(target)===wanted)matches.add(target);
+   }
+   return matches.size===1?[...matches][0]!:null;
+  };
+  const start=resolve(clock);
+  if(start===null)return {error:'该本地时间不存在或有时区歧义，请选择其他明确时段'};
+  const end=start+block.end_ms-block.start_ms;
+  if(clocks.length===2){
+   const endClock=clockParts(clocks[1]!,clocks[0]![1]);if(!endClock)return clarification;
+   const explicitEnd=resolve(endClock);
+   if(explicitEnd===null)return {error:'该本地时间不存在或有时区歧义，请选择其他明确时段'};
+   if(explicitEnd!==end)return {error:'所选时段与事项工时不一致，请保留预计工时并选择同一天的完整时段'};
   }
-  if(matches.size!==1)return {error:'该本地时间不存在或有时区歧义，请选择其他明确时段'};
-  const start=[...matches][0]!;
-  return {target_id:block.id,start_ms:start,end_ms:start+block.end_ms-block.start_ms,timezone:zone,...(scheduleTask?{schedule_task:true as const}:{})};
+  return {target_id:block.id,start_ms:start,end_ms:end,timezone:zone,...(scheduleTask?{schedule_task:true as const}:{})};
  }catch{return {error:'日程日期或时区无效，请重新读取'};}
 }

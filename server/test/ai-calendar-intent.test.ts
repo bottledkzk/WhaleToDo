@@ -28,3 +28,15 @@ test('opinion can bind a not-yet-accepted new schedule target without applying i
  const text=JSON.stringify({feedback:'改为后天11点',unaccepted_changes:[{type:'schedule_task',target_id:'t',start_ms:1,end_ms:2}]});
  assert.equal(compile(text).start_ms,Date.UTC(2030,0,3,3));
 });
+
+test('one explicit time range preserves duration instead of rejecting two unambiguous clocks',()=>{
+ const range=compile('请把阅读安排在2030年1月3日16:00到16:30，其他安排保持不变');
+ assert.equal(range.start_ms,Date.UTC(2030,0,3,8));assert.equal(range.end_ms,Date.UTC(2030,0,3,8,30));
+ assert.equal(range.schedule_task,true);
+ assert.equal(compile('把阅读安排到明天下午1点到1点半').start_ms,Date.UTC(2030,0,2,5));
+ assert.ok(compile('把阅读安排到明天16:00到16:20').error);
+ assert.ok(compile('把阅读安排到明天16:00或者17:00').error);
+ assert.ok(compile('把阅读安排到明天23:45到00:15').error);
+ const ambiguous={...base,date:'2030-11-03',timezone:'America/New_York'};
+ assert.ok(compile('把阅读安排到2030-11-03 00:30到01:00',ambiguous).error);
+});
