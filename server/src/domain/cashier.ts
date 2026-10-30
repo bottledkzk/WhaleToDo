@@ -1,0 +1,15 @@
+import type {RepoOrder} from '../repo/types.ts';
+const escape=(s:string)=>s.replace(/[&<>"']/gu,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+/** Authenticated server-rendered checkout; no script, credential, third-party page or payment mutation. */
+export function cashierHtml(order:RepoOrder):string {
+ const paid=order.status==='PAID',pending=order.status==='PENDING';
+ const amount=(order.amountMinor/100).toFixed(2);
+ const content=paid?'<div class="success">✓</div><h1>支付成功</h1><p>'+escape(order.snapshot.title)+'</p><a class="button" href="whaletodo-pay://return">完成</a>':pending?
+ '<h1>确认订单</h1><p class="product">'+escape(order.snapshot.title)+'</p><div class="price">'+escape(order.currency==='CNY'?'¥':order.currency+' ')+amount+'</div>'+ 
+ '<div class="number">订单尾号 '+escape(order.id.slice(-8))+'</div><form action="whaletodo-pay://confirm" method="get">'+
+ '<input type="hidden" name="order" value="'+escape(order.id)+'"><h2>支付方式</h2><label><span class="icon blue">支</span><span>支付宝</span><input type="radio" name="channel" value="alipay" checked></label>'+ 
+ '<label><span class="icon red">银</span><span>云闪付</span><input type="radio" name="channel" value="unionpay"></label><button type="submit">确认支付 '+escape(order.currency==='CNY'?'¥':order.currency+' ')+amount+'</button></form>':
+ '<h1>订单已结束</h1><a class="button" href="whaletodo-pay://return">返回</a>';
+ return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; form-action whaletodo-pay:; base-uri \'none\'"><title>WhaleToDo 收银台</title><style>'+ 
+ '*{box-sizing:border-box}body{margin:0;background:#f5f7f5;color:#173b40;font:16px system-ui,sans-serif}main{max-width:460px;margin:24px auto;padding:26px 24px;background:white;border-radius:24px}header{display:flex;justify-content:space-between;align-items:center;color:#547176;font-size:14px}header b{font-size:18px;color:#176b75}.badge{font-size:12px;background:#e5f3ef;padding:5px 9px;border-radius:20px}h1{text-align:center;font-size:22px;margin:32px 0 16px}.product{text-align:center;font-size:17px}.price{text-align:center;font-size:42px;font-weight:700;margin:14px 0}.number{text-align:center;font-size:12px;color:#76878b;margin-bottom:34px}h2{font-size:14px;margin:20px 0 8px}label{display:flex;align-items:center;gap:12px;border:1px solid #e1e8e6;border-radius:15px;padding:16px;margin:10px 0}label input{margin-left:auto;accent-color:#176b75;width:19px;height:19px}.icon{color:white;border-radius:9px;padding:6px 9px}.blue{background:#168de2}.red{background:#d54655}button,.button{display:block;width:100%;border:0;border-radius:15px;padding:16px;background:#176b75;color:white;text-align:center;text-decoration:none;font:600 16px system-ui;margin-top:28px}.success{text-align:center;font-size:44px;color:#27845b;margin-top:24px}p{text-align:center}</style></head><body><main><header><b>WhaleToDo</b><span class="badge">模拟支付</span></header>'+content+'</main></body></html>';
+}

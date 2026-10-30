@@ -43,5 +43,10 @@
     "name": "202610300002_mock_catalog",
     "checksum": "000c7db50c7ada43abaa5d34d82028cc9f91a95fdadf254b386549a114c24bba",
     "crlf_checksum": "3071bb82f399bc17e06fb62f6f9ef1599cac89fb70a8cc996aecd5d9daacfd0c"
+  },
+  {
+    "name": "202610300003_payment_tiers",
+    "checksum": "b4d83d79148011288e950117991428a028888fb86e1a07f3900a5c50e21f8b00",
+    "crlf_checksum": "ef3b61bfb3d7b78a9b3d71ea3161cb98666f82d4d57cc68eca7c74cdc5a1d342"
   }
 ]

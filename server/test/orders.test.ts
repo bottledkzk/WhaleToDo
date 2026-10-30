@@ -78,6 +78,30 @@ async function createOrder(token: string, productId = 'vip_30d', idemKey?: strin
   });
 }
 
+test('online cashier is owner-bound read-only HTML; only explicit authenticated payment credits the order',async()=>{
+ const a=await registerAndLogin('cashier_owner'),b=await registerAndLogin('cashier_other');
+ const created=await createOrder(a);const id=created.json().data.order.id;
+ const request=(token?:string)=>inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:token?{authorization:`Bearer ${token}`}:{}});
+ assert.equal((await request()).statusCode,401);assert.equal((await request(b)).statusCode,403);
+ const page=await request(a);assert.equal(page.statusCode,200);assert.match(page.headers['content-type'] as string,/text\/html/u);
+ assert.equal(page.headers['cache-control'],'no-store');assert.match(page.headers['content-security-policy'] as string,/default-src 'none'/u);
+ assert.match(page.body,/确认支付 ¥9\.90/u);assert.match(page.body,/whaletodo-pay:\/\/confirm/u);assert.match(page.body,/模拟支付/u);
+ assert.ok(!page.body.includes(a));assert.ok(!page.body.includes('<script'));
+ await request(a);assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).json().data.order.status,'PENDING');
+ const paid=await inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${a}`},payload:{}});assert.equal(paid.statusCode,200);
+ const success=await request(a);assert.match(success.body,/支付成功/u);assert.ok(!success.body.includes('<form'));
+});
+
+test('cashier escapes snapshot content and cannot expose production orders',async()=>{
+ const token=await registerAndLogin('cashier_escape');
+ repo.store.products.set('unsafe',{productId:'unsafe',title:'<img src=x onerror=alert(1)>',priceMinor:100,currency:'CNY',vipDays:0,points:1,active:true});
+ const created=await createOrder(token,'unsafe');const id=created.json().data.order.id;
+ const page=await inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${token}`}});
+ assert.match(page.body,/&lt;img/u);assert.ok(!page.body.includes('<img'));
+ const row=repo.store.orders.get(id)!;repo.store.orders.set(id,{...row,environment:'production'});
+ assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${token}`}})).statusCode,403);
+});
+
 async function pay(token: string, orderId: string, eventId: string, amountMinor: number, currency = 'CNY') {
   return inject({
     method: 'POST', url: '/api/v1/payments/mock/webhook',

@@ -18,6 +18,7 @@ import {
   environmentForProvider, ORDER_ID_RE, paymentPayloadHash, PRODUCT_ID_RE,
 } from '../domain/orders.ts';
 import type { ServerConfig } from '../config.ts';
+import {cashierHtml} from '../domain/cashier.ts';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -638,6 +639,16 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   if (config.paymentProvider === 'mock') {
+    app.get('/api/v1/orders/:id/cashier', async (req, reply) => {
+      await requireAuth(req);
+      const id=String((req.params as {id?:string}).id??'');
+      if(!ORDER_ID_RE.test(id)||!repo.getOrder)throw new ApiError('FORBIDDEN','订单不存在');
+      const order=await repo.getOrder(req.userId!,id);
+      if(!order||order.environment!=='mock')throw new ApiError('FORBIDDEN','订单不存在');
+      return reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff')
+        .header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action whaletodo-pay:; base-uri 'none'; frame-ancestors 'none'")
+        .type('text/html; charset=utf-8').send(cashierHtml(order));
+    });
     // Explicit authenticated confirmation. Amount and entitlements only come from the order snapshot.
     app.post('/api/v1/orders/:id/mock-pay', async (req) => {
       await requireAuth(req);

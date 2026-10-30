@@ -623,6 +623,9 @@ export class MemoryRepository {
   /** 演示商品：仅在 demo + 内存模式由 main.ts 调用；已存在则跳过。 */
   seedDemoProducts(): number {
     const products: RepoProduct[] = [
+      {productId:'points_20',title:'20 积分',priceMinor:180,currency:'CNY',vipDays:0,points:20,active:true},
+      {productId:'points_500',title:'500 积分',priceMinor:2500,currency:'CNY',vipDays:0,points:500,active:true},
+      {productId:'vip_90d',title:'VIP 90 天',priceMinor:4800,currency:'CNY',vipDays:90,points:0,active:true},
       {
         productId: 'vip_7d',
         title: 'VIP 7 天',
