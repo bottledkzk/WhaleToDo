@@ -134,7 +134,26 @@ internal fun ShareStyleSheet(
     var pendingCameraFile by remember { mutableStateOf<File?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
     var pendingAction by remember { mutableStateOf<ShareImageAction?>(null) }
+    var clearing by remember { mutableStateOf(false) }
+    var closing by remember { mutableStateOf(false) }
     val exportSnapshot = rememberUpdatedState(ShareCardSnapshot(selected, lines, background))
+    val persistScope = remember { ShareDraftIo.scope }
+    val persister = remember(draftStore, access.userId, sourceFingerprint) {
+        val store = draftStore
+        val owner = access.userId?.takeIf { it.isNotBlank() }
+        if (store != null && owner != null) {
+            ShareDraftPersister(store, owner, sourceFingerprint)
+        } else {
+            null
+        }
+    }
+    // Backstop for account/source changes that remove the sheet without pressing close.
+    // The explicit close path awaits flush; this keeps the last write durable too.
+    DisposableEffect(persister) {
+        onDispose {
+            persister?.let { writer -> ShareDraftIo.scope.launch { writer.flush() } }
+        }
+    }
 
     fun showStatus(message: String, error: Boolean = false, retry: ShareImageAction? = null) {
         status = message
@@ -145,14 +164,14 @@ internal fun ShareStyleSheet(
     fun stillSameOwner(owner: String?): Boolean = currentOwner == owner
 
     fun persistDraft() {
-        val store = draftStore ?: return
-        val owner = access.userId?.takeIf { it.isNotBlank() } ?: return
+        val writer = persister ?: return
+        if (closing || clearing) return
         val requestId = draftRequestId ?: return
         if (suggestions.isEmpty()) return
         val selectedText = caption.takeIf { it in suggestions }
         val editedText = caption.takeIf { it.isNotBlank() && it != text && it !in suggestions }
         val draft = ShareDraft(
-            ownerId = owner,
+            ownerId = writer.ownerId,
             sourceFingerprint = sourceFingerprint,
             suggestions = suggestions.take(3),
             selectedText = selectedText,
@@ -163,23 +182,64 @@ internal fun ShareStyleSheet(
             chargedPoints = draftChargedPoints,
             updatedAt = System.currentTimeMillis(),
         )
-        scope.launch(Dispatchers.IO) {
-            runCatching { store.save(draft) }
+        val job = writer.save(draft)
+        persistScope.launch {
+            val result = job.await()
+            if (!result.success) {
+                withContext(Dispatchers.Main.immediate) {
+                    showStatus("草稿保存失败，请重试", error = true)
+                }
+            }
         }
     }
 
     fun clearDraft() {
-        val store = draftStore ?: return
-        val owner = access.userId?.takeIf { it.isNotBlank() } ?: return
-        scope.launch(Dispatchers.IO) {
-            runCatching { store.clear(owner, sourceFingerprint) }
+        val writer = persister ?: return
+        if (clearing || closing) return
+        clearing = true
+        val job = writer.clear()
+        persistScope.launch {
+            val result = job.await()
+            withContext(Dispatchers.Main.immediate) {
+                clearing = false
+                if (result.success && result.applied) {
+                    suggestions = emptyList()
+                    draftRequestId = null
+                    draftUsage = null
+                    draftChargedPoints = null
+                    caption = text
+                    showStatus("已清除分享草稿")
+                } else {
+                    showStatus("清除草稿失败，请重试", error = true)
+                }
+            }
         }
-        suggestions = emptyList()
-        draftRequestId = null
-        draftUsage = null
-        draftChargedPoints = null
-        caption = text
-        showStatus("已清除分享草稿")
+    }
+
+    /**
+     * Explicitly flush the latest save before leaving the sheet. This scope is independent
+     * of composition, so disposal cannot cancel the flush.
+     */
+    fun closeWithFlush(block: () -> Unit) {
+        if (closing) return
+        closing = true
+        val writer = persister
+        if (writer == null) {
+            closing = false
+            block()
+            return
+        }
+        persistScope.launch {
+            val result = writer.flush()
+            withContext(Dispatchers.Main.immediate) {
+                closing = false
+                if (result != null && !result.success) {
+                    showStatus("草稿保存失败，请重试", error = true)
+                } else {
+                    block()
+                }
+            }
+        }
     }
 
     fun requestSuggestions() {
@@ -440,7 +500,7 @@ internal fun ShareStyleSheet(
                     val uri = ShareMedia.fileUri(context, file)
                     ShareMedia.launchSystemShare(context, uri, caption)
                     onTrialConsumed()
-                    onShared()
+                    closeWithFlush { onShared() }
                 }
             } catch (_: Throwable) {
                 showStatus(
@@ -470,7 +530,7 @@ internal fun ShareStyleSheet(
             return
         }
         when (action) {
-            ShareImageAction.TEXT -> onShareText(caption)
+            ShareImageAction.TEXT -> closeWithFlush { onShareText(caption) }
             ShareImageAction.SAVE -> {
                 if (ShareMedia.needsLegacyStoragePermission(context)) {
                     showStatus("需要存储权限才能保存到相册，可改用系统分享", retry = ShareImageAction.SAVE)
@@ -502,7 +562,7 @@ internal fun ShareStyleSheet(
         }
     }
 
-    Dialog(onDismissRequest = { if (!busy) dismiss() }) {
+    Dialog(onDismissRequest = { if (!busy && !closing) closeWithFlush(dismiss) }) {
         Surface(shape = RoundedCornerShape(24.dp), tonalElevation = 6.dp) {
             Column(
                 Modifier
@@ -518,7 +578,7 @@ internal fun ShareStyleSheet(
                         modifier = Modifier.weight(1f),
                     )
                     IconButton(
-                        onClick = { if (!busy) dismiss() },
+                        onClick = { if (!busy && !closing) closeWithFlush(dismiss) },
                         modifier = Modifier.semantics { contentDescription = "关闭分享" },
                     ) { Text("×") }
                 }
@@ -636,8 +696,8 @@ internal fun ShareStyleSheet(
                     }
                     TextButton(
                         onClick = ::clearDraft,
-                        enabled = !aiBusy && !busy,
-                    ) { Text("清除分享草稿") }
+                        enabled = !aiBusy && !busy && !clearing && !closing,
+                    ) { Text(if (clearing) "正在清除…" else "清除分享草稿") }
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(
