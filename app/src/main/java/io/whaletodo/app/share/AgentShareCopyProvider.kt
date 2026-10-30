@@ -22,12 +22,14 @@ import kotlinx.coroutines.withContext
  */
 internal class AgentShareCopyProvider(
     private val store: SharePendingStore,
+    private val drafts: ShareDraftStore = NoopShareDraftStore,
     private val bridge: AgentBridge = AgentBridgeHub.bridge,
 ) : ShareCopyProvider {
-    override suspend fun suggest(style: ShareStyle, sourceText: String): List<String> {
+    override suspend fun suggest(style: ShareStyle, sourceText: String): ShareCopyResult {
         val access = bridge.access.value
         val ownerId = access.userId?.takeIf { it.isNotBlank() }
             ?: throw AgentGateException(GateReason.LOGIN)
+        val fingerprint = ShareDraft.fingerprint(sourceText)
 
         val existing = loadPending(ownerId)
         if (existing != null) {
@@ -64,6 +66,7 @@ internal class AgentShareCopyProvider(
                 styleCode = style.code,
                 state = "pending",
                 createdAt = System.currentTimeMillis(),
+                sourceFingerprint = fingerprint,
             ),
         )
 
@@ -88,27 +91,63 @@ internal class AgentShareCopyProvider(
             throw AgentPendingException(request.id)
         }
 
-        // The request is settled once reply returns; parsing failure must not leave a phantom pending.
-        clearPending(ownerId)
+        // Persist the success receipt and draft before removing the pending identity.
         val suggestions = parseShareCopySuggestions(reply.text)
-        if (suggestions.isEmpty()) throw AgentServiceException(false)
-        return suggestions
+        if (suggestions.isEmpty()) {
+            clearPending(ownerId, request.id)
+            throw AgentServiceException(false)
+        }
+        val result = ShareCopyResult(
+            suggestions = suggestions,
+            requestId = request.id,
+            usage = reply.totalTokens.takeIf { it > 0 },
+            chargedPoints = reply.chargedPoints,
+        )
+        saveDraft(
+            ShareDraft(
+                ownerId = ownerId,
+                sourceFingerprint = fingerprint,
+                suggestions = suggestions,
+                selectedText = null,
+                editedText = null,
+                styleCode = style.code,
+                requestId = request.id,
+                usage = result.usage,
+                chargedPoints = result.chargedPoints,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+        clearPending(ownerId, request.id)
+        return result
     }
 
-    override suspend fun pending(ownerId: String): String? {
+    override suspend fun pending(ownerId: String, sourceFingerprint: String): String? {
         val entry = loadPending(ownerId) ?: return null
         if (entry.state != "pending") {
             clearPending(ownerId)
             return null
         }
+        if (sourceFingerprint.isNotBlank() &&
+            entry.sourceFingerprint.isNotBlank() &&
+            entry.sourceFingerprint != sourceFingerprint
+        ) {
+            return null
+        }
         return entry.requestId
     }
 
-    override suspend fun recover(ownerId: String): List<String>? {
+    override suspend fun recover(ownerId: String, sourceFingerprint: String): ShareCopyResult? {
         val entry = loadPending(ownerId) ?: return null
         if (entry.state != "pending") {
             // Do not let another active owner clear a non-current owner's record.
             if (bridge.access.value.userId == ownerId) clearPending(ownerId)
+            return null
+        }
+        // A changed source must not receive an old draft/receipt.
+        if (sourceFingerprint.isNotBlank() &&
+            entry.sourceFingerprint.isNotBlank() &&
+            entry.sourceFingerprint != sourceFingerprint
+        ) {
             return null
         }
         // Query only while A is current; the bridge also binds expectedOwner for the IO race.
@@ -143,10 +182,36 @@ internal class AgentShareCopyProvider(
         if (bridge.access.value.userId != ownerId) {
             throw AgentPendingException(entry.requestId)
         }
-        clearPending(ownerId)
         val suggestions = parseShareCopySuggestions(reply.text)
-        if (suggestions.isEmpty()) throw AgentServiceException(false)
-        return suggestions
+        if (suggestions.isEmpty()) {
+            clearPending(ownerId, entry.requestId)
+            throw AgentServiceException(false)
+        }
+        val result = ShareCopyResult(
+            suggestions = suggestions,
+            requestId = entry.requestId,
+            usage = reply.totalTokens.takeIf { it > 0 },
+            chargedPoints = reply.chargedPoints,
+        )
+        val draftFingerprint = sourceFingerprint.ifBlank { entry.sourceFingerprint }
+        if (draftFingerprint.isNotBlank()) {
+            saveDraft(
+                ShareDraft(
+                    ownerId = ownerId,
+                    sourceFingerprint = draftFingerprint,
+                    suggestions = suggestions,
+                    selectedText = null,
+                    editedText = null,
+                    styleCode = entry.styleCode,
+                    requestId = entry.requestId,
+                    usage = result.usage,
+                    chargedPoints = result.chargedPoints,
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+        clearPending(ownerId, entry.requestId)
+        return result
     }
 
     private suspend fun loadPending(ownerId: String): SharePending? =
@@ -155,8 +220,19 @@ internal class AgentShareCopyProvider(
     private suspend fun savePending(pending: SharePending) =
         withContext(Dispatchers.IO) { store.save(pending) }
 
-    private suspend fun clearPending(ownerId: String) =
-        withContext(Dispatchers.IO) { store.clear(ownerId) }
+    private suspend fun saveDraft(draft: ShareDraft) {
+        try {
+            withContext(Dispatchers.IO) { drafts.save(draft) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // The charged request must stay queryable by its original ID.
+            throw AgentPendingException(draft.requestId)
+        }
+    }
+
+    private suspend fun clearPending(ownerId: String, requestId: String? = null) =
+        withContext(Dispatchers.IO) { store.clear(ownerId, requestId) }
 
     private companion object {
         const val MAX_PROMPT_CHARS = 16_000
