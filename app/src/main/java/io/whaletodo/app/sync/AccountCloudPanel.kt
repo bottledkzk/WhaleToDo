@@ -21,21 +21,21 @@ import androidx.compose.ui.unit.dp
   Text("用云端备份替换当前账号的本地日程，确认前可查看数量",style=MaterialTheme.typography.bodySmall)
   OutlinedButton(onClick={controller.prepareDownload("compatible")},enabled=!s.busy&&s.vip&&s.owner!="guest",modifier=Modifier.fillMaxWidth()){Text("兼容同步")}
   Text("保留本地记录并加入云端独有事项，同编号以本地为准；冲突的云端安排保留为待安排事项",style=MaterialTheme.typography.bodySmall)
-  HorizontalDivider()
-  Text("随账号自动同步",style=MaterialTheme.typography.titleMedium)
-  Text("日记、昵称和 motto 自动跟随账号，无需 VIP")
-  Text(s.profileStatus,style=MaterialTheme.typography.bodySmall)
-  TextButton(onClick={controller.refreshProfile()}){Text("重试个人资料同步")}
-  if(s.profileConflict){
-   Text("当前账号的同一条日记或资料在两端有不同修改，请选择本次冲突的保留方式")
-   TextButton(onClick={controller.refreshProfile("local")}){Text("保留本地修改并同步")}
-   TextButton(onClick={controller.refreshProfile("cloud")}){Text("使用云端资料")}
-  }
-  Text("Agent 会话仅保存在本机，不随账号上传或恢复",style=MaterialTheme.typography.bodySmall)
   if(s.busy)LinearProgressIndicator(Modifier.fillMaxWidth())
   if(s.error.isNotBlank())Text(s.error,color=MaterialTheme.colorScheme.error)
   if(s.notice.isNotBlank())Text(s.notice,color=MaterialTheme.colorScheme.primary)
+  HorizontalDivider()
+  Text("个人资料同步",style=MaterialTheme.typography.titleMedium)
+  Text("个人资料和日记随账户同步，助手会话仅保存在本地",style=MaterialTheme.typography.bodySmall)
  }
+ // A concrete conflict still needs a choice; keep it out of the permanent explanatory section.
+ var conflictOpen by remember(s.profileConflict){mutableStateOf(s.profileConflict)}
+ if(conflictOpen)AlertDialog(
+  onDismissRequest={conflictOpen=false},title={Text("个人资料存在不同修改")},
+  text={Text("请选择本次冲突内容的保留方式")},
+  confirmButton={TextButton(onClick={conflictOpen=false;controller.refreshProfile("local")}){Text("保留本地修改")}},
+  dismissButton={TextButton(onClick={conflictOpen=false;controller.refreshProfile("cloud")}){Text("使用云端资料")}},
+ )
  s.preview?.let{p->AlertDialog(
   onDismissRequest={if(!s.busy)controller.cancelPreview()},
   title={Text(if(p.upload)"确认云端备份" else if(p.method=="replace")"确认覆盖本地日程" else "确认兼容同步")},

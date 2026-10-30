@@ -80,7 +80,7 @@ internal fun openProjectLink(context:Context,issues:Boolean=false){
             MyPageRoute.SETTINGS->LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)){
                 item{Text("账户",style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
                 item{ProfileRow("○","账户信息"){controller.navigate(MyPageRoute.ACCOUNT)}}
-                item{ProfileRow("☁","账户同步","VIP 日程备份与同步"){controller.navigate(MyPageRoute.CLOUD)}}
+                item{ProfileRow("☁","账户同步","备份与同步"){controller.navigate(MyPageRoute.CLOUD)}}
                 item{ProfileRow("⌘","账户密码","重置密码"){controller.open(MyDialog.RESET_PASSWORD)}}
                 item{Text("偏好",Modifier.padding(top=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
                 item{ProfileRow("◐","外观设定"){controller.navigate(MyPageRoute.APPEARANCE)}}
