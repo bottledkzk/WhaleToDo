@@ -37,6 +37,7 @@ class MockPaymentFlowTest {
   val owner=requireNotNull(session.access.value.userId);val beforePoints=session.access.value.availablePoints;val beforeVip=session.details.value?.vipExpiresAt
   val pending=DevicePaymentPendingStore(ctx,BuildConfig.API_BASE_URL+"/test/"+UUID.randomUUID())
   val payments=ServerPaymentBridge(ServerPaymentApi(client),auth,session,pending)
+  var originalPayments=PaymentBridgeHub.bridge;var originalProfile=ProfileBridgeHub.bridge
   val agent=object:AgentBridge {override val access=session.access;override val models=emptyList<AgentModel>();override suspend fun reply(request:AssistantRequest):AssistantReply=error("No model calls")}
   val db=Room.inMemoryDatabaseBuilder(ctx,DeskDatabase::class.java).build();val scope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
   val controller=ProfileController(DeskRepository(db),scope,profile,agent,payments=payments);val device=UiDevice.getInstance(ins)
@@ -44,27 +45,32 @@ class MockPaymentFlowTest {
    withTimeout(5000){while(controller.state.value.owner!=owner)delay(25)}
    device.executeShellCommand("am start -W -n ${ctx.packageName}/io.whaletodo.app.MainActivity")
    var activity:MainActivity?=null;repeat(100){if(activity==null){ins.runOnMainSync{activity=ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED).filterIsInstance<MainActivity>().firstOrNull()};delay(50)}}
-   assertNotNull(activity);ins.runOnMainSync{activity!!.setContent{MaterialTheme{Surface{ProfileDialogHost(controller,DeskState())}}}}
+   assertNotNull(activity);ins.runOnMainSync{
+    originalPayments=PaymentBridgeHub.bridge;originalProfile=ProfileBridgeHub.bridge
+    PaymentBridgeHub.bridge=payments;ProfileBridgeHub.bridge=profile
+    activity!!.setContent{MaterialTheme{Surface{ProfileDialogHost(controller,DeskState())}}}
+   }
    controller.open(MyDialog.RECHARGE_POINTS)
-   assertTrue(device.wait(Until.hasObject(By.text("模拟支付 · MOCK")),8000));assertNull(pending.read(owner))
-   device.findObject(By.text("创建模拟订单")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("确认模拟支付")),8000));assertNotNull(pending.read(owner)?.orderId)
+   assertTrue(device.wait(Until.hasObject(By.text("模拟支付")),8000));assertNull(pending.read(owner))
+   assertTrue(device.wait(Until.hasObject(By.text("100 积分")),5000));device.findObject(By.text("100 积分")).click()
+   device.findObject(By.text("去支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));assertNotNull(pending.read(owner)?.orderId)
    val firstId=pending.read(owner)!!.orderId
-   device.findObject(By.text("关闭")).click();assertTrue(device.wait(Until.gone(By.text("充值")),5000));controller.open(MyDialog.RECHARGE_POINTS)
+   device.findObject(By.text("返回")).click()
    withTimeout(8000){while(controller.state.value.busy||controller.state.value.checkout?.order?.id!=firstId)delay(30)}
    assertEquals(firstId,pending.read(owner)?.orderId);assertEquals(beforePoints,session.access.value.availablePoints)
-   assertTrue(device.wait(Until.hasObject(By.text("确认模拟支付")),8000))
-   device.findObject(By.text("确认模拟支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("已完成")),8000));assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
+   assertTrue(device.wait(Until.hasObject(By.text("继续支付")),8000));device.findObject(By.text("继续支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));device.findObject(By.textStartsWith("确认支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.text("支付成功")),8000));assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
    device.takeScreenshot(File(ctx.cacheDir,"mock-payment-points-ui.png"))
-   device.findObject(By.text("关闭")).click();assertTrue(device.wait(Until.gone(By.text("充值")),5000));controller.open(MyDialog.RECHARGE_VIP)
+   device.findObject(By.text("完成")).click();assertTrue(device.wait(Until.hasObject(By.text("关闭")),5000));device.findObject(By.text("关闭")).click();controller.open(MyDialog.RECHARGE_VIP)
    withTimeout(8000){while(controller.state.value.busy||controller.state.value.checkout?.order!=null)delay(30)}
-   assertTrue(device.wait(Until.hasObject(By.text("创建模拟订单")),5000));device.findObject(By.text("创建模拟订单")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("确认模拟支付")),8000));device.findObject(By.text("确认模拟支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("已完成")),8000));assertTrue(session.access.value.vip)
+   assertTrue(device.wait(Until.hasObject(By.text("去支付")),5000));device.findObject(By.text("去支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));device.findObject(By.textStartsWith("确认支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.text("支付成功")),8000));assertTrue(session.access.value.vip)
    assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
    assertNotNull(session.details.value?.vipExpiresAt);beforeVip?.let{assertTrue(session.details.value!!.vipExpiresAt!!.isAfter(it))}
    device.takeScreenshot(File(ctx.cacheDir,"mock-payment-vip-ui.png"))
-  }finally{scope.cancel();db.close()}
+  }finally{PaymentBridgeHub.bridge=originalPayments;ProfileBridgeHub.bridge=originalProfile;scope.cancel();db.close()}
  }
 }

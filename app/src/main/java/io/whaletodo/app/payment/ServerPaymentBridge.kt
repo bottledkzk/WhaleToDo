@@ -30,13 +30,22 @@ class ServerPaymentBridge(private val api:PaymentApi,private val auth:AuthApi,pr
   if(order.status=="PAID")settle(owner,sid,order)
   order
  }
- override suspend fun confirm(owner:String)=call(owner){sid->
+ override suspend fun confirm(owner:String)=confirmOrder(owner,null)
+ override suspend fun confirmCashier(owner:String,orderId:String)=confirmOrder(owner,orderId)
+ private suspend fun confirmOrder(owner:String,expectedOrder:String?)=call(owner){sid->
   if(!api.catalog(sid).mockEnabled)throw ProfileException("模拟支付未开放")
   val p=store.read(owner)?:throw ProfileException("请先创建模拟订单")
   val id=p.orderId?:throw ProfileException("请先恢复原订单")
+  if(expectedOrder!=null&&id!=expectedOrder)throw ProfileException("订单已变化，请返回充值后重新核对")
   val order=checked(api.confirmMock(sid,id),p)
   if(order.status!="PAID")throw ProfileException("订单尚未确认，请查询订单状态")
   settle(owner,sid,order);order
+ }
+ override suspend fun cashier(owner:String,orderId:String)=call(owner){sid->
+  val order=api.order(sid,orderId);val pending=store.read(owner)
+  if(order.environment!="mock"||order.id!=orderId)throw ProfileException("订单信息不一致，请重新打开充值")
+  if(order.status=="PENDING"&&(pending?.orderId!=orderId||pending.productId!=order.productId))throw ProfileException("请先恢复原订单")
+  api.cashier(sid,orderId)
  }
  private fun checked(order:PaymentOrder,p:PendingPayment):PaymentOrder {
   if(order.productId!=p.productId||order.environment!="mock"||(p.orderId!=null&&order.id!=p.orderId))throw ProfileException("订单信息不一致，请核对原订单")

@@ -34,6 +34,7 @@ class ServerPaymentBridgeTest {
   override fun catalog(sessionId:String)=PaymentCatalog(true,emptyList())
   override fun create(sessionId:String,productId:String,key:String):PaymentOrder{created++;keys+=key;if(lostCreate){lostCreate=false;throw IOException()};return value}
   override fun order(sessionId:String,id:String)=value
+  override fun cashier(sessionId:String,id:String)="<!doctype html><title>Cashier</title>"
   override fun confirmMock(sessionId:String,id:String):PaymentOrder{confirmed++;value=value.copy(status="PAID");switchDuringPay();if(lostPay){lostPay=false;throw IOException()};return value}
  }
  private class Fixture:AutoCloseable {
@@ -51,6 +52,16 @@ class ServerPaymentBridgeTest {
   assertNotNull(f.store.read("A"));f.bridge().inspect("A");assertEquals(1,f.api.created);assertEquals(0,f.api.confirmed)
   assertThrows(ProfileException::class.java){runBlocking{f.bridge().prepare("A","vip_30d")}}
   f.bridge().prepare("A","points_100");assertEquals(2,f.api.created);assertEquals(1,f.api.keys.distinct().size)
+ }}
+ @Test fun cashierOnlyLoadsOwnedOrderAndStalePageCannotPayAnotherPendingOrder()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100")
+  assertTrue(f.bridge().cashier("A",order.id).contains("Cashier"));assertEquals(0,f.api.confirmed)
+  val wrong="22222222-2222-4222-8222-222222222222"
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().cashier("A",wrong)}}
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().confirmCashier("A",wrong)}}
+  assertEquals(0,f.api.confirmed)
+  assertEquals("PAID",f.bridge().confirmCashier("A",order.id).status)
+  assertTrue(f.bridge().cashier("A",order.id).contains("Cashier"));assertEquals(1,f.api.confirmed)
  }}
  @Test fun storageFailureAndExpiredUnknownReceiptNeverCreateAnotherOrder()=runBlocking {Fixture().use{f->
   f.store.failSave=true;assertThrows(ProfileException::class.java){runBlocking{f.bridge().prepare("A","points_100")}};assertEquals(0,f.api.created)

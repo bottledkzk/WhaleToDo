@@ -90,7 +90,7 @@ class ReleasePackageTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'MIGRATION_CHECKSUM_MISMATCH'): package.prepare(self.repo, self.root / 'drift.tar.gz', 'full')
 
     def test_full_profile_does_not_silently_omit_a_newer_migration(self):
-        self.write('server/prisma/migrations/202610300003_future/migration.sql', '-- future\n')
+        self.write('server/prisma/migrations/202610300004_future/migration.sql', '-- future\n')
         self.commit()
         with self.assertRaisesRegex(ValueError, 'FULL_RELEASE_BOUNDARY_CHANGED'):
             package.prepare(self.repo, self.root / 'future.tar.gz', 'full')

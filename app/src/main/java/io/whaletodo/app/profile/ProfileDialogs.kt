@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -111,25 +113,29 @@ import kotlinx.coroutines.delay
 }
 @Composable private fun RechargeDialog(s:ProfileState,c:ProfileController){
     val vip=s.dialog==MyDialog.RECHARGE_VIP;var selected by remember{mutableStateOf("")}
+    val context=LocalContext.current
+    var launchedOrder by androidx.compose.runtime.saveable.rememberSaveable{mutableStateOf<String?>(null)}
+    val cashier=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()){c.loadPayments()}
     val checkout=s.checkout;val order=checkout?.order
-    val products=checkout?.catalog?.products.orEmpty().filter{if(vip)it.vipDays>0 else it.points>0}
+    val products=checkout?.catalog?.products.orEmpty().filter{if(vip)it.vipDays>0 else it.points>0}.sortedBy{it.priceMinor}
     val product=checkout?.pendingProductId?:selected.takeIf{id->products.any{it.id==id}}?:products.firstOrNull()?.id
-    fun price(amount:Int,currency:String)="$currency ${java.math.BigDecimal(amount).movePointLeft(2).toPlainString()}"
-    AlertDialog(onDismissRequest=c::dismiss,title={Text("充值")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+    fun price(amount:Int,currency:String)="${if(currency=="CNY")"¥" else "$currency "}${java.math.BigDecimal(amount).movePointLeft(2).setScale(2).toPlainString()}"
+    fun openCashier(id:String){launchedOrder=id;cashier.launch(Intent(context,io.whaletodo.app.payment.CashierActivity::class.java).putExtra("owner",s.owner).putExtra("order",id))}
+    LaunchedEffect(order?.id,order?.status){if(order?.status=="PENDING"&&launchedOrder!=order.id)openCashier(order.id)}
+    AlertDialog(onDismissRequest=c::dismiss,title={Text("充值中心")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
         Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
             FilterChip(!vip,{c.open(MyDialog.RECHARGE_POINTS)},{Text("积分购买")},enabled=!s.busy);FilterChip(vip,{c.open(MyDialog.RECHARGE_VIP)},{Text("会员充值")},enabled=!s.busy)}
         if(s.access.userId==null)Text("登录后查看账户可用方案")
         else if(checkout==null)Text(if(s.busy)"正在加载方案" else "方案暂不可用，请重试")
         else if(!checkout.catalog.mockEnabled)Text("充值尚未开放")
         else {
-            Text("模拟支付 · MOCK",fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.primary)
-            Text("无真实扣款，积分与会员权益在当前账号生效",style=MaterialTheme.typography.bodySmall)
+            Text("模拟支付",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
             Column(Modifier.heightIn(max=260.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
                 if(order==null)products.forEach{p->OutlinedCard(onClick={selected=p.id},enabled=!s.busy&&checkout.pendingProductId==null,modifier=Modifier.fillMaxWidth()){
                     Column(Modifier.padding(12.dp)){Text(p.title+(if(product==p.id)" ✓" else ""));Text(price(p.priceMinor,p.currency),style=MaterialTheme.typography.bodySmall)}
                 }}
                 if(order!=null){Text(order.title);Text(price(order.amountMinor,order.currency));Text("订单 ${order.id.takeLast(8)} · ${when(order.status){"PAID"->"已完成";"PENDING"->"待确认";"CLOSED"->"已关闭";else->"已退款"}}")}
-                else if(checkout.pendingProductId!=null)Text("已保留原订单请求，请恢复下单后核对")
+                else if(checkout.pendingProductId!=null)Text("订单待恢复")
             }
             if(order!=null||checkout.pendingProductId!=null)TextButton(onClick=c::loadPayments,enabled=!s.busy){Text("查询订单状态")}
         }
@@ -138,10 +144,11 @@ import kotlinx.coroutines.delay
     }},confirmButton={TextButton(onClick={when{
         s.access.userId==null->c.open(MyDialog.LOGIN)
         checkout==null->c.loadPayments()
-        order?.status=="PENDING"->c.confirmMockPayment()
+        order?.status=="PENDING"->openCashier(order.id)
+        order?.status=="PAID"->c.dismiss()
         product!=null->c.preparePayment(product)
-    }},enabled=!s.busy&&(s.access.userId==null||checkout==null||checkout.catalog.mockEnabled&&order?.status!="PAID"&&(order==null||order.status=="PENDING")&&product!=null)){
-        Text(when{s.access.userId==null->"登录后继续";checkout==null->"重试加载";!checkout.catalog.mockEnabled->"暂未开放";order?.status=="PAID"->"已完成";order!=null->"确认模拟支付";checkout.pendingProductId!=null->"恢复下单";else->"创建模拟订单"})
+    }},enabled=!s.busy&&(s.access.userId==null||checkout==null||checkout.catalog.mockEnabled&&(order==null||order.status in setOf("PENDING","PAID"))&&product!=null)){
+        Text(when{s.access.userId==null->"登录后继续";checkout==null->"重试加载";!checkout.catalog.mockEnabled->"暂未开放";order?.status=="PAID"->"完成";order!=null->"继续支付";checkout.pendingProductId!=null->"恢复订单";else->"去支付"})
     }},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("关闭")}})
 }
 @Composable private fun AuthDialog(s:ProfileState,c:ProfileController){

@@ -11,6 +11,7 @@ interface PaymentApi {
  fun create(sessionId:String,productId:String,key:String):PaymentOrder
  fun order(sessionId:String,id:String):PaymentOrder
  fun confirmMock(sessionId:String,id:String):PaymentOrder
+ fun cashier(sessionId:String,id:String):String=throw UnsupportedOperationException("Cashier unavailable")
 }
 class ServerPaymentApi(private val client:ApiClient):PaymentApi {
  override fun catalog(sessionId:String)=parse(client.getAsSession("/products",sessionId)){d->
@@ -25,6 +26,9 @@ class ServerPaymentApi(private val client:ApiClient):PaymentApi {
  }
  override fun order(sessionId:String,id:String)=readOrder(client.getAsSession(path(id),sessionId))
  override fun confirmMock(sessionId:String,id:String)=readOrder(client.postAsSession(path(id)+"/mock-pay","{}",sessionId))
+ override fun cashier(sessionId:String,id:String):String=client.getAsSession(path(id)+"/cashier",sessionId).body.also {
+  require(it.length in 1..65536 && it.startsWith("<!doctype html>")) { "Cashier response invalid" }
+ }
  private fun path(id:String):String {require(Regex("[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}").matches(id));return "/orders/$id"}
  private fun readOrder(r:ApiResponse)=parse(r){d->val o=d.getValue("order").jsonObject
   PaymentOrder(o.text("id"),o.text("product_id"),o.getValue("product_snapshot").jsonObject.text("title"),o.number("amount_minor"),o.text("currency"),o.text("status"),o.text("environment")).also{
