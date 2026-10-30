@@ -230,7 +230,7 @@ internal fun ShareStyleSheet(
             return
         }
         persistScope.launch {
-            val result = writer.flush()
+            val result = writer.flushForClose()
             withContext(Dispatchers.Main.immediate) {
                 closing = false
                 if (result != null && !result.success) {

@@ -34,12 +34,18 @@ internal class ShareDraftPersister(
     private val mutex = Mutex()
     private var generation = 0L
     private var latest: Deferred<DraftWriteResult>? = null
+    private var latestDraft: ShareDraft? = null
+    private var latestWasClear = false
 
     fun save(draft: ShareDraft): Deferred<DraftWriteResult> {
         require(draft.ownerId == ownerId && draft.sourceFingerprint == sourceFingerprint) {
             "draft owner/source does not match persister"
         }
         val generationAtWrite = nextGeneration()
+        synchronized(lock) {
+            latestDraft = draft
+            latestWasClear = false
+        }
         val deferred = scope.async(start = CoroutineStart.LAZY) {
             mutex.withLock {
                 if (!isCurrent(generationAtWrite)) {
@@ -59,6 +65,7 @@ internal class ShareDraftPersister(
 
     fun clear(): Deferred<DraftWriteResult> {
         val generationAtClear = nextGeneration()
+        synchronized(lock) { latestWasClear = true }
         val deferred = scope.async(start = CoroutineStart.LAZY) {
             mutex.withLock {
                 if (!isCurrent(generationAtClear)) {
@@ -76,10 +83,24 @@ internal class ShareDraftPersister(
         return deferred
     }
 
-    /** Explicitly wait for the latest write; safe to call from a non-composition scope. */
-    suspend fun flush(): DraftWriteResult? {
-        val job = synchronized(lock) { latest } ?: return null
-        return job.await()
+    /**
+     * Wait for the latest write. If that write was a save that failed, retry once from the
+     * latest immutable draft instead of awaiting the same failed Deferred forever.
+     */
+    suspend fun flushForClose(): DraftWriteResult? = flushLatest()
+
+    /** Explicitly wait for the latest write; retries a failed save from the latest draft. */
+    suspend fun flush(): DraftWriteResult? = flushLatest()
+
+    private suspend fun flushLatest(): DraftWriteResult? {
+        val first = synchronized(lock) { latest } ?: return null
+        val result = first.await()
+        if (result.success) return result
+        val draft = synchronized(lock) {
+            if (latestWasClear) null else latestDraft
+        } ?: return result
+        // A failed Deferred is completed; replace it with a fresh save from the immutable draft.
+        return save(draft).await()
     }
 
     private fun nextGeneration(): Long = synchronized(lock) {

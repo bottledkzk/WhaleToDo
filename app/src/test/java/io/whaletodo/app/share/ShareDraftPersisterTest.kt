@@ -90,6 +90,7 @@ class ShareDraftPersisterTest {
 
         val failed = withTimeout(5_000) { persister.clear().await() }
         assertFalse(failed.success)
+        assertFalse(failed.applied)
         assertEquals("保留", store.value?.selectedText)
 
         store.failClear = false
@@ -107,8 +108,39 @@ class ShareDraftPersisterTest {
         val job = persister.save(draft(2, "失败"))
         val result = withTimeout(5_000) { job.await() }
         assertFalse(result.success)
+        assertFalse(result.applied)
         assertNull(store.value)
         assertEquals(false, withTimeout(5_000) { persister.flush()?.success })
+    }
+
+    @Test
+    fun flushRetriesFailedSaveWithLatestDraft() = runBlocking {
+        val store = BlockingStore()
+        val persister = ShareDraftPersister(store, owner, fingerprint)
+        store.failSave = true
+        withTimeout(5_000) { persister.save(draft(4, "待重试")).await() }
+
+        store.failSave = false
+        val retried = withTimeout(5_000) { persister.flush() }
+        assertTrue(retried?.success == true)
+        assertEquals("待重试", store.value?.selectedText)
+    }
+
+    @Test
+    fun flushForCloseRetriesFailedSaveWithLatestDraftThenCloses() = runBlocking {
+        val store = BlockingStore()
+        val persister = ShareDraftPersister(store, owner, fingerprint)
+        store.failSave = true
+        withTimeout(5_000) { persister.save(draft(3, "最新未保存")).await() }
+
+        store.failSave = false
+        val retried = withTimeout(5_000) { persister.flushForClose() }
+        assertTrue(retried?.success == true)
+        assertEquals("最新未保存", store.value?.selectedText)
+
+        val reopened = ShareDraftPersister(store, owner, fingerprint)
+        withTimeout(5_000) { reopened.flushForClose() }
+        assertEquals("最新未保存", store.load(owner, fingerprint)?.selectedText)
     }
 
     @Test

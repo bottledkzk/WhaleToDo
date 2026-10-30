@@ -1,6 +1,7 @@
 package io.whaletodo.app.share
 
 import android.content.Context
+import android.content.SharedPreferences
 import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,7 +50,10 @@ internal object NoopShareDraftStore : ShareDraftStore {
  * Per-owner + source-fingerprint SharedPreferences store. commit() is intentional: a success
  * receipt must be durable before its pending row is removed.
  */
-internal class SharedPreferencesShareDraftStore(context: Context) : ShareDraftStore {
+internal class SharedPreferencesShareDraftStore(
+    context: Context,
+    private val commit: (SharedPreferences.Editor) -> Boolean = { it.commit() },
+) : ShareDraftStore {
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -92,14 +96,16 @@ internal class SharedPreferencesShareDraftStore(context: Context) : ShareDraftSt
             .put("usage", draft.usage ?: JSONObject.NULL)
             .put("chargedPoints", draft.chargedPoints ?: JSONObject.NULL)
             .put("updatedAt", draft.updatedAt)
-        val ok = prefs.edit()
-            .putString(key(draft.ownerId, draft.sourceFingerprint), json.toString())
-            .commit()
+        val ok = commit(
+            prefs.edit()
+                .putString(key(draft.ownerId, draft.sourceFingerprint), json.toString()),
+        )
         if (!ok) throw IllegalStateException("SHARE_DRAFT_NOT_PERSISTED")
     }
 
     override fun clear(ownerId: String, sourceFingerprint: String) {
-        prefs.edit().remove(key(ownerId, sourceFingerprint)).commit()
+        val ok = commit(prefs.edit().remove(key(ownerId, sourceFingerprint)))
+        if (!ok) throw IllegalStateException("SHARE_DRAFT_NOT_CLEARED")
     }
 
     private fun key(ownerId: String, sourceFingerprint: String) =
