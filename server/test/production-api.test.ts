@@ -21,7 +21,7 @@ test('production account credentials pin the restricted local pool and safe runt
 }));
 test('production account loader rejects demo, inherited secrets and enabled payments', () => fixture(dir => {
   for (const bad of [{ NODE_ENV: 'test' }, { DEMO_EMAIL: 'x' }, { DEMO_PASSWORD: '' }, { DATABASE_URL: 'postgres://x' },
-    { IDEMPOTENCY_SECRET: 'x' }, { PAYMENT_PROVIDER: 'mock' }, { PAYMENT_PROVIDER: 'real' }]) {
+    { IDEMPOTENCY_SECRET: 'x' }, { PAYMENT_PROVIDER: 'real' }]) {
     assert.throws(() => productionApiEnvironment({ NODE_ENV: 'production', CREDENTIALS_DIRECTORY: dir, ...bad }));
   }
 }));
@@ -66,4 +66,12 @@ test('production entry refuses a source .env even for --check without logging it
   });
   assert.equal(result.status, 1); assert.equal(result.stdout, '');
   assert.equal(result.stderr.trim(), 'API_STARTUP_REFUSED_CHECK_PRIVATE_CONFIGURATION');
+}));
+
+test('production enables explicitly selected mock with credential-bound PostgreSQL and no demo identity', () => fixture(dir => {
+  const env=productionApiEnvironment({NODE_ENV:'production',CREDENTIALS_DIRECTORY:dir,PAYMENT_PROVIDER:'mock'});
+  assert.equal(productionApiSummary(env).paymentProvider,'mock');
+  assert.equal(env.NODE_ENV,'production');
+  assert.ok(env.DATABASE_URL?.includes('whaletodo_app:'));
+  assert.equal(env.DEMO_EMAIL,undefined);
 }));

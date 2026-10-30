@@ -6,9 +6,11 @@ import { loadConfig, type ServerConfig } from '../config.ts';
 export function productionApiEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (!env.CREDENTIALS_DIRECTORY || env.NODE_ENV !== 'production') throw new Error('API_PRODUCTION_CREDENTIALS_REQUIRED');
   if (Object.keys(env).some(key => key.startsWith('DEMO_'))) throw new Error('API_DEMO_ENV_REFUSED');
-  if (env.DATABASE_URL || env.IDEMPOTENCY_SECRET || env.PAYMENT_PROVIDER && env.PAYMENT_PROVIDER !== 'disabled') {
+  if (env.DATABASE_URL || env.IDEMPOTENCY_SECRET) {
     throw new Error('API_SECRET_OR_PAYMENT_OVERRIDE_REFUSED');
   }
+  const paymentProvider = env.PAYMENT_PROVIDER ?? 'disabled';
+  if (!['disabled', 'mock'].includes(paymentProvider)) throw new Error('API_PAYMENT_MODE_REFUSED');
   let database: string, secret: string;
   try {
     database = readFileSync(join(env.CREDENTIALS_DIRECTORY, 'database.url'), 'utf8').trim();
@@ -26,7 +28,7 @@ export function productionApiEnvironment(env: NodeJS.ProcessEnv): NodeJS.Process
   if (secret.length < 32 || /[\r\n]/.test(secret)) throw new Error('API_IDEMPOTENCY_SECRET_INVALID');
   const result: NodeJS.ProcessEnv = {
     ...env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: '8080', TRUST_PROXY: '127.0.0.1',
-    PAYMENT_PROVIDER: 'disabled', DATABASE_URL: database, IDEMPOTENCY_SECRET: secret,
+    PAYMENT_PROVIDER: paymentProvider, DATABASE_URL: database, IDEMPOTENCY_SECRET: secret,
     PUBLIC_BASE_URL: 'https://api.whaletodo.top:8443/api/v1',
   };
   // Detect .env drift rather than letting main.ts load additional production settings.

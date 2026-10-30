@@ -99,7 +99,7 @@ npm run typecheck
    `available` 与 `reserved` 分开且均不得为负；批量记账失败整体抛出，调用方须包在数据库事务里。
 5. **时区**：签到业务日由服务端按 `BUSINESS_TIMEZONE`（默认 `Asia/Shanghai`）生成，配置化、不硬编码；
    客户端展示时区跟随手机系统，两者互不影响。
-6. **模拟支付**：`PAYMENT_PROVIDER=mock` 仅在 `NODE_ENV=test|demo` 允许；生产启动时检测到 mock 直接拒绝启动。
+6. **模拟支付**：2026-10-30起全账号使用MOCK；显式设置 `PAYMENT_PROVIDER=mock`，生产仍为 `NODE_ENV=production` 和受限PG。登录用户只确认本人订单，权益由订单快照发放；生产不注册 `/payments/mock/webhook`。`disabled` 保留为停用/回退配置，真实支付仍未接入。
 
 ## 目录
 

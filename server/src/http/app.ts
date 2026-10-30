@@ -549,7 +549,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const products = await repo.listProducts();
     return ok(req.requestId, {
       payment_provider: config.paymentProvider,
-      mock_checkout: config.paymentProvider === 'mock' && ['test', 'demo'].includes(config.nodeEnv),
+      mock_checkout: config.paymentProvider === 'mock',
       products: products.map((p) => ({
         product_id: p.productId,
         title: p.title,
@@ -638,10 +638,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   if (config.paymentProvider === 'mock') {
-    // A user explicitly confirms a demo order. Amount and entitlements never come from the client.
+    // Explicit authenticated confirmation. Amount and entitlements only come from the order snapshot.
     app.post('/api/v1/orders/:id/mock-pay', async (req) => {
       await requireAuth(req);
-      if (!['test', 'demo'].includes(config.nodeEnv)) throw new ApiError('FORBIDDEN', '模拟支付仅用于演示环境');
       if (!repo.getOrder || !repo.applyPayment) throw new ApiError('INTERNAL', '订单仓储不可用');
       const id = String((req.params as { id?: string }).id ?? '');
       if (!ORDER_ID_RE.test(id)) throw new ApiError('FORBIDDEN', '订单不存在');
@@ -661,7 +660,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       return ok(req.requestId, { order: orderJson(paid), simulated: true });
     });
 
-    app.post('/api/v1/payments/mock/webhook', async (req) => {
+    if (['test', 'demo'].includes(config.nodeEnv)) app.post('/api/v1/payments/mock/webhook', async (req) => {
       await requireAuth(req);
       if (!repo.applyPayment) throw new ApiError('INTERNAL', '当前仓储未实现支付回调');
 
@@ -670,6 +669,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         amount_minor?: number; currency?: string;
       };
       const eventId = String(body.event_id ?? '').trim();
+      if (eventId.startsWith('checkout:')) throw new ApiError('VALIDATION_ERROR', '该事件前缀由订单确认保留');
       const orderId = String(body.order_id ?? '').trim();
       const status = String(body.status ?? '');
       const amountMinor = Number(body.amount_minor);

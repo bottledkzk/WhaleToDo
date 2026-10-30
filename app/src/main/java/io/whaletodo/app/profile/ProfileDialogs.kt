@@ -123,7 +123,7 @@ import kotlinx.coroutines.delay
         else if(!checkout.catalog.mockEnabled)Text("充值尚未开放")
         else {
             Text("模拟支付 · MOCK",fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.primary)
-            Text("无真实扣款，模拟权益仅限当前演示账号",style=MaterialTheme.typography.bodySmall)
+            Text("无真实扣款，积分与会员权益在当前账号生效",style=MaterialTheme.typography.bodySmall)
             Column(Modifier.heightIn(max=260.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
                 if(order==null)products.forEach{p->OutlinedCard(onClick={selected=p.id},enabled=!s.busy&&checkout.pendingProductId==null,modifier=Modifier.fillMaxWidth()){
                     Column(Modifier.padding(12.dp)){Text(p.title+(if(product==p.id)" ✓" else ""));Text(price(p.priceMinor,p.currency),style=MaterialTheme.typography.bodySmall)}

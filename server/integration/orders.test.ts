@@ -6,6 +6,9 @@ import { randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { PrismaClient } from '@prisma/client';
 import { PrismaRepository } from '../src/repo/prisma.ts';
+import { buildApp } from '../src/http/app.ts';
+import { loadConfig } from '../src/config.ts';
+import { readFileSync } from 'node:fs';
 
 const ownerUrl = process.env.VERIFY_DATABASE_URL!;
 const appUrl = process.env.VERIFY_APP_URL!;
@@ -304,4 +307,32 @@ test('原子性：钱包溢出 → 整事务回滚，订单仍 PENDING 且无事
   assert.equal(entitlements.rows[0].n, 0);
   const wallet = await owner.query('SELECT available FROM point_wallets WHERE user_id=$1', [user.id]);
   assert.equal(wallet.rows[0].available, 999999);
+});
+
+
+test('production mock HTTP uses restricted PG, order snapshot and exactly-once entitlement', async () => {
+ const app=buildApp({config:loadConfig({NODE_ENV:'production',PAYMENT_PROVIDER:'mock',IDEMPOTENCY_SECRET:'synthetic-integration-persistent-secret'}),repo});
+ try {
+  async function token(name:string) {
+   const r=await app.inject({method:'POST',url:'/api/v1/auth/register',payload:{username:name,password:'Synthetic-long-password-2026'}});assert.equal(r.statusCode,201,r.body);
+   const login=await app.inject({method:'POST',url:'/api/v1/auth/login',payload:{username:name,password:'Synthetic-long-password-2026'}});assert.equal(login.statusCode,200,login.body);return login.json().data.access_token as string;
+  }
+  const a=await token('mock_http_a'),b=await token('mock_http_b');
+  const created=await app.inject({method:'POST',url:'/api/v1/orders',headers:{authorization:`Bearer ${a}`,'idempotency-key':randomUUID()},payload:{product_id:'points_300'}});assert.equal(created.statusCode,201,created.body);
+  const id=created.json().data.order.id;
+  await owner.query('UPDATE products SET points=$1, price_minor=$2 WHERE product_id=$3',[9000,9999,'points_300']);
+  const confirm=(t:string)=>app.inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${t}`},payload:{}});
+  assert.equal((await confirm(b)).statusCode,403);
+  for(const r of await Promise.all([confirm(a),confirm(a),confirm(a)])) {assert.equal(r.statusCode,200,r.body);assert.equal(r.json().data.order.amount_minor,300);}
+  const wallet=await app.inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${a}`}});assert.equal(wallet.json().data.available,300);
+  assert.equal((await owner.query('SELECT count(*)::int AS n FROM payment_events WHERE order_id=$1',[id])).rows[0].n,1);
+  assert.equal((await app.inject({method:'POST',url:'/api/v1/payments/mock/webhook',headers:{authorization:`Bearer ${a}`},payload:{}})).statusCode,404);
+ } finally {await app.close();}
+});
+
+test('mock catalog migration adds defaults idempotently without replacing configured prices',async()=>{
+ const sql=readFileSync(new URL('../prisma/migrations/202610300002_mock_catalog/migration.sql',import.meta.url),'utf8');
+ await owner.query(sql);await owner.query(sql);
+ const rows=(await owner.query('SELECT product_id,price_minor FROM products WHERE product_id=ANY($1::text[]) ORDER BY product_id',[['vip_7d','vip_30d','points_100']])).rows;
+ assert.equal(rows.length,3);assert.equal(rows.find(r=>r.product_id==='vip_30d').price_minor,990);
 });

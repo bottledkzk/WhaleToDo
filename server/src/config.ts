@@ -7,7 +7,7 @@ export interface ServerConfig {
   port: number;
   /** 业务日时区（签到等），必须可配置；默认 Asia/Shanghai */
   businessTimezone: string;
-  /** 支付通道：disabled | mock（mock 仅 test/demo 允许） */
+  /** mock 为全账号模拟充值；production 保留真实账户与持久账本。 */
   paymentProvider: 'disabled' | 'mock' | 'real';
   /** mock webhook 所需的内部令牌（仅测试环境使用，无默认值） */
   mockWebhookToken: string | null;
@@ -67,8 +67,7 @@ function parseIntEnv(raw: string | undefined, fallback: number, name: string): n
 
 /**
  * 读取并校验配置。
- * 关键约束（来自《账户、AI 积分与安全方案》）：mock 支付只允许在 test/demo；
- * 生产环境若配置成 mock 必须拒绝启动，而不是静默降级。
+ * 2026-10-30 产品决定：全账号使用 mock，须显式启用；production 不开放测试 webhook。
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const rawEnv = (env.NODE_ENV ?? 'development').trim();
@@ -81,12 +80,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   if (!['disabled', 'mock', 'real'].includes(paymentProvider)) {
     throw new Error(`PAYMENT_PROVIDER 只能是 disabled / mock / real，当前：${paymentProvider}`);
   }
-  if (paymentProvider === 'mock' && !['test', 'demo'].includes(nodeEnv)) {
-    throw new Error('PAYMENT_PROVIDER=mock 只允许在 NODE_ENV=test 或 demo 时启用（生产必须拒绝启动）');
+  if (paymentProvider === 'mock' && !['test', 'demo', 'production'].includes(nodeEnv)) {
+    throw new Error('PAYMENT_PROVIDER=mock 只允许在 NODE_ENV=test / demo / production 时显式启用');
   }
 
   const mockWebhookToken = (env.MOCK_WEBHOOK_TOKEN ?? '').trim() || null;
-  if (paymentProvider === 'mock' && !mockWebhookToken) {
+  if (paymentProvider === 'mock' && ['test', 'demo'].includes(nodeEnv) && !mockWebhookToken) {
     throw new Error('启用 mock 支付时必须提供 MOCK_WEBHOOK_TOKEN（仅测试环境，不入库不进仓库）');
   }
 

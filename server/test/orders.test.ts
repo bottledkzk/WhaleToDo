@@ -49,7 +49,7 @@ let repo: MemoryRepository;
 beforeEach(async () => {
   if (app) await app.close();
   repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  for (const p of PRODUCTS) repo.store.products.set(p.productId, p);
+  for (const p of PRODUCTS) repo.store.products.set(p.productId, { ...p });
   app = buildApp({ config: loadConfig(MOCK_ENV), repo: fromSync(repo) });
 });
 
@@ -120,7 +120,6 @@ describe('商品与订单（内存路径）', () => {
     try {
       assert.equal((await disabled.inject({method:'GET',url:'/api/v1/products'})).json().data.mock_checkout,false);
       assert.equal((await disabled.inject({method:'POST',url:'/api/v1/orders/00000000-0000-0000-0000-000000000000/mock-pay',payload:{}})).statusCode,404);
-      assert.throws(()=>loadConfig({...MOCK_ENV,NODE_ENV:'production'}));
     }finally{await disabled.close();}
   });
 
@@ -323,4 +322,24 @@ describe('商品与订单（内存路径）', () => {
       .sort((a, b) => a - b);
     assert.equal(expires[1]! - expires[0]!, 30 * 86_400_000);
   });
+});
+
+describe('all-account mock on production runtime',()=>{
+ test('ordinary accounts explicitly confirm owned orders; production webhook stays absent',async()=>{
+  const prod=buildApp({config:loadConfig({NODE_ENV:'production',PAYMENT_PROVIDER:'mock',IDEMPOTENCY_SECRET:'synthetic-persistent-secret-at-least-32'}),repo:fromSync(repo)});
+  try {
+   const a=await registerAndLogin('prod_mock_a',prod),b=await registerAndLogin('prod_mock_b',prod);
+   const id=(await prod.inject({method:'POST',url:'/api/v1/orders',headers:{authorization:`Bearer ${a}`,'idempotency-key':'prod-mock-create'},payload:{product_id:'points_300'}})).json().data.order.id;
+   assert.equal((await prod.inject({method:'GET',url:'/api/v1/products'})).json().data.mock_checkout,true);
+   assert.equal((await prod.inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${b}`},payload:{}})).statusCode,403);
+   const confirm=()=>prod.inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${a}`},payload:{}});
+   for(const r of await Promise.all([confirm(),confirm(),confirm()]))assert.equal(r.statusCode,200,r.body);
+   const wallet=await prod.inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${a}`}});assert.equal(wallet.json().data.available,300);
+   assert.equal((await prod.inject({method:'POST',url:'/api/v1/payments/mock/webhook',headers:{authorization:`Bearer ${a}`},payload:{}})).statusCode,404);
+  } finally {await prod.close();}
+ });
+ test('legacy demo webhook cannot take the checkout event namespace',async()=>{
+  const token=await registerAndLogin('mock_event_namespace');const id=(await createOrder(token)).json().data.order.id;
+  assert.equal((await pay(token,id,`checkout:${id}`,990)).statusCode,400);
+ });
 });

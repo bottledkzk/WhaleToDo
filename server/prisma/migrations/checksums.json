@@ -38,5 +38,10 @@
     "name": "202610300001_account_cloud",
     "checksum": "a4846230a21a618cc03ef21938694832304deee2289152c4b0d8b9038bd0ccb6",
     "crlf_checksum": "61b93bf52bc272ce6cb1937efd7696a0656906d12b8f254ba616d236c299276d"
+  },
+  {
+    "name": "202610300002_mock_catalog",
+    "checksum": "000c7db50c7ada43abaa5d34d82028cc9f91a95fdadf254b386549a114c24bba",
+    "crlf_checksum": "3071bb82f399bc17e06fb62f6f9ef1599cac89fb70a8cc996aecd5d9daacfd0c"
   }
 ]
