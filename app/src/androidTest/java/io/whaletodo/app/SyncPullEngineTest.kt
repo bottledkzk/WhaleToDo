@@ -1,0 +1,407 @@
+package io.whaletodo.app
+
+import androidx.room.Room
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import io.whaletodo.app.account.AccountSession
+import io.whaletodo.app.data.DeskDatabase
+import io.whaletodo.app.data.SyncOutboxRow
+import io.whaletodo.app.data.TaskRow
+import io.whaletodo.app.sync.SyncPullEngine
+import io.whaletodo.network.AccountProfile
+import io.whaletodo.network.ApiException
+import io.whaletodo.network.Entitlements
+import io.whaletodo.network.SyncPullApi
+import io.whaletodo.network.SyncPullChange
+import io.whaletodo.network.SyncPullResponse
+import java.io.IOException
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class SyncPullEngineTest {
+    private lateinit var db: DeskDatabase
+    private lateinit var session: AccountSession
+    private var credentialSession = "s1"
+    private val owner = "owner-a"
+    private val taskId = "22222222-2222-4222-8222-222222222222"
+
+    @Before
+    fun setUp() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        db = Room.inMemoryDatabaseBuilder(context, DeskDatabase::class.java).build()
+        session = AccountSession { credentialSession }
+        check(session.begin("s1"))
+        check(
+            session.update(
+                "s1",
+                "a@example.test",
+                AccountProfile(owner, "user-a", null),
+                Entitlements(false, null),
+                0,
+            ),
+        )
+    }
+
+    @After
+    fun tearDown() {
+        db.close()
+    }
+
+    @Test
+    fun appliesTaskAndAdvancesCursorAndLastPullAt() = runBlocking {
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(taskChange(taskId, 1, title = "远端任务")),
+                nextCursor = 7,
+                hasMore = false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("ok", outcome.status)
+        assertEquals(7L, outcome.cursor)
+        assertEquals(1, outcome.applied)
+        assertEquals("远端任务", db.dao().task(owner, taskId)?.title)
+        assertEquals(1, db.dao().task(owner, taskId)?.serverVersion)
+        assertEquals(7L, db.syncDao().state(owner)?.cursor)
+        assertNotNull(db.syncDao().state(owner)?.lastPullAt)
+        assertEquals(0L, api.cursors.single())
+    }
+
+    @Test
+    fun olderVersionIsSkippedAndNewerVersionWins() = runBlocking {
+        db.dao().save(TaskRow(taskId, "本地 v3", ownerId = owner, serverVersion = 3, updatedAt = 1))
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    taskChange(taskId, 2, title = "旧 v2"),
+                    taskChange(taskId, 4, title = "新 v4"),
+                ),
+                nextCursor = 4,
+                hasMore = false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("ok", outcome.status)
+        assertEquals(1, outcome.applied)
+        assertEquals("新 v4", db.dao().task(owner, taskId)?.title)
+        assertEquals(4, db.dao().task(owner, taskId)?.serverVersion)
+    }
+
+    @Test
+    fun deleteRemovesContentAndWritesTombstone() = runBlocking {
+        db.dao().save(TaskRow(taskId, "要删除", ownerId = owner, serverVersion = 1, updatedAt = 1))
+        val api = FakeApi { _, _ ->
+            page(listOf(SyncPullChange("task", taskId, 2, true, null)), 2, false)
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals(1, outcome.deleted)
+        assertNull(db.dao().task(owner, taskId))
+        assertEquals(2, db.syncDao().tombstone(owner, "task", taskId)?.version)
+        assertEquals(2L, db.syncDao().state(owner)?.cursor)
+    }
+
+    @Test
+    fun dirtyOutboxWritesConflictAndDoesNotOverwriteLocal() = runBlocking {
+        db.dao().save(TaskRow(taskId, "本地待推", ownerId = owner, serverVersion = 1, updatedAt = 1))
+        db.syncDao().insertOutbox(outbox("pending", baseVersion = 1))
+        val api = FakeApi { _, _ ->
+            page(listOf(taskChange(taskId, 2, title = "远端 v2")), 2, false)
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals(1, outcome.conflicts)
+        assertEquals("本地待推", db.dao().task(owner, taskId)?.title)
+        assertEquals(1, db.dao().task(owner, taskId)?.serverVersion)
+        val conflict = db.syncDao().conflict(owner, "task", taskId)!!
+        assertEquals(2, conflict.remoteKnownVersion)
+        assertEquals(0, conflict.remoteDeleted)
+        assertTrue(conflict.remoteDetailFetched)
+        assertNotNull(conflict.remotePayloadJson)
+        assertEquals(2L, db.syncDao().state(owner)?.cursor)
+    }
+
+    @Test
+    fun remoteDeleteWithDirtyOutboxWritesDeletedConflictAndKeepsLocal() = runBlocking {
+        db.dao().save(TaskRow(taskId, "本地保留", ownerId = owner, serverVersion = 1, updatedAt = 1))
+        db.syncDao().insertOutbox(outbox("pending", baseVersion = 1))
+        val api = FakeApi { _, _ ->
+            page(listOf(SyncPullChange("task", taskId, 2, true, null)), 2, false)
+        }
+        SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("本地保留", db.dao().task(owner, taskId)?.title)
+        val conflict = db.syncDao().conflict(owner, "task", taskId)!!
+        assertEquals(1, conflict.remoteDeleted)
+        assertTrue(conflict.remoteDetailFetched)
+        assertNull(db.syncDao().tombstone(owner, "task", taskId))
+    }
+
+    @Test
+    fun malformedSecondChangeRollsBackWholePageAndCursor() = runBlocking {
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    taskChange(taskId, 1, title = "应先落但不提交"),
+                    SyncPullChange("task", "33333333-3333-4333-8333-333333333333", 1, false, "{}"),
+                ),
+                1,
+                false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("invalid", outcome.status)
+        assertNull(db.dao().task(owner, taskId))
+        assertNull(db.syncDao().state(owner))
+    }
+
+    @Test
+    fun unknownTypeRollsBackWholePage() = runBlocking {
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    taskChange(taskId, 1, title = "合法"),
+                    SyncPullChange("goal", "33333333-3333-4333-8333-333333333333", 1, false, null),
+                ),
+                1,
+                false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("invalid", outcome.status)
+        assertNull(db.dao().task(owner, taskId))
+        assertNull(db.syncDao().state(owner))
+    }
+
+    @Test
+    fun cursorRegressionOrNonAdvancingPageIsRejected() = runBlocking {
+        db.syncDao().upsertState(
+            io.whaletodo.app.data.SyncStateRow(owner, cursor = 10, deviceId = "device-1"),
+        )
+        val regression = FakeApi { _, _ -> page(emptyList(), 9, false) }
+        assertEquals(
+            "invalid",
+            SyncPullEngine(db, session, regression).pullOnce(owner, "device-1").status,
+        )
+        assertEquals(10L, db.syncDao().state(owner)?.cursor)
+
+        val stuck = FakeApi { _, _ -> page(listOf(taskChange(taskId, 11)), 10, true) }
+        assertEquals(
+            "invalid",
+            SyncPullEngine(db, session, stuck).pullOnce(owner, "device-1").status,
+        )
+        assertNull(db.dao().task(owner, taskId))
+    }
+
+    @Test
+    fun ownerOrSessionMismatchDoesNotCallApiOrApply() = runBlocking {
+        check(
+            session.update(
+                "s1",
+                "b@example.test",
+                AccountProfile("owner-b", "user-b", null),
+                Entitlements(false, null),
+                0,
+            ),
+        )
+        val api = FakeApi { _, _ -> page(listOf(taskChange(taskId, 1)), 1, false) }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("session_wait", outcome.status)
+        assertEquals(0, api.calls)
+        assertNull(db.dao().task(owner, taskId))
+
+        check(session.clear("s1"))
+        credentialSession = "s2"
+        check(session.begin("s2"))
+        check(
+            session.update(
+                "s2",
+                "a@example.test",
+                AccountProfile(owner, "user-a", null),
+                Entitlements(false, null),
+                0,
+            ),
+        )
+        val switched = FakeApi { _, _ ->
+            session.clear("s2")
+            page(listOf(taskChange(taskId, 1)), 1, false)
+        }
+        val second = SyncPullEngine(db, session, switched).pullOnce(owner, "device-1")
+        assertEquals("session_wait", second.status)
+        assertNull(db.dao().task(owner, taskId))
+    }
+
+    @Test
+    fun unauthorizedAndNetworkFailureDoNotAdvanceCursor() = runBlocking {
+        val unauthorized = FakeApi { _, _ ->
+            throw ApiException("AUTH_REQUIRED", "401", 401, null)
+        }
+        assertEquals(
+            "session_wait",
+            SyncPullEngine(db, session, unauthorized).pullOnce(owner, "device-1").status,
+        )
+        val network = FakeApi { _, _ -> throw IOException("offline") }
+        assertEquals(
+            "error",
+            SyncPullEngine(db, session, network).pullOnce(owner, "device-1").status,
+        )
+        assertNull(db.syncDao().state(owner))
+    }
+
+    @Test
+    fun emptyPageStillAdvancesCursorAndLastPullAt() = runBlocking {
+        val api = FakeApi { _, _ -> page(emptyList(), 5, false) }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals("ok", outcome.status)
+        assertEquals(5L, db.syncDao().state(owner)?.cursor)
+        assertNotNull(db.syncDao().state(owner)?.lastPullAt)
+    }
+
+    @Test
+    fun settingsAndAvailabilityUseCanonicalIdsAndMapPayloads() = runBlocking {
+        val settingsId = "44444444-4444-4444-8444-444444444444"
+        val availabilityId = "55555555-5555-4555-8555-555555555555"
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    SyncPullChange(
+                        "settings",
+                        settingsId,
+                        1,
+                        false,
+                        """{"payload_version":1,"start_hour":8,"end_hour":20,"time_zone":"Asia/Shanghai"}""",
+                    ),
+                    SyncPullChange(
+                        "availability",
+                        availabilityId,
+                        1,
+                        false,
+                        """{"payload_version":1,"date":"2026-10-31","start_minute":540,"end_minute":1080,"time_zone":"Asia/Shanghai"}""",
+                    ),
+                ),
+                1,
+                false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals(2, outcome.applied)
+        assertEquals(8, db.dao().settings(owner)?.startHour)
+        assertEquals(20, db.dao().settings(owner)?.endHour)
+        assertEquals("Asia/Shanghai", db.dao().settings(owner)?.timeZone)
+        assertEquals(540, db.dao().workTime(owner, "2026-10-31")?.startMinute)
+        assertEquals(1080, db.dao().workTime(owner, "2026-10-31")?.endMinute)
+    }
+
+    @Test
+    fun hasMoreRequiresCallerToRequestNextPage() = runBlocking {
+        val secondId = "33333333-3333-4333-8333-333333333333"
+        var call = 0
+        val api = FakeApi { cursor, _ ->
+            call++
+            if (cursor == 0L) {
+                page(listOf(taskChange(taskId, 1, title = "第一页")), 1, true)
+            } else {
+                page(listOf(taskChange(secondId, 2, title = "第二页")), 2, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+        val first = engine.pullOnce(owner, "device-1")
+        assertEquals("ok", first.status)
+        assertTrue(first.hasMore)
+        assertEquals(1L, first.cursor)
+        assertEquals(1, api.calls)
+
+        val second = engine.pullOnce(owner, "device-1")
+        assertEquals("ok", second.status)
+        assertFalse(second.hasMore)
+        assertEquals(2L, second.cursor)
+        assertEquals(listOf(0L, 1L), api.cursors)
+        assertNotNull(db.dao().task(owner, taskId))
+        assertNotNull(db.dao().task(owner, secondId))
+    }
+
+    @Test
+    fun samePageReplayIsIdempotent() = runBlocking {
+        var call = 0
+        val api = FakeApi { _, _ ->
+            call++
+            page(listOf(taskChange(taskId, 1, title = "只应用一次")), call.toLong(), false)
+        }
+        val engine = SyncPullEngine(db, session, api)
+        engine.pullOnce(owner, "device-1")
+        db.syncDao().upsertState(io.whaletodo.app.data.SyncStateRow(owner, 0, deviceId = "device-1"))
+        val replay = engine.pullOnce(owner, "device-1")
+
+        assertEquals("ok", replay.status)
+        assertEquals(0, replay.applied)
+        assertEquals(1, db.dao().task(owner, taskId)?.serverVersion)
+        assertEquals("只应用一次", db.dao().task(owner, taskId)?.title)
+    }
+
+    private fun outbox(state: String, baseVersion: Int?) = SyncOutboxRow(
+        opId = "op-$taskId",
+        ownerId = owner,
+        objectType = "task",
+        objectId = taskId,
+        op = "update",
+        payloadJson = "{}",
+        baseVersion = baseVersion,
+        idempotencyKey = "op-$taskId",
+        parentOpId = null,
+        isHead = true,
+        batchId = null,
+        state = state,
+        attempts = 0,
+        nextRetryAt = 0,
+        createdAt = 1,
+        lastErrorCode = null,
+    )
+
+    private fun taskChange(
+        id: String,
+        version: Int,
+        title: String = "任务",
+    ) = SyncPullChange(
+        "task",
+        id,
+        version,
+        false,
+        """{"payload_version":1,"title":"$title","minutes":25,"deadline":0,"importance":3,
+           "done":false,"created":1,"note":"","chunk_minutes":60,"splittable":true,"category":"work"}""",
+    )
+
+    private fun page(
+        changes: List<SyncPullChange>,
+        nextCursor: Long,
+        hasMore: Boolean,
+    ) = SyncPullResponse(changes, nextCursor, hasMore)
+
+    private class FakeApi(
+        private val handler: suspend (Long, Int) -> SyncPullResponse,
+    ) : SyncPullApi {
+        var calls = 0
+        val cursors = mutableListOf<Long>()
+
+        override suspend fun pull(sessionId: String, cursor: Long, limit: Int): SyncPullResponse {
+            calls++
+            cursors += cursor
+            return handler(cursor, limit)
+        }
+    }
+}

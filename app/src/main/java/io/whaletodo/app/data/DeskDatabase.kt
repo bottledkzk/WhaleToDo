@@ -170,6 +170,9 @@ interface DeskDao {
     @Query("SELECT * FROM daily_work_times WHERE owner_id=:owner AND date=:date")
     suspend fun workTime(owner: String, date: String): DailyWorkTimeRow?
 
+    @Query("SELECT * FROM daily_work_times WHERE owner_id=:owner AND client_id=:clientId LIMIT 1")
+    suspend fun workTimeByClient(owner: String, clientId: String): DailyWorkTimeRow?
+
     @Query("DELETE FROM tasks WHERE owner_id=:owner AND id=:id")
     suspend fun deleteTask(owner: String, id: String)
 
