@@ -8,6 +8,7 @@ import io.whaletodo.app.data.DailyWorkTimeRow
 import io.whaletodo.app.data.DeskDatabase
 import io.whaletodo.app.data.SettingRow
 import io.whaletodo.app.data.SyncConflictRow
+import io.whaletodo.app.data.SyncIdMappingRow
 import io.whaletodo.app.data.SyncStateRow
 import io.whaletodo.app.data.SyncTombstoneRow
 import io.whaletodo.app.data.TaskRow
@@ -17,6 +18,8 @@ import io.whaletodo.network.SyncPullChange
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -285,26 +288,38 @@ class SyncPullEngine(
                         clientId = canonicalId("settings:$ownerId"),
                         serverVersion = version,
                         updatedAt = now,
-                        timeZone = payload.requiredString("time_zone"),
+                        timeZone = strictZone(payload.requiredString("time_zone")),
                     ),
                 )
             }
             "availability" -> {
-                val date = payload.requiredString("date")
-                if (!DATE_RE.matches(date)) throw SyncPullProtocolException("AVAILABILITY_DATE_INVALID")
+                val date = strictDate(payload.requiredString("date"))
                 val startMinute = payload.requiredInt("start_minute", 0, 1439)
                 val endMinute = payload.requiredInt("end_minute", 1, 1440)
                 if (startMinute >= endMinute) throw SyncPullProtocolException("AVAILABILITY_RANGE_INVALID")
+                val canonical = canonicalId("availability:$ownerId:$date")
                 content.save(
                     DailyWorkTimeRow(
                         date = date,
                         startMinute = startMinute,
                         endMinute = endMinute,
                         ownerId = ownerId,
-                        clientId = canonicalId("availability:$ownerId:$date"),
+                        clientId = canonical,
                         serverVersion = version,
                         updatedAt = now,
-                        timeZone = payload.requiredString("time_zone"),
+                        timeZone = strictZone(payload.requiredString("time_zone")),
+                    ),
+                )
+                // Keep the remote object_id even when it is not the canonical UUIDv5;
+                // a later payload-less delete can still locate this local date.
+                dao.upsertMapping(
+                    SyncIdMappingRow(
+                        ownerId = ownerId,
+                        objectType = "availability",
+                        guestObjectId = objectId,
+                        accountObjectId = canonical,
+                        naturalKey = date,
+                        createdAt = now,
                     ),
                 )
             }
@@ -319,6 +334,8 @@ class SyncPullEngine(
     ): DailyWorkTimeRow? =
         content.workTimeByClient(ownerId, objectId)
             ?: payload?.string("date")?.let { content.workTime(ownerId, it) }
+            ?: dao.mapping(ownerId, "availability", objectId)?.naturalKey
+                ?.let { content.workTime(ownerId, it) }
             ?: content.workTimes(ownerId).firstOrNull {
                 canonicalId("availability:$ownerId:${it.date}") == objectId
             }
@@ -359,6 +376,24 @@ class SyncPullEngine(
         return session.currentSessionId()
     }
 
+    private fun strictDate(value: String): String {
+        try {
+            LocalDate.parse(value)
+        } catch (_: Exception) {
+            throw SyncPullProtocolException("AVAILABILITY_DATE_INVALID")
+        }
+        return value
+    }
+
+    private fun strictZone(value: String): String {
+        try {
+            ZoneId.of(value)
+        } catch (_: Exception) {
+            throw SyncPullProtocolException("TIME_ZONE_INVALID")
+        }
+        return value
+    }
+
     private fun canonicalId(name: String): String {
         val namespace = ByteBuffer.allocate(16)
             .putLong(NAMESPACE.mostSignificantBits)
@@ -381,7 +416,6 @@ class SyncPullEngine(
         val TASK_CATEGORIES = setOf(
             "none", "study", "exercise", "entertainment", "work", "social", "travel", "rest",
         )
-        val DATE_RE = Regex("^\\d{4}-\\d{2}-\\d{2}$")
         val NAMESPACE = UUID.fromString("b420822a-ec70-4d54-976d-586dde231c6d")
     }
 }

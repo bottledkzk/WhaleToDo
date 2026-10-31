@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.whaletodo.app.account.AccountSession
+import io.whaletodo.app.data.DailyWorkTimeRow
 import io.whaletodo.app.data.DeskDatabase
 import io.whaletodo.app.data.SyncOutboxRow
 import io.whaletodo.app.data.TaskRow
@@ -334,6 +335,184 @@ class SyncPullEngineTest {
         assertEquals(listOf(0L, 1L), api.cursors)
         assertNotNull(db.dao().task(owner, taskId))
         assertNotNull(db.dao().task(owner, secondId))
+    }
+
+    @Test
+    fun oldCanonicalAvailabilityRowWithoutMappingIsStillDeletable() = runBlocking {
+        val remoteId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        val date = "2026-11-01"
+        var call = 0
+        var canonicalId: String? = null
+        val api = FakeApi { _, _ ->
+            call++
+            if (call == 1) {
+                page(
+                    listOf(
+                        SyncPullChange(
+                            "availability",
+                            remoteId,
+                            1,
+                            false,
+                            """{"payload_version":1,"date":"$date","start_minute":540,"end_minute":1080,"time_zone":"Asia/Shanghai"}""",
+                        ),
+                    ),
+                    1,
+                    false,
+                )
+            } else {
+                page(listOf(SyncPullChange("availability", canonicalId!!, 2, true, null)), 2, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+        engine.pullOnce(owner, "device-1")
+        val mapping = db.syncDao().mapping(owner, "availability", remoteId)!!
+        canonicalId = mapping.accountObjectId
+        // Simulate a pre-T86 local row: canonical client_id was not backfilled, no mapping.
+        db.dao().save(
+            DailyWorkTimeRow(
+                date = date,
+                startMinute = 540,
+                endMinute = 1080,
+                ownerId = owner,
+                clientId = null,
+                serverVersion = 1,
+                updatedAt = 1,
+                timeZone = "Asia/Shanghai",
+            ),
+        )
+        db.syncDao().deleteMapping(mapping)
+
+        val removed = engine.pullOnce(owner, "device-1")
+        assertEquals(1, removed.deleted)
+        assertNull(db.dao().workTime(owner, date))
+    }
+
+    @Test
+    fun nonCanonicalAvailabilityUpsertThenPayloadlessDeleteThenReplay() = runBlocking {
+        val remoteId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        val date = "2026-10-31"
+        var call = 0
+        val api = FakeApi { _, _ ->
+            call++
+            when (call) {
+                1 -> page(
+                    listOf(
+                        SyncPullChange(
+                            "availability",
+                            remoteId,
+                            1,
+                            false,
+                            """{"payload_version":1,"date":"$date","start_minute":540,"end_minute":1080,"time_zone":"Asia/Shanghai"}""",
+                        ),
+                    ),
+                    1,
+                    false,
+                )
+                else -> page(listOf(SyncPullChange("availability", remoteId, 2, true, null)), 2, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+        assertEquals("ok", engine.pullOnce(owner, "device-1").status)
+        assertNotNull(db.dao().workTime(owner, date))
+        assertEquals(date, db.syncDao().mapping(owner, "availability", remoteId)?.naturalKey)
+
+        val removed = engine.pullOnce(owner, "device-1")
+        assertEquals(1, removed.deleted)
+        assertNull(db.dao().workTime(owner, date))
+        assertEquals(2, db.syncDao().tombstone(owner, "availability", remoteId)?.version)
+
+        db.syncDao().upsertState(io.whaletodo.app.data.SyncStateRow(owner, 0, deviceId = "device-1"))
+        val replay = engine.pullOnce(owner, "device-1")
+        assertEquals("ok", replay.status)
+        assertEquals(0, replay.deleted)
+        assertNull(db.dao().workTime(owner, date))
+        assertEquals(2, db.syncDao().tombstone(owner, "availability", remoteId)?.version)
+    }
+
+    @Test
+    fun invalidAvailabilityDateRollsBackWholePage() = runBlocking {
+        db.syncDao().upsertState(
+            io.whaletodo.app.data.SyncStateRow(
+                owner,
+                cursor = 5,
+                lastPullAt = 123,
+                deviceId = "device-1",
+            ),
+        )
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    taskChange(taskId, 1, title = "不应提交"),
+                    SyncPullChange(
+                        "availability",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        1,
+                        false,
+                        """{"payload_version":1,"date":"2026-02-30","start_minute":540,"end_minute":1080,"time_zone":"Asia/Shanghai"}""",
+                    ),
+                ),
+                6,
+                false,
+            )
+        }
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+        assertEquals("invalid", outcome.status)
+        assertNull(db.dao().task(owner, taskId))
+        assertEquals(5L, db.syncDao().state(owner)?.cursor)
+        assertEquals(123L, db.syncDao().state(owner)?.lastPullAt)
+    }
+
+    @Test
+    fun invalidTimezoneInAvailabilityOrSettingsRollsBackWholePage() = runBlocking {
+        db.syncDao().upsertState(
+            io.whaletodo.app.data.SyncStateRow(
+                owner,
+                cursor = 5,
+                lastPullAt = 123,
+                deviceId = "device-1",
+            ),
+        )
+        val api = FakeApi { _, _ ->
+            page(
+                listOf(
+                    SyncPullChange(
+                        "availability",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        1,
+                        false,
+                        """{"payload_version":1,"date":"2026-10-31","start_minute":540,"end_minute":1080,"time_zone":"Not/AZone"}""",
+                    ),
+                ),
+                6,
+                false,
+            )
+        }
+        val availability = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+        assertEquals("invalid", availability.status)
+        assertNull(db.dao().workTime(owner, "2026-10-31"))
+        assertEquals(5L, db.syncDao().state(owner)?.cursor)
+        assertEquals(123L, db.syncDao().state(owner)?.lastPullAt)
+
+        val settingsApi = FakeApi { _, _ ->
+            page(
+                listOf(
+                    SyncPullChange(
+                        "settings",
+                        "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                        1,
+                        false,
+                        """{"payload_version":1,"start_hour":8,"end_hour":20,"time_zone":"Not/AZone"}""",
+                    ),
+                ),
+                6,
+                false,
+            )
+        }
+        val settings = SyncPullEngine(db, session, settingsApi).pullOnce(owner, "device-1")
+        assertEquals("invalid", settings.status)
+        assertNull(db.dao().settings(owner))
+        assertEquals(5L, db.syncDao().state(owner)?.cursor)
+        assertEquals(123L, db.syncDao().state(owner)?.lastPullAt)
     }
 
     @Test
