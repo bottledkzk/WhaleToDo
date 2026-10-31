@@ -41,6 +41,11 @@ data class PullOutcome(
 
 internal class SyncPullProtocolException(message: String) : Exception(message)
 
+private data class AvailabilityIdentity(
+    val localObjectId: String,
+    val date: String?,
+)
+
 /**
  * First pull block: one page per call, no worker/loop, no automatic push.
  * A page, its cursor and lastPullAt are committed in one Room transaction.
@@ -147,17 +152,42 @@ class SyncPullEngine(
         val type = change.objectType
         if (type !in OBJECT_TYPES) throw SyncPullProtocolException("UNKNOWN_OBJECT_TYPE")
         val payload = if (change.deleted) null else parsePayload(change)
-        val known = localKnownVersion(ownerId, change, payload)
+        val identity = if (type == "availability") {
+            resolveAvailabilityIdentity(ownerId, change.objectId, payload)
+        } else {
+            null
+        }
+        val localObjectId = identity?.localObjectId ?: change.objectId
+        // Persist the remote→local translation for conflicts, skipped versions and deletes.
+        if (identity != null && identity.date != null && change.objectId != localObjectId) {
+            dao.upsertMapping(
+                SyncIdMappingRow(
+                    ownerId = ownerId,
+                    objectType = "availability",
+                    guestObjectId = change.objectId,
+                    accountObjectId = localObjectId,
+                    naturalKey = identity.date,
+                    createdAt = now,
+                ),
+            )
+        }
+        val known = localKnownVersion(ownerId, change, payload, localObjectId, identity)
         if (change.version <= known) return ApplyResult.SKIPPED
 
-        val head = dao.head(ownerId, type, change.objectId)?.takeIf { it.state != "done" }
-        val existing = dao.conflict(ownerId, type, change.objectId)
+        // A remote availability object_id may differ from the canonical local identity.
+        // Keep the translation even when this version is applied or conflicts.
+        val head = dao.head(ownerId, type, localObjectId)?.takeIf { it.state != "done" }
+        val localConflict = dao.conflict(ownerId, type, localObjectId)
+        val remoteConflict = change.objectId.takeIf { it != localObjectId }
+            ?.let { dao.conflict(ownerId, type, it) }
+        val existing = localConflict ?: remoteConflict
         if (head != null || existing != null) {
+            val conflictId = localObjectId
             dao.upsertConflict(
                 SyncConflictRow(
                     ownerId = ownerId,
                     objectType = type,
-                    objectId = change.objectId,
+                    objectId = conflictId,
                     localPayloadJson = head?.payloadJson ?: existing?.localPayloadJson,
                     localBaseVersion = head?.baseVersion ?: existing?.localBaseVersion,
                     remoteKnownVersion = change.version,
@@ -169,48 +199,96 @@ class SyncPullEngine(
                     state = existing?.state ?: "open",
                 ),
             )
+            // Never delete the local identity row we just wrote; only migrate an old
+            // remote-keyed conflict to the local identity.
+            if (remoteConflict != null) dao.deleteConflict(remoteConflict)
             return ApplyResult.CONFLICT
         }
 
         if (change.deleted) {
-            deleteContent(ownerId, type, change.objectId, payload)
+            deleteContent(ownerId, type, localObjectId, payload)
             dao.upsertTombstone(
                 SyncTombstoneRow(
                     ownerId = ownerId,
                     objectType = type,
-                    objectId = change.objectId,
+                    objectId = localObjectId,
                     deletedAt = now,
                     version = change.version,
                 ),
             )
             return ApplyResult.DELETED
         }
-        applyContent(ownerId, type, change.objectId, payload!!, change.version, now)
+        applyContent(ownerId, type, localObjectId, payload!!, change.version, now)
         return ApplyResult.APPLIED
     }
+
+    private suspend fun existingConflict(
+        ownerId: String,
+        type: String,
+        localObjectId: String,
+        remoteObjectId: String,
+    ): SyncConflictRow? =
+        dao.conflict(ownerId, type, localObjectId)
+            ?: remoteObjectId.takeIf { it != localObjectId }
+                ?.let { dao.conflict(ownerId, type, it) }
 
     private suspend fun localKnownVersion(
         ownerId: String,
         change: SyncPullChange,
         payload: JSONObject?,
+        localObjectId: String,
+        identity: AvailabilityIdentity?,
     ): Int {
         val contentVersion = when (change.objectType) {
-            "task" -> content.task(ownerId, change.objectId)?.serverVersion
-            "block" -> content.block(ownerId, change.objectId)?.serverVersion
-            "checkin" -> content.checkIn(ownerId, change.objectId)?.serverVersion
+            "task" -> content.task(ownerId, localObjectId)?.serverVersion
+            "block" -> content.block(ownerId, localObjectId)?.serverVersion
+            "checkin" -> content.checkIn(ownerId, localObjectId)?.serverVersion
             "settings" -> content.settings(ownerId)?.serverVersion
             "availability" -> {
-                findWorkTime(ownerId, change.objectId, payload)?.serverVersion
+                val local = identity?.date?.let { content.workTime(ownerId, it) }
+                    ?: content.workTimeByClient(ownerId, localObjectId)
+                    ?: findWorkTime(ownerId, localObjectId, payload)
+                local?.serverVersion
             }
             else -> throw SyncPullProtocolException("UNKNOWN_OBJECT_TYPE")
         } ?: 0
-        val tombstoneVersion = dao.tombstone(ownerId, change.objectType, change.objectId)?.version ?: 0
-        val conflictVersion = dao.conflict(ownerId, change.objectType, change.objectId)
-            ?.remoteKnownVersion ?: 0
-        val head = dao.head(ownerId, change.objectType, change.objectId)
+        val tombstoneVersion = maxOf(
+            dao.tombstone(ownerId, change.objectType, localObjectId)?.version ?: 0,
+            change.objectId.takeIf { it != localObjectId }
+                ?.let { dao.tombstone(ownerId, change.objectType, it)?.version } ?: 0,
+        )
+        val conflictVersion = existingConflict(
+            ownerId,
+            change.objectType,
+            localObjectId,
+            change.objectId,
+        )?.remoteKnownVersion ?: 0
+        val head = dao.head(ownerId, change.objectType, localObjectId)
             ?.takeIf { it.state != "done" }
         val headVersion = head?.baseVersion ?: 0
         return maxOf(contentVersion, tombstoneVersion, conflictVersion, headVersion)
+    }
+
+    private suspend fun resolveAvailabilityIdentity(
+        ownerId: String,
+        remoteObjectId: String,
+        payload: JSONObject?,
+    ): AvailabilityIdentity {
+        val payloadDate = payload?.string("date")
+        val mapping = dao.mapping(ownerId, "availability", remoteObjectId)
+        val byClient = content.workTimeByClient(ownerId, remoteObjectId)
+        val mappedDate = mapping?.naturalKey
+        val date = payloadDate
+            ?: byClient?.date
+            ?: mappedDate
+            ?: content.workTimes(ownerId).firstOrNull {
+                canonicalId("availability:$ownerId:${it.date}") == remoteObjectId
+            }?.date
+        val localObjectId = byClient?.let { remoteObjectId }
+            ?: mapping?.accountObjectId?.takeIf { it.isNotBlank() }
+            ?: date?.let { canonicalId("availability:$ownerId:$it") }
+            ?: remoteObjectId
+        return AvailabilityIdentity(localObjectId, date)
     }
 
     private suspend fun applyContent(
@@ -297,29 +375,16 @@ class SyncPullEngine(
                 val startMinute = payload.requiredInt("start_minute", 0, 1439)
                 val endMinute = payload.requiredInt("end_minute", 1, 1440)
                 if (startMinute >= endMinute) throw SyncPullProtocolException("AVAILABILITY_RANGE_INVALID")
-                val canonical = canonicalId("availability:$ownerId:$date")
                 content.save(
                     DailyWorkTimeRow(
                         date = date,
                         startMinute = startMinute,
                         endMinute = endMinute,
                         ownerId = ownerId,
-                        clientId = canonical,
+                        clientId = objectId,
                         serverVersion = version,
                         updatedAt = now,
                         timeZone = strictZone(payload.requiredString("time_zone")),
-                    ),
-                )
-                // Keep the remote object_id even when it is not the canonical UUIDv5;
-                // a later payload-less delete can still locate this local date.
-                dao.upsertMapping(
-                    SyncIdMappingRow(
-                        ownerId = ownerId,
-                        objectType = "availability",
-                        guestObjectId = objectId,
-                        accountObjectId = canonical,
-                        naturalKey = date,
-                        createdAt = now,
                     ),
                 )
             }

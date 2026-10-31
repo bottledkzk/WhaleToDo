@@ -16,6 +16,9 @@ import io.whaletodo.network.SyncPullApi
 import io.whaletodo.network.SyncPullChange
 import io.whaletodo.network.SyncPullResponse
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -388,6 +391,71 @@ class SyncPullEngineTest {
     }
 
     @Test
+    fun nonCanonicalV1ThenCanonicalOutboxKeepsV2UpdateAndDeleteConflicted() = runBlocking {
+        val remoteId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        val date = "2026-11-02"
+        val localId = canonicalAvailabilityId(owner, date)
+        db.dao().save(
+            DailyWorkTimeRow(
+                date = date,
+                startMinute = 540,
+                endMinute = 1080,
+                ownerId = owner,
+                clientId = localId,
+                serverVersion = 1,
+                updatedAt = 1,
+                timeZone = "Asia/Shanghai",
+            ),
+        )
+        db.syncDao().insertOutbox(
+            SyncOutboxRow(
+                opId = "op-availability",
+                ownerId = owner,
+                objectType = "availability",
+                objectId = localId,
+                op = "update",
+                payloadJson = "{}",
+                baseVersion = 1,
+                idempotencyKey = "op-availability",
+                parentOpId = null,
+                isHead = true,
+                batchId = null,
+                state = "pending",
+                attempts = 0,
+                nextRetryAt = 0,
+                createdAt = 1,
+                lastErrorCode = null,
+            ),
+        )
+        var call = 0
+        val api = FakeApi { _, _ ->
+            call++
+            when (call) {
+                1 -> page(listOf(availabilityChange(remoteId, 1, date)), 1, false)
+                2 -> page(listOf(availabilityChange(remoteId, 2, date)), 2, false)
+                else -> page(listOf(SyncPullChange("availability", remoteId, 3, true, null)), 3, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+        assertEquals("ok", engine.pullOnce(owner, "device-1").status)
+        assertEquals(localId, db.syncDao().mapping(owner, "availability", remoteId)?.accountObjectId)
+
+        val updated = engine.pullOnce(owner, "device-1")
+        assertEquals(1, updated.conflicts)
+        assertNotNull(db.dao().workTime(owner, date))
+        assertEquals("pending", db.syncDao().outbox("op-availability")?.state)
+        assertEquals(2, db.syncDao().conflict(owner, "availability", localId)?.remoteKnownVersion)
+
+        val deleted = engine.pullOnce(owner, "device-1")
+        assertEquals(1, deleted.conflicts)
+        assertNotNull(db.dao().workTime(owner, date))
+        val conflict = db.syncDao().conflict(owner, "availability", localId)!!
+        assertEquals(3, conflict.remoteKnownVersion)
+        assertEquals(1, conflict.remoteDeleted)
+        assertNull(db.syncDao().tombstone(owner, "availability", localId))
+    }
+
+    @Test
     fun nonCanonicalAvailabilityUpsertThenPayloadlessDeleteThenReplay() = runBlocking {
         val remoteId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         val date = "2026-10-31"
@@ -414,19 +482,20 @@ class SyncPullEngineTest {
         val engine = SyncPullEngine(db, session, api)
         assertEquals("ok", engine.pullOnce(owner, "device-1").status)
         assertNotNull(db.dao().workTime(owner, date))
+        val localId = db.syncDao().mapping(owner, "availability", remoteId)!!.accountObjectId
         assertEquals(date, db.syncDao().mapping(owner, "availability", remoteId)?.naturalKey)
 
         val removed = engine.pullOnce(owner, "device-1")
         assertEquals(1, removed.deleted)
         assertNull(db.dao().workTime(owner, date))
-        assertEquals(2, db.syncDao().tombstone(owner, "availability", remoteId)?.version)
+        assertEquals(2, db.syncDao().tombstone(owner, "availability", localId)?.version)
 
         db.syncDao().upsertState(io.whaletodo.app.data.SyncStateRow(owner, 0, deviceId = "device-1"))
         val replay = engine.pullOnce(owner, "device-1")
         assertEquals("ok", replay.status)
         assertEquals(0, replay.deleted)
         assertNull(db.dao().workTime(owner, date))
-        assertEquals(2, db.syncDao().tombstone(owner, "availability", remoteId)?.version)
+        assertEquals(2, db.syncDao().tombstone(owner, "availability", localId)?.version)
     }
 
     @Test
@@ -533,6 +602,31 @@ class SyncPullEngineTest {
         assertEquals("只应用一次", db.dao().task(owner, taskId)?.title)
     }
 
+    private fun availabilityChange(
+        id: String,
+        version: Int,
+        date: String,
+    ) = SyncPullChange(
+        "availability",
+        id,
+        version,
+        false,
+        """{"payload_version":1,"date":"$date","start_minute":540,"end_minute":1080,"time_zone":"Asia/Shanghai"}""",
+    )
+
+    private fun canonicalAvailabilityId(owner: String, date: String): String {
+        val namespace = ByteBuffer.allocate(16)
+            .putLong(NAMESPACE.mostSignificantBits)
+            .putLong(NAMESPACE.leastSignificantBits)
+            .array()
+        val digest = MessageDigest.getInstance("SHA-1")
+            .digest(namespace + "availability:$owner:$date".toByteArray(Charsets.UTF_8))
+        digest[6] = ((digest[6].toInt() and 0x0f) or 0x50).toByte()
+        digest[8] = ((digest[8].toInt() and 0x3f) or 0x80).toByte()
+        val bytes = ByteBuffer.wrap(digest.copyOf(16))
+        return UUID(bytes.long, bytes.long).toString()
+    }
+
     private fun outbox(state: String, baseVersion: Int?) = SyncOutboxRow(
         opId = "op-$taskId",
         ownerId = owner,
@@ -582,5 +676,9 @@ class SyncPullEngineTest {
             cursors += cursor
             return handler(cursor, limit)
         }
+    }
+
+    private companion object {
+        val NAMESPACE: UUID = UUID.fromString("b420822a-ec70-4d54-976d-586dde231c6d")
     }
 }
