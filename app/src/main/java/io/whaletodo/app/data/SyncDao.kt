@@ -63,6 +63,10 @@ interface SyncDao {
     @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND objectType=:objectType AND objectId=:objectId AND isHead=1 LIMIT 1")
     suspend fun head(ownerId: String, objectType: String, objectId: String): SyncOutboxRow?
 
+    /** Settings is a single local row; its dirty head may still use a legacy remote key. */
+    @Query("SELECT * FROM sync_outbox WHERE ownerId=:ownerId AND objectType='settings' AND isHead=1 AND state IN ('pending','blocked','sending') LIMIT 1")
+    suspend fun settingsHead(ownerId: String): SyncOutboxRow?
+
     @Delete suspend fun deleteOutbox(row: SyncOutboxRow)
 
     @Upsert suspend fun upsertState(row: SyncStateRow)

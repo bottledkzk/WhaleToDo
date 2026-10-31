@@ -72,12 +72,20 @@ interface SyncPushApi {
     suspend fun push(sessionId: String, bodyJson: String): SyncPushResponse
 }
 
-class SyncApi(private val client: ApiClient) : SyncPushApi {
+class SyncApi(private val client: ApiClient) : SyncPushApi, SyncPullApi {
     override suspend fun push(sessionId: String, bodyJson: String): SyncPushResponse =
         parsePushResponse(client.postAsSession("/sync/push", bodyJson, sessionId))
 
     suspend fun push(sessionId: String, body: SyncPushBody): SyncPushResponse =
         push(sessionId, body.toJson())
+
+    override suspend fun pull(sessionId: String, cursor: Long, limit: Int): SyncPullResponse {
+        require(cursor >= 0) { "cursor must be non-negative" }
+        val boundedLimit = limit.coerceIn(1, 200)
+        return parsePullResponse(
+            client.getAsSession("/sync/pull?cursor=$cursor&limit=$boundedLimit", sessionId),
+        )
+    }
 }
 
 /** Parse the stable `{data:{...}}` envelope; malformed 2xx is a hard protocol error. */
