@@ -30,6 +30,16 @@ private val Yellow = Color(0xFFB98515)
 private val fullTime = DateTimeFormatter.ofPattern("M/d HH:mm")
 private fun at(ms: Long, s: DeskState) = Instant.ofEpochMilli(ms).atZone(ZoneId.of(s.zoneId))
 
+internal fun taskScheduleLabels(s: DeskState, taskId: String, day: LocalDate? = null): List<String> =
+    s.blocks.filter { it.taskId == taskId && (day == null ||
+        at(it.start, s).toLocalDate() <= day && at(it.end - 1, s).toLocalDate() >= day) }
+        .sortedBy { it.start }.map {
+            val start = at(it.start, s); val end = at(it.end, s)
+            val format = if (day != null && start.toLocalDate() == day && end.toLocalDate() == day)
+                DateTimeFormatter.ofPattern("HH:mm") else fullTime
+            "${start.format(format)}–${end.format(format)} · ${if (it.locked) "手动" else "自动"}"
+        }
+
 internal fun shareText(context: Context, text: String) {
     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text)
@@ -101,7 +111,7 @@ internal fun AgendaPage(s: DeskState, onPlan: () -> Unit, onEdit: (TaskRow) -> U
             if (rows.isEmpty()) item { Text(if (query.isNotBlank()) "未找到匹配事务" else "暂无事项",
                 Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(rows, key = { it.id }) { t ->
-                AgendaTask(t, onEdit, onComplete,
+                AgendaTask(t, taskScheduleLabels(s, t.id, day.takeIf { view == 1 }), onEdit, onComplete,
                     { onShare(taskText(t, s) + "\n${s.zoneId} · 来自 WhaleToDo") })
             }
         }
@@ -110,10 +120,15 @@ internal fun AgendaPage(s: DeskState, onPlan: () -> Unit, onEdit: (TaskRow) -> U
 }
 
 @Composable
-private fun AgendaTask(t: TaskRow, onEdit: (TaskRow) -> Unit,
+private fun AgendaTask(t: TaskRow, times: List<String>, onEdit: (TaskRow) -> Unit,
     onComplete: (TaskRow) -> Unit, onShare: () -> Unit) {
     Column {
         TaskCard(t, onEdit, onComplete)
+        times.take(4).forEach { time ->
+            Text("◷ $time", Modifier.fillMaxWidth().clickable { onEdit(t) }.padding(start = 16.dp, top = 5.dp),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+        if (times.size > 4) TextButton(onClick = { onEdit(t) }) { Text("另有${times.size - 4}段安排") }
         TextButton(onClick = onShare, modifier = Modifier.align(Alignment.End).height(34.dp)
             .semantics { contentDescription = "分享 ${t.title}" }, contentPadding = PaddingValues(horizontal = 10.dp)) {
             Text("分享", fontSize = 12.sp)
@@ -217,7 +232,7 @@ internal fun CalendarPage(s: DeskState, onEdit: (TaskRow) -> Unit, onComplete: (
             { pickingDate = true }, { onShare(dayText(s, day)) }, dayTasks(s, day).isNotEmpty()) }
         val tasks = dayTasks(s, day)
         if (tasks.isEmpty()) item { Text("这一天暂无记录", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(tasks, key = { it.id }) { t -> AgendaTask(t, onEdit, onComplete, { onShare(taskText(t, s) + "\n来自 WhaleToDo") }) }
+        items(tasks, key = { it.id }) { t -> AgendaTask(t, taskScheduleLabels(s, t.id, day), onEdit, onComplete, { onShare(taskText(t, s) + "\n来自 WhaleToDo") }) }
     }
     if (pickingDate) DayPicker(day, { pickingDate = false }, {
         selected = it.toString(); monthText = YearMonth.from(it).toString(); pickingDate = false

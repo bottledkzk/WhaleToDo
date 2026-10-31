@@ -227,7 +227,15 @@ class ServerProfileBridgeTest {
             runBlocking { bridge.requestCode("user@example.invalid", CodePurpose.REGISTER) }
         }
 
-        assertEquals("邮箱或密码错误，或登录已过期，请重新登录", error.message)
+        assertEquals("登录已过期，请重新登录", error.message)
         assertNull(credentials.read())
+    }
+
+    @Test fun `wrong login password has specific feedback without clearing another active session`() {
+        status=401
+        body="""{"request_id":"r","error":{"code":"UNAUTHENTICATED","message":"Invalid credentials"}}"""
+        val error=assertThrows(ProfileException::class.java){runBlocking{bridge.login("user@example.invalid","incorrect-password")}}
+        assertEquals("邮箱或密码错误，请重新输入",error.message)
+        assertEquals("S-A",credentials.read()?.sessionId)
     }
 }

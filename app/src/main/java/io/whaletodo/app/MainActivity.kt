@@ -342,7 +342,8 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
                     }
                     proposal.result.unmet.forEach { u ->
                         Text(
-                            "${state.tasks.find { it.id==u.taskId }?.title}：剩余${u.remainingMinutes}分钟 · ${u.reason}",
+                            "${state.tasks.find { it.id==u.taskId }?.title}：${u.reason}" +
+                                if (u.remainingMinutes > 0) " · 待安排${u.remainingMinutes}分钟" else "",
                             color = MaterialTheme.colorScheme.error,
                             fontSize = 13.sp,
                         )
@@ -355,7 +356,7 @@ fun DeskApp(vm: DeskViewModel = viewModel()) {
             dismissButton = { TextButton(onClick = { vm.preview.value = null }) { Text("返回") } },
         )
     }
-    ProfileDialogHost(vm.profile,state,blocked=capture||edit!=null||rating!=null||settings||preview!=null||shareDraft!=null||shareGate!=null||assistant.gate!=null||assistant.preview!=null||assistant.revision!=null)
+    ProfileDialogHost(vm.profile,state,blocked=capture||edit!=null||rating!=null||settings||preview!=null||shareDraft!=null||shareGate!=null||assistant.gate!=null||assistant.preview!=null||assistant.revision!=null||assistant.arrangement!=null)
     }
 
 }

@@ -20,7 +20,7 @@ import java.time.*
 
 @Composable internal fun ProfileHero(s:ProfileState,desk:DeskState,c:ProfileController) {
     val logged=s.access.userId!=null
-    val days=ProfileIdentity.vipDays(s.details?.vipExpiresAt,Instant.ofEpochMilli(desk.now))
+    val days=ProfileIdentity.vipDays(s.details?.vipExpiresAt)
     val vip=logged&&s.access.vip&&(days==null||days>0)
     Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer),modifier=Modifier.fillMaxWidth()) {
         Column(Modifier.padding(18.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {

@@ -64,3 +64,12 @@ test('actual model wrong-epoch counterexample uses the explicit clock before all
  const protectedRefusal=await callDeepSeek(config,{...request,context:JSON.stringify({...facts,blocks:[{...facts.blocks[0],done:true}]})},reply(refusal) as typeof fetch);
  assert.deepEqual(protectedRefusal.changes,[]);assert.equal(protectedRefusal.usable,false);
 });
+
+test('unambiguous domain move does not fail because model JSON is malformed, but fixed guards still apply',async()=>{
+ const start=Date.UTC(2030,0,1,1),facts={date:'2030-01-01',timezone:'Asia/Shanghai',tasks:[{id:'t',title:'阅读',done:false,deadline_ms:Date.UTC(2030,0,1,12)}],blocks:[{id:'b',task_id:'t',start_ms:start,end_ms:start+1800000,locked:false,done:false}]};
+ const body={choices:[{message:{content:'{broken model JSON'},finish_reason:'stop'}],usage:{total_tokens:25}};
+ const request={...input,mode:'edit' as const,prompt:'把阅读从09:00移到17:00',context:JSON.stringify(facts)};
+ const result=await callDeepSeek(config,request,reply(body) as typeof fetch);assert.equal(result.changes?.[0]?.start_ms,Date.UTC(2030,0,1,9));
+ const blocked=await callDeepSeek(config,{...request,context:JSON.stringify({...facts,blocks:[{...facts.blocks[0],locked:true}]})},reply(body) as typeof fetch);
+ assert.equal(blocked.usable,false);assert.deepEqual(blocked.changes,[]);
+});

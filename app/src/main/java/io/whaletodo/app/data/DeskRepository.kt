@@ -275,30 +275,7 @@ class DeskRepository(private val db: DeskDatabase) {
                 },
                 DeskOptions.weekdays(source.preferences),
             )
-        val tasks =
-            source.tasks
-                .filter { !it.done && it.minutes > 0 && it.deadline > 0 }
-                .map {
-                    Task(
-                        it.id,
-                        it.title,
-                        it.minutes,
-                        Instant.ofEpochMilli(it.deadline),
-                        it.importance,
-                        chunkMinutes = it.chunkMinutes,
-                        splittable = it.splittable,
-                    )
-                }
-        val blocks =
-            source.blocks.map {
-                Block(
-                    it.taskId,
-                    Window(Instant.ofEpochMilli(it.start), Instant.ofEpochMilli(it.end)),
-                    it.locked,
-                    it.done,
-                )
-            }
-        PlanPreview(source, Scheduler.plan(tasks, windows, emptyList(), blocks, now))
+        PlanPreview(source, previewPlan(source.tasks, source.blocks, windows, now))
     }
 
     suspend fun apply(preview: PlanPreview, owner: String = "guest") {
@@ -336,5 +313,15 @@ class DeskRepository(private val db: DeskDatabase) {
                 }
             )
         }
+    }
+
+    suspend fun applyAdvice(id: String, owner: String, arrangement: AdviceArrangement) = db.withTransaction {
+        check(dao.receiptCount(id, owner) == 0) { "此提案已采用" }
+        val source = arrangement.preview.source
+        check(snapshot(owner) == source) { "日程已变化，请重新预览安排" }
+        check(arrangement.preview.result == executableAdvicePlan(source, arrangement.taskIds,
+            arrangement.maxWork, arrangement.rest, arrangement.generatedAt, arrangement.firstDate, arrangement.days, arrangement.requestedWindow)) { "安排内容已变化，请重新预览" }
+        apply(arrangement.preview, owner)
+        dao.addReceipt(AgentReceiptRow(id, owner, System.currentTimeMillis()))
     }
 }

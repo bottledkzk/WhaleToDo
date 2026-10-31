@@ -221,7 +221,7 @@ class ServerAgentBridge(
             }
             when (view.status) {
                 "succeeded" -> toReply(view)
-                "failed" -> throw AgentServiceException(true, definitelyNotSent = false)
+                "failed" -> throw AgentServiceException(true, definitelyNotSent = false, userMessage = modelFailureMessage(view))
                 else -> throw AgentPendingException(request.id)
             }
         } finally {
@@ -266,7 +266,7 @@ class ServerAgentBridge(
                 requireQueryOwner(owner, requestId)
                 when (view.status) {
                     "succeeded" -> toReply(view)
-                    "failed" -> throw AgentServiceException(true)
+                    "failed" -> throw AgentServiceException(true, userMessage = modelFailureMessage(view))
                     else -> throw AgentPendingException(requestId)
                 }
             } finally {
