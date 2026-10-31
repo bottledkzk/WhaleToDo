@@ -330,9 +330,17 @@ test('production mock HTTP uses restricted PG, order snapshot and exactly-once e
  } finally {await app.close();}
 });
 
-test('mock catalog migration adds defaults idempotently without replacing configured prices',async()=>{
- const sql=readFileSync(new URL('../prisma/migrations/202610300002_mock_catalog/migration.sql',import.meta.url),'utf8');
- await owner.query(sql);await owner.query(sql);
- const rows=(await owner.query('SELECT product_id,price_minor FROM products WHERE product_id=ANY($1::text[]) ORDER BY product_id',[['vip_7d','vip_30d','points_100']])).rows;
- assert.equal(rows.length,3);assert.equal(rows.find(r=>r.product_id==='vip_30d').price_minor,990);
+test('both mock catalog migrations add all six tiers idempotently without replacing configured prices or snapshots',async()=>{
+ const user=await createUser('catalog_snapshot');const order=await createOrder(user.id,'points_300');
+ const scripts=['202610300002_mock_catalog','202610300003_payment_tiers'].map(name=>readFileSync(new URL(`../prisma/migrations/${name}/migration.sql`,import.meta.url),'utf8'));
+ for(const sql of scripts)await owner.query(sql);
+ const ids=['points_20','points_100','points_500','vip_7d','vip_30d','vip_90d'];
+ const first=(await owner.query('SELECT product_id,price_minor,vip_days,points FROM products WHERE product_id=ANY($1::text[]) ORDER BY product_id',[ids])).rows;
+ assert.equal(first.length,6);assert.equal(first.find(r=>r.product_id==='points_20').points,20);assert.equal(first.find(r=>r.product_id==='points_500').points,500);assert.equal(first.find(r=>r.product_id==='vip_90d').vip_days,90);
+ assert.equal(first.find(r=>r.product_id==='vip_30d').price_minor,990);
+ await owner.query('UPDATE products SET price_minor=$1,active=false WHERE product_id=$2',[777,'points_20']);
+ const configured=(await owner.query('SELECT * FROM products WHERE product_id=ANY($1::text[]) ORDER BY product_id',[ids])).rows;
+ for(const sql of scripts)await owner.query(sql);
+ assert.deepEqual((await owner.query('SELECT * FROM products WHERE product_id=ANY($1::text[]) ORDER BY product_id',[ids])).rows,configured);
+ assert.deepEqual(await repo.getOrder!(user.id,order.id),order);
 });

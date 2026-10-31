@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.*
 import io.whaletodo.app.account.installAccount
 import io.whaletodo.app.profile.ProfileBridgeHub
 
@@ -57,6 +57,13 @@ class CashierActivity : ComponentActivity() {
                     finally { busy = false } }
                 }
                 LaunchedEffect(Unit) { load() }
+                LaunchedEffect(owner) {
+                    var matched=false
+                    ProfileBridgeHub.bridge.details.collect { detail ->
+                        if(detail?.userId==owner)matched=true
+                        else if(matched||detail!=null)finish()
+                    }
+                }
                 DisposableEffect(Unit) { onDispose { web?.destroy(); web = null } }
                 Surface(Modifier.fillMaxSize()) {
                     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {

@@ -129,7 +129,7 @@ import kotlinx.coroutines.delay
         else if(checkout==null)Text(if(s.busy)"正在加载方案" else "方案暂不可用，请重试")
         else if(!checkout.catalog.mockEnabled)Text("充值尚未开放")
         else {
-            Text("模拟支付",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+            Text("模拟支付 · 无真实扣款",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
             Column(Modifier.heightIn(max=260.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
                 if(order==null)products.forEach{p->OutlinedCard(onClick={selected=p.id},enabled=!s.busy&&checkout.pendingProductId==null,modifier=Modifier.fillMaxWidth()){
                     Column(Modifier.padding(12.dp)){Text(p.title+(if(product==p.id)" ✓" else ""));Text(price(p.priceMinor,p.currency),style=MaterialTheme.typography.bodySmall)}

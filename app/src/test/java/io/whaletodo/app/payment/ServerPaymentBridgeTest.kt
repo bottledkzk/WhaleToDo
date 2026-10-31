@@ -29,12 +29,12 @@ class ServerPaymentBridgeTest {
   override fun clear(owner:String){rows.remove(owner)}
  }
  private class Api:PaymentApi {
-  var created=0;var confirmed=0;val keys=mutableListOf<String>();var lostCreate=false;var lostPay=false;var switchDuringPay:()->Unit={}
+  var created=0;var confirmed=0;var fetched=0;var cashierLoads=0;val keys=mutableListOf<String>();var lostCreate=false;var lostPay=false;var switchDuringPay:()->Unit={};var switchDuringOrder:()->Unit={}
   var value=PaymentOrder("11111111-1111-4111-8111-111111111111","points_100","100 积分",100,"CNY","PENDING","mock")
   override fun catalog(sessionId:String)=PaymentCatalog(true,emptyList())
   override fun create(sessionId:String,productId:String,key:String):PaymentOrder{created++;keys+=key;if(lostCreate){lostCreate=false;throw IOException()};return value}
-  override fun order(sessionId:String,id:String)=value
-  override fun cashier(sessionId:String,id:String)="<!doctype html><title>Cashier</title>"
+  override fun order(sessionId:String,id:String):PaymentOrder{fetched++;switchDuringOrder();return value}
+  override fun cashier(sessionId:String,id:String):String{cashierLoads++;return "<!doctype html><title>Cashier</title>"}
   override fun confirmMock(sessionId:String,id:String):PaymentOrder{confirmed++;value=value.copy(status="PAID");switchDuringPay();if(lostPay){lostPay=false;throw IOException()};return value}
  }
  private class Fixture:AutoCloseable {
@@ -85,4 +85,29 @@ class ServerPaymentBridgeTest {
   queued!!.run();assertTrue(runCatching{attempt.await()}.exceptionOrNull() is ProfileException)
   assertEquals(0,f.api.created);assertEquals(0,f.walletCalls);assertNull(f.store.read("A"));assertEquals(7,f.session.access.value.availablePoints)
  }}}
+ @Test fun productMismatchIsRejectedBeforeAnyPaymentMutation()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100")
+  f.store.save("A",f.store.read("A")!!.copy(productId="vip_30d"))
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().confirmCashier("A",order.id)}}
+  assertEquals(0,f.api.confirmed);assertEquals("PENDING",f.api.value.status);assertEquals(0,f.walletCalls)
+ }}
+ @Test fun reopenedBridgeRecoversSamePendingOrderWithoutCreatingOrConfirming()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100")
+  val recovered=f.bridge().inspect("A")
+  assertEquals(order.id,recovered.order!!.id);assertEquals(1,f.api.created);assertEquals(0,f.api.confirmed)
+ }}
+ @Test fun ownerSwitchBlocksCashierReadAndConfirmationOfPreviousOwnersPendingOrder()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100");val reads=f.api.fetched
+  f.tokens.save(TokenPair("b","b-refresh","B-session"));f.session.begin("B-session");f.session.update("B-session","b@example.invalid",AccountProfile("B","user_b",null),Entitlements(false,null),7)
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().cashier("A",order.id)}}
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().confirmCashier("A",order.id)}}
+  assertEquals(reads,f.api.fetched);assertEquals(0,f.api.cashierLoads);assertEquals(0,f.api.confirmed);assertEquals(7,f.session.access.value.availablePoints)
+  assertNotNull(f.store.read("A"));assertNull(f.store.read("B"))
+ }}
+ @Test fun sessionChangeDuringPreflightDoesNotPostPayment()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100")
+  f.api.switchDuringOrder={f.tokens.save(TokenPair("b","b-refresh","B-session"));f.session.begin("B-session");f.session.update("B-session","b@example.invalid",AccountProfile("B","user_b",null),Entitlements(false,null),7)}
+  assertThrows(ProfileException::class.java){runBlocking{f.bridge().confirmCashier("A",order.id)}}
+  assertEquals(0,f.api.confirmed);assertEquals(0,f.walletCalls)
+ }}
 }

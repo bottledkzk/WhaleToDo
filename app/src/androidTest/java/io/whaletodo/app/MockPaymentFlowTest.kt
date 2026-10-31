@@ -51,23 +51,23 @@ class MockPaymentFlowTest {
     activity!!.setContent{MaterialTheme{Surface{ProfileDialogHost(controller,DeskState())}}}
    }
    controller.open(MyDialog.RECHARGE_POINTS)
-   assertTrue(device.wait(Until.hasObject(By.text("模拟支付")),8000));assertNull(pending.read(owner))
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("模拟支付")),8000));assertNull(pending.read(owner))
    assertTrue(device.wait(Until.hasObject(By.text("100 积分")),5000));device.findObject(By.text("100 积分")).click()
    device.findObject(By.text("去支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));assertNotNull(pending.read(owner)?.orderId)
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认模拟支付")),8000));assertNotNull(pending.read(owner)?.orderId)
    val firstId=pending.read(owner)!!.orderId
    device.findObject(By.text("返回")).click()
    withTimeout(8000){while(controller.state.value.busy||controller.state.value.checkout?.order?.id!=firstId)delay(30)}
    assertEquals(firstId,pending.read(owner)?.orderId);assertEquals(beforePoints,session.access.value.availablePoints)
    assertTrue(device.wait(Until.hasObject(By.text("继续支付")),8000));device.findObject(By.text("继续支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));device.findObject(By.textStartsWith("确认支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("支付成功")),8000));assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认模拟支付")),8000));device.findObject(By.textStartsWith("确认模拟支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.text("模拟支付成功")),8000));assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
    device.takeScreenshot(File(ctx.cacheDir,"mock-payment-points-ui.png"))
    device.findObject(By.text("完成")).click();assertTrue(device.wait(Until.hasObject(By.text("关闭")),5000));device.findObject(By.text("关闭")).click();controller.open(MyDialog.RECHARGE_VIP)
    withTimeout(8000){while(controller.state.value.busy||controller.state.value.checkout?.order!=null)delay(30)}
    assertTrue(device.wait(Until.hasObject(By.text("去支付")),5000));device.findObject(By.text("去支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认支付")),8000));device.findObject(By.textStartsWith("确认支付")).click()
-   assertTrue(device.wait(Until.hasObject(By.text("支付成功")),8000));assertTrue(session.access.value.vip)
+   assertTrue(device.wait(Until.hasObject(By.textStartsWith("确认模拟支付")),8000));device.findObject(By.textStartsWith("确认模拟支付")).click()
+   assertTrue(device.wait(Until.hasObject(By.text("模拟支付成功")),8000));assertTrue(session.access.value.vip)
    assertEquals(beforePoints+100,session.access.value.availablePoints);assertNull(pending.read(owner))
    assertNotNull(session.details.value?.vipExpiresAt);beforeVip?.let{assertTrue(session.details.value!!.vipExpiresAt!!.isAfter(it))}
    device.takeScreenshot(File(ctx.cacheDir,"mock-payment-vip-ui.png"))

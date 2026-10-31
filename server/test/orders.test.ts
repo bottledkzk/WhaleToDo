@@ -85,7 +85,7 @@ test('online cashier is owner-bound read-only HTML; only explicit authenticated 
  assert.equal((await request()).statusCode,401);assert.equal((await request(b)).statusCode,403);
  const page=await request(a);assert.equal(page.statusCode,200);assert.match(page.headers['content-type'] as string,/text\/html/u);
  assert.equal(page.headers['cache-control'],'no-store');assert.match(page.headers['content-security-policy'] as string,/default-src 'none'/u);
- assert.match(page.body,/确认支付 ¥9\.90/u);assert.match(page.body,/whaletodo-pay:\/\/confirm/u);assert.match(page.body,/模拟支付/u);
+ assert.match(page.body,/确认模拟支付 ¥9\.90/u);assert.match(page.body,/whaletodo-pay:\/\/confirm/u);assert.match(page.body,/无真实扣款/u);
  assert.ok(!page.body.includes(a));assert.ok(!page.body.includes('<script'));
  await request(a);assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).json().data.order.status,'PENDING');
  const paid=await inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${a}`},payload:{}});assert.equal(paid.statusCode,200);
@@ -366,4 +366,19 @@ describe('all-account mock on production runtime',()=>{
   const token=await registerAndLogin('mock_event_namespace');const id=(await createOrder(token)).json().data.order.id;
   assert.equal((await pay(token,id,`checkout:${id}`,990)).statusCode,400);
  });
+});
+
+
+test('mock new-order and cashier rate limits are per account and idempotent recovery remains available',async()=>{
+ const a=await registerAndLogin('mock_rate_a'),b=await registerAndLogin('mock_rate_b');
+ const first=await createOrder(a,'vip_30d','stable-rate-key');assert.equal(first.statusCode,201);
+ const id=first.json().data.order.id;
+ for(let i=1;i<30;i++)assert.equal((await createOrder(a)).statusCode,201);
+ assert.equal((await createOrder(a)).statusCode,429);
+ assert.equal((await createOrder(a,'vip_30d','stable-rate-key')).statusCode,200);
+ assert.equal((await createOrder(b)).statusCode,201);
+ const page=()=>inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${a}`}});
+ for(let i=0;i<120;i++)assert.equal((await page()).statusCode,200);
+ assert.equal((await page()).statusCode,429);
+ assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).statusCode,200);
 });
