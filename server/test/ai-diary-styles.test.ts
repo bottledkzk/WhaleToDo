@@ -20,7 +20,7 @@ test('actual provider embellishments fail closed while explicit facts and source
   '这件事一直搁在心上，做完以后像是把一页该翻过去的纸翻了过去。',
   '剩下的时间过得安静，没有急着再安排什么。',
   '几件事都按部就班地做完了，节奏不快，却也没有落下什么。',
-  '到十一点多才弄完。','下午练了一遍项目演示。','我把算法笔记复习了一遍。','完成之后感觉轻松。'
+  '到十一点多才弄完。','下午练了一遍项目演示。','我把算法笔记复习了一遍。','快十一点时把答辩材料整理好了。','完成之后感觉轻松。'
  ])assert.throws(()=>groundedDiaryProse(prose,{completed:[{title:'补测记录'}]},'把这些记录写成日记'));
  assert.equal(groundedDiaryProse('今天完成了《一直搁在心上》。',agenda,'写成日记'),'今天完成了《一直搁在心上》。');
  assert.equal(groundedDiaryProse('下午练了一遍项目演示，感觉轻松。',{},'今天练了一遍项目演示，感觉轻松。'),'下午练了一遍项目演示，感觉轻松。');
