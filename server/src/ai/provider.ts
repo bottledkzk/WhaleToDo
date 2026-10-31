@@ -1,4 +1,4 @@
-import {type DiaryStyle} from './diary-prose.ts';
+import {groundedDiaryProse,type DiaryStyle} from './diary-prose.ts';
 import type { AiConfig } from './config.ts';
 export const PROVIDER_URL='https://api.deepseek.com/chat/completions';
 export {MODES,systemPrompt} from './policy.ts';
@@ -58,7 +58,10 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};
  if(input.mode==='diary'){
   if(continuation)return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};
-  try{return {text:publicAssistantText(unorderedDiaryText(parseDiary(text),(input.context??'')+'\n'+input.prompt)),...usage};}
+  try{
+   const prose=groundedDiaryProse(parseDiary(text),diaryFacts(normalizedAgenda(input.context??'')),input.prompt);
+   return {text:publicAssistantText(unorderedDiaryText(prose,(input.context??'')+'\n'+input.prompt)),...usage};
+  }
   catch{return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};}
  }
  if(input.mode==='edit'){

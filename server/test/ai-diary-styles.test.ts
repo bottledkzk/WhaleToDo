@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {DIARY_STYLES,diaryProse} from '../src/ai/diary-prose.ts';
+import {DIARY_STYLES,diaryProse,groundedDiaryProse} from '../src/ai/diary-prose.ts';
 import {parseDiary,fingerprint} from '../src/ai/policy.ts';
 import {prepareInput,providerMessages,callDeepSeek,type AiInput} from '../src/ai/provider.ts';
 import type {AiConfig} from '../src/ai/config.ts';
@@ -12,6 +12,27 @@ test('actual phone diary counterexample loses only the missing-data note',()=>{
  assert.equal(parseDiary(JSON.stringify({diary:good+'这项任务没有记录实际用时。'})),good);
  assert.equal(diaryProse('我整理了笔记。（注：实际用时未记录）'),'我整理了笔记。');
  assert.throws(()=>parseDiary(JSON.stringify({diary:'资料不足，未提供实际用时。'})));
+});
+
+test('actual provider embellishments fail closed while explicit facts and source titles survive',()=>{
+ const agenda={completed:[{title:'补测记录'},{title:'一直搁在心上'}]};
+ for(const prose of [
+  '这件事一直搁在心上，做完以后像是把一页该翻过去的纸翻了过去。',
+  '剩下的时间过得安静，没有急着再安排什么。',
+  '几件事都按部就班地做完了，节奏不快，却也没有落下什么。',
+  '到十一点多才弄完。','下午练了一遍项目演示。','完成之后感觉轻松。'
+ ])assert.throws(()=>groundedDiaryProse(prose,{completed:[{title:'补测记录'}]},'把这些记录写成日记'));
+ assert.equal(groundedDiaryProse('今天完成了《一直搁在心上》。',agenda,'写成日记'),'今天完成了《一直搁在心上》。');
+ assert.equal(groundedDiaryProse('下午练了一遍项目演示，感觉轻松。',{},'今天练了一遍项目演示，感觉轻松。'),'下午练了一遍项目演示，感觉轻松。');
+ assert.equal(groundedDiaryProse('15:23，笔记整理完了，像在今天的纸页上落下一笔。',{},''),'15:23，笔记整理完了，像在今天的纸页上落下一笔。');
+});
+
+test('guarded diary keeps provider usage, does not retry and cannot become a saveable draft',async()=>{
+ let attempts=0;
+ const result=await callDeepSeek({apiKey:'synthetic',model:'synthetic',maxOutput:100,timeoutMs:1000} as AiConfig,input,(async()=>{
+  attempts++;return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({diary:'下午练了一遍项目演示。'})},finish_reason:'stop'}],usage:{total_tokens:21}}));
+ }) as typeof fetch);
+ assert.equal(attempts,1);assert.equal(result.tokens,21);assert.equal(result.usable,false);assert.ok(!result.text.includes('一遍'));
 });
 
 test('natural negative facts and quoted source titles stay intact; report layouts are refused',()=>{
