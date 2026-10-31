@@ -1,6 +1,8 @@
 package io.whaletodo.app.account
 
 import io.whaletodo.app.profile.CodePurpose
+import io.whaletodo.app.profile.AvatarSource
+import io.whaletodo.app.profile.AvatarPickerHub
 import io.whaletodo.app.profile.ProfileBridge
 import io.whaletodo.app.profile.ProfileException
 import io.whaletodo.app.profile.VerificationDispatch
@@ -27,6 +29,8 @@ class ServerProfileBridge(
     private val onOwnerChanged: suspend (owner: String?, sessionId: String?) -> Unit = { _, _ -> },
 ) : ProfileBridge {
     override val details = session.details
+
+    override suspend fun pickAvatar(source: AvatarSource): String? = AvatarPickerHub.pick(source)
 
     override suspend fun login(email: String, password: String) = call {
         val clean = email.trim()
