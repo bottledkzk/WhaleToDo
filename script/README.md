@@ -22,7 +22,7 @@ $env:JAVA_HOME = '<JDK21安装目录>'
 
 ## 发布与线上验收
 
-`prepare-ai-release.py --profile full`从干净提交打包六条迁移和账户/AI运行配置；默认`gateway`仍为仅五迁移的网关包，不能用于发布账户服务。`test-release-package.py`离线核对边界、校验值、源码冻结与打包可重复性。
+`prepare-ai-release.py --profile full`从干净提交打包十条迁移和账户/AI运行配置；默认`gateway`保持八条迁移边界的网关包，不能用于发布账户服务。`test-release-package.py`离线核对边界、校验值、源码冻结与打包可重复性。
 
 `server/tools/online-acceptance.ts`默认仅做零模型POST预检；显式`--execute`最多提交两次固定合成日记/配文，`--resume`只查询已尝试的原ID。回执保留在私有目录，不保存令牌/邮箱/输出正文。详见[生产发布与在线验收](../doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)。
 

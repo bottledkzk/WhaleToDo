@@ -1,11 +1,11 @@
 # WhaleToDo 下载页面
 
-原生静态 HTML/CSS/JS，无第三方字体、分析器、账户表单或密钥。页面中的收集箱是当页交互示意，不上传、不持久化，不替代 Android 应用。
+原生HTML/CSS/JavaScript，无第三方分析器、账户表单或密钥。官网提供介绍与实际版本下载；页面收集箱只作当页交互，不上传或持久化
 
-本地预览：在本目录运行 `python -m http.server 4173` 后访问 `http://localhost:4173`。网站可直接部署到静态服务器。当前页面准备指向 0.5.2-preview.1 的固定版本附件；只有签名包完成安装／升级和发行读回核验后才部署本页。
+2026-10-31公开版本为0.5.4-preview.1。固定版本目录包含APK、SHA256SUMS.txt、release.json、RELEASE-NOTES.md，官网与GitHub备用链接对应同版；历史下载保留。首页不要求用户手工核对SHA，签名和读回校验由发行流程完成，详情仍保存在附件
 
-构建和发布见 [发行流程](../release/README.md)。将四个经校验的发行附件复制到 `downloads/v0.5.2-preview.1/`，与网页一起部署到全新的版本目录。`release.json` 驱动文件大小展示；SHA256、签名和完整安装说明保留在发行附件中，发布时核验，不作为首页用户操作。附件部署前不切换官网软链接。下载目录是构建产物，不加入 Git。
+本地可运行`python -m http.server 4173`。打包使用[发行流程](../release/README.md)，从干净提交读取网页模板并按签名产物渲染版本；仅在相应GitHub Release确已公开后传入`--public-release-tag`
 
-## 自有域名部署
+部署到全新版本目录，核对manifest和附件后原子切换官网指针；保留上一版以便回退，不修改已公开附件。下载产物不提交Git
 
-官网入口为 `http://whaletodo.top`，HTTPS 源站使用 8443；现有 443 服务保留。生产网关与 APP 网络桥接的验收分别记录，首页保留简洁的功能介绍。上线状态以实际 HTTP 与 Release 附件回执为准。
+官网为[whaletodo.top](https://whaletodo.top:8443/#download)，HTTPS使用8443；现有443服务保留。网站不承担认证，账户和AI使用自有HTTPS API。状态与边界见[0.5.4验收](../doc/Bottledkzk/2026-10-31-0.5.4交付与验收.md)
