@@ -64,6 +64,7 @@ class AiApi(private val client: ApiClient) {
             put("context", request.context)
             put("edit_consent", request.editConsent)
             put("share_style", request.shareStyle)
+            if (request.mode == "diary") put("diary_style", request.diaryStyle ?: "concise")
             put("history", buildJsonArray {
                 request.history.forEach { item ->
                     addJsonObject {

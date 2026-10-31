@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
     var draft by rememberSaveable {mutableStateOf("")}
     var modeMenu by remember {mutableStateOf(false)}
     var styleMenu by remember { mutableStateOf(false) }
+    var diaryStyleMenu by remember { mutableStateOf(false) }
     var history by remember {mutableStateOf(false)}
     var historySearch by rememberSaveable {mutableStateOf("")}
     val list=rememberLazyListState()
@@ -69,6 +70,10 @@ import kotlinx.coroutines.delay
             TextButton(onClick=controller::refreshCapabilities,enabled=s.busySince==null){Text("刷新权限")}
         }
         if(s.mode.edits)Text(if(s.models.any{it.canEdit}&&s.access.vip)"日程编辑可用 · 采纳前会预览" else "日程编辑暂不可用，可刷新权限",style=MaterialTheme.typography.labelSmall)
+        if(s.mode==AgentMode.DIARY)Box {
+            TextButton(onClick={diaryStyleMenu=true},enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="日记风格"}){Text("风格 · ${DiaryStyle.entries.find{it.code==s.diaryStyle}?.label?:"精简"} ▾")}
+            DropdownMenu(diaryStyleMenu,{diaryStyleMenu=false}){DiaryStyle.entries.forEach{style->DropdownMenuItem(text={Text(style.label)},onClick={controller.diaryStyle(style.code);diaryStyleMenu=false})}}
+        }
         if(s.mode==AgentMode.SHARE_COPY)Box {
             TextButton(onClick={styleMenu=true}){Text("风格 · ${ShareStyle.entries.find{it.code==s.shareStyle}?.label?:"极简"} ▾")}
             DropdownMenu(styleMenu,{styleMenu=false}) {ShareStyle.entries.forEach{style->DropdownMenuItem(text={Text(style.label)},onClick={controller.style(style.code);styleMenu=false})}}

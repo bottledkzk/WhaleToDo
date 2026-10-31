@@ -69,6 +69,18 @@ class AiApiTest {
     )
 
     @Test
+    fun `diary style is explicit on diary requests and never leaks to other modes`() {
+        handler { Pair(200, """{"request_id":"r","data":{"id":"00000000-0000-4000-a000-000000000001","status":"succeeded","text":"我整理了笔记。","usage_tokens":20}}""") }
+        val api = api()
+        for (style in listOf("literary", "rigorous", "concise", "detailed")) {
+            api.submit(submit().copy(mode = "diary", diaryStyle = style), "S")
+            assertTrue(calls.last().body.contains("\"diary_style\":\"$style\""))
+        }
+        api.submit(submit().copy(diaryStyle = "literary"), "S")
+        assertTrue(!calls.last().body.contains("diary_style"))
+    }
+
+    @Test
     fun `models 解析允许列表与 vip 标记`() {
         handler {
             Pair(200, """{"request_id":"r","data":{"prompt_version":"agent-v1","tokens_per_point":1000,"items":[{"code":"deepseek-default","title":"鲸鱼AI","can_edit":false},{"code":"deepseek-planner","title":"日程编辑","can_edit":true,"requires_vip":true}]}}""")

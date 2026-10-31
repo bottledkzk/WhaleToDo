@@ -15,7 +15,7 @@ interface AgentBridge {
     suspend fun authorizeTemplateTrial(template: String): Boolean = false
 }
 data class AssistantRequest(val id: String, val mode: String, val model: String, val prompt: String,
-    val context: String, val editConsent: Boolean, val shareStyle: String = "minimal", val history: List<Pair<String,String>>, val ownerId: String)
+    val context: String, val editConsent: Boolean, val shareStyle: String = "minimal", val history: List<Pair<String,String>>, val ownerId: String, val diaryStyle: String = "concise")
 data class AssistantReply(val text: String, val totalTokens: Int, val inputTokens: Int? = null,
     val outputTokens: Int? = null, val chargedPoints: Int? = null, val continuation: Boolean = false,
     val changes: List<AgentChange> = emptyList())

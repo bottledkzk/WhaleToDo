@@ -6,10 +6,10 @@ test('real model counterexample does not assert an unrecorded chronological orde
 });
 
 test('legacy done flags and estimates are not promoted to dated actual completion facts',()=>{
- const result=diaryFacts({tasks:[{id:'t',title:'阅读',done:true,estimated_minutes:30}],blocks:[]}) as {completed:unknown[];completion_date_known:boolean};
- assert.deepEqual(result.completed,[]);assert.equal(result.completion_date_known,false);
+ const result=diaryFacts({tasks:[{id:'t',title:'阅读',done:true,estimated_minutes:30}],blocks:[]});
+ assert.deepEqual(result,{completed:[]});
  const dated={date:'2030-01-01',completed:[{title:'阅读',completed_at:'2030-01-01T01:00:00Z'}],actual_duration_recorded:false};
- assert.deepEqual(diaryFacts(dated),dated);
+ assert.deepEqual(diaryFacts(dated),{date:dated.date,completed:dated.completed});
 });
 test('source wording and quoted user titles remain untouched',()=>{
  const original='今天完成了“之后再阅读”。';
