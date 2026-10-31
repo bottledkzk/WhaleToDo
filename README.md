@@ -6,9 +6,9 @@ WhaleToDo 是软件工程团队项目：以 Android 应用为主要客户端，�
 
 ## 当前阶段
 
-当前公开签名预览为[0.5.2-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.2-preview.1)，独立包名`io.whaletodo.app.preview`与原体验包并存。本分支准备0.5.3-preview.1/code10候选，继续Room v4和同一发行证书；签名构建、同包保留数据升级与线上验收分别记录，新候选尚未公开。生产网站切换、七迁移完整发布包与账户进程见[生产发布与在线验收](doc/Bottledkzk/2026-10-27-生产发布与在线验收.md)，发行流程见[release](release/README.md)。
+当前公开签名预览为[0.5.3-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.3-preview.1)，versionCode 10、Room 6，独立包名`io.whaletodo.app.preview`与原体验包并存，沿用同一发行证书。[官网](https://whaletodo.top:8443/#download)已切换新版，旧版附件与下载路径保留。API36 模拟器从公开 code9 覆盖到 code10，五条合成访客记录和冷启动保留通过；新版签名包的小米真机完整回归尚待补测。见[本次发布回执与限制](doc/Bottledkzk/2026-10-30-0.5.3公开发布回执.md)及[发行流程](release/README.md)。
 
-AI模式、会话、读取授权、Accept／Refuse／意见重生成、Token计费和权限策略已有代码与隔离测试，账户/AI网络桥接已合并，查询429/503及断线保留原ID。生产账户服务仍待部署，真实邮件投递尚未接入，新用户邮箱注册/找回不能完成；生产网关升级和真实APP闭环仍待独立验收。客户端同步和图片分享继续各自PR，不把页面、合成响应或健康端点当作线上交付。
+生产账户 API 和 AI 网关已升级到十迁移边界，全账号六档 MOCK 充值与 VIP 日程编辑生效；仍须预览后人工 Accept，保留按账号/全局调用与 token 限额。个人资料和日记随账户同步，助手会话仅在本地，日程须主动备份或兼容/覆盖同步。真实编辑提案与原 ID 回执、模拟订单权益单次发放、备份恢复已有本次后端回执；此前小米 verification 包的注册/找回、分享和完整流程记录与本次公开签名包验收分开，不把健康端点当作全流程通过。支付仍为 MOCK，无真实扣款。
 
 2026-10-26 范围调整：保留现有预览日历，取消独立日／周／月／学期切换和长期／多阶段模型。
 
@@ -52,7 +52,7 @@ WhaleToDo/
 
 ## 开发与验证
 
-环境与运行方法见 [script/README.md](script/README.md)，固定版本见 [env/toolchain.json](env/toolchain.json)。真实SDK、IDE、镜像和个人日志位于仓库外，不直接提交生成APK或缓存。下载网站源码在 [web](web/README.md)，账户API尚未部署；源码可在团队自己的环境继续运行和部署。
+环境与运行方法见 [script/README.md](script/README.md)，固定版本见 [env/toolchain.json](env/toolchain.json)。真实SDK、IDE、镜像和个人日志位于仓库外，不直接提交生成APK或缓存。下载网站源码在 [web](web/README.md)，生产账户 API 已部署，状态与验收范围见 [0.5.3 发布回执](doc/Bottledkzk/2026-10-30-0.5.3公开发布回执.md)；源码可在团队自己的环境继续运行和部署。
 
 最新外观调整见 [0.4.1图标与列表](doc/Bottledkzk/2026-10-25-图标与列表细节调整.md)，AI接口见 [0.4.0 AI助手与权限接入](doc/Bottledkzk/2026-10-24-AI助手设计与接入.md)，前一轮见 [0.3.0待办整合与手动安排](doc/Bottledkzk/2026-10-23-待办整合与手动安排.md)，前一轮记录见 [今日页面交互优化](doc/Bottledkzk/2026-10-23-今日页面交互优化.md)。现有星期 Working 与时区设置已实现；独立日周月／学期视图和长期／多阶段模型已取消。
 
