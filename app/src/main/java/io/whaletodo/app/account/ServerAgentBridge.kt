@@ -203,6 +203,7 @@ class ServerAgentBridge(
                             .map { AiHistory(it.first, it.second) },
                         editConsent = request.editConsent,
                         shareStyle = request.shareStyle,
+                        diaryStyle = request.diaryStyle,
                     ),
                     expectedSession,
                 )

@@ -1,3 +1,4 @@
+import {groundedDiaryProse,type DiaryStyle} from './diary-prose.ts';
 import type { AiConfig } from './config.ts';
 export const PROVIDER_URL='https://api.deepseek.com/chat/completions';
 export {MODES,systemPrompt} from './policy.ts';
@@ -8,7 +9,7 @@ import {normalizedAgenda} from './agenda.ts';
 import {unorderedDiaryText,diaryFacts} from './diary-facts.ts';
 import {requestedMove} from './move-intent.ts';
 import {truthfulShareCopies} from './share-facts.ts';
-export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string}
+export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string;diary_style?:DiaryStyle}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[];usable?:boolean}
 export class ProviderFailure extends Error {
  readonly definite:boolean;
@@ -24,7 +25,7 @@ export function prepareInput(input:AiInput):AiInput {
 /** Untrusted history never becomes actual assistant/system messages at the provider boundary. */
 export function providerMessages(input:AiInput) {
  const agenda=normalizedAgenda(input.context??'');
- return [{role:'system',content:systemPrompt(input.mode,input.share_style)},
+ return [{role:'system',content:systemPrompt(input.mode,input.share_style,input.diary_style)},
   {role:'user',content:JSON.stringify({request:input.prompt,agenda:input.mode==='diary'?diaryFacts(agenda):agenda,history:input.history??[],...(input.mode==='edit'?{requested_move:requestedMove(input.context??'',input.prompt)}:{})})}];
 }
 export function tokenReservation(input:AiInput,maxOutput:number):number {
@@ -57,7 +58,10 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};
  if(input.mode==='diary'){
   if(continuation)return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};
-  try{return {text:publicAssistantText(unorderedDiaryText(parseDiary(text),(input.context??'')+'\n'+input.prompt)),...usage};}
+  try{
+   const prose=groundedDiaryProse(parseDiary(text),diaryFacts(normalizedAgenda(input.context??'')),input.prompt);
+   return {text:publicAssistantText(unorderedDiaryText(prose,(input.context??'')+'\n'+input.prompt)),...usage};
+  }
   catch{return {text:'日记草稿暂不可用，请缩小范围后重新生成',...usage,usable:false};}
  }
  if(input.mode==='edit'){

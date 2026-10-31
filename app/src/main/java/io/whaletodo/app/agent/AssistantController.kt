@@ -14,7 +14,7 @@ data class AdvicePreview(val id: String, val owner: String, val session: String,
 data class AssistantState(val owner: String = "guest", val access: AgentAccess = AgentAccess(),
     val sessionId: String = UUID.randomUUID().toString(), val title: String = "新对话",
     val mode: AgentMode = AgentMode.CHAT, val model: AgentModel = AgentModel("unavailable","鲸鱼AI"),
-    val models: List<AgentModel> = emptyList(), val shareStyle: String = "minimal", val includeAgenda: Boolean = true, val editConsent: Boolean = false,
+    val models: List<AgentModel> = emptyList(), val shareStyle: String = "minimal", val diaryStyle: String = DiaryStyle.CONCISE.code, val includeAgenda: Boolean = true, val editConsent: Boolean = false,
     val messages: List<AgentMessageRow> = emptyList(), val sessions: List<AgentSessionRow> = emptyList(),
     val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null, val revision: EditPreview? = null,
     val advice: PlanAdvice? = null, val arrangement: AdvicePreview? = null)
@@ -36,10 +36,11 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         mutable.update { if(it.owner==owner) it.copy(sessions=rows) else it }
     }
     fun newSession() { if(mutable.value.busySince!=null)return
-        mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda) }
+        mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda,diaryStyle=it.diaryStyle) }
     }
     fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),editConsent=false,preview=null,revision=null,advice=null,arrangement=null) } }
     fun style(style: String) { if(ShareStyle.entries.any{it.code==style}) mutable.update {it.copy(shareStyle=style)} }
+    fun diaryStyle(style:String) { if(mutable.value.busySince==null&&DiaryStyle.entries.any{it.code==style})mutable.update{it.copy(diaryStyle=style)} }
     fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null,advice=null,arrangement=null) } }
     fun consent(enabled:Boolean) { mutable.update { it.copy(editConsent=enabled,preview=null) } }
     fun dismissGate(){ mutable.update { it.copy(gate=null) } }
@@ -176,7 +177,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                     reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else if(source.mode.edits)editableAgenda(snapshot) else agendaText(snapshot)
                 val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,prompt,
                     context,source.editConsent,source.shareStyle,
-                    source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner)
+                    source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner,source.diaryStyle)
                 sent=AgentMessageRow(request.id,source.sessionId,source.owner,"user",source.mode.code,draft.trim(),
                     System.currentTimeMillis(),status="pending",snapshotHash=hash(snapshot),modelCode=source.model.code,editGranted=source.editConsent)
                 saveMessage(sent,draft)

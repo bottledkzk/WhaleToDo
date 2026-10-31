@@ -39,6 +39,7 @@ data class AiSubmit(
     val history: List<AiHistory>,
     val editConsent: Boolean,
     val shareStyle: String,
+    val diaryStyle: String? = null,
 )
 
 data class AiChange(

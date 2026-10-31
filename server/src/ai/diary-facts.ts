@@ -13,8 +13,11 @@ export function unorderedDiaryText(text:string,source:string):string {
 export function diaryFacts(agenda:unknown):unknown {
  if(!agenda||typeof agenda!=='object')return agenda;
  const value=agenda as Record<string,unknown>;
- if(Array.isArray(value.completed))return value;
+ if(Array.isArray(value.completed)){
+  const facts={...value};delete facts.completion_date_known;delete facts.actual_duration_recorded;delete facts.notice;
+  return facts;
+ }
  const source=(value.agenda&&typeof value.agenda==='object'?value.agenda:value) as Record<string,unknown>;
- if(Array.isArray(source.tasks))return {completion_date_known:false,actual_duration_recorded:false,completed:[],notice:'这份旧日程只有计划和完成状态，未提供指定日期的打卡事实；请用户补充真实完成记录'};
+ if(Array.isArray(source.tasks))return {completed:[]};
  return agenda;
 }
