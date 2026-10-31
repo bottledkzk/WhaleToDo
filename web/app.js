@@ -4,7 +4,7 @@ list.addEventListener("click",e=>{const button=e.target.closest(".check");if(!bu
 form.addEventListener("submit",e=>{e.preventDefault();const text=input.value.trim();if(!text)return;if(list.children.length>=12){status.textContent="页面体验最多记录12项，请下载应用继续";return;}const row=document.createElement("li"),button=document.createElement("button"),title=document.createElement("span");button.type="button";button.className="check";button.setAttribute("aria-label",`标记${text}完成`);title.textContent=text;row.append(button,title);list.append(row);input.value="";row.scrollIntoView({block:"nearest"});status.textContent="已记下，页面体验不会上传或保存你的内容";});
 
 // Download metadata is copied from the signed artifact after release verification.
-fetch("downloads/v0.5.3-preview.1/release.json",{cache:"no-store"}).then(r=>{if(!r.ok)throw Error("metadata");return r.json();}).then(m=>{
-if(m.version!=="0.5.3-preview.1"||m.package!=="io.whaletodo.app.preview"||!/^[a-f0-9]{64}$/.test(m.sha256)||!Number.isSafeInteger(m.bytes)||m.bytes<=0)throw Error("metadata");
+fetch("downloads/v0.5.4-preview.1/release.json",{cache:"no-store"}).then(r=>{if(!r.ok)throw Error("metadata");return r.json();}).then(m=>{
+if(m.version!=="0.5.4-preview.1"||m.package!=="io.whaletodo.app.preview"||!/^[a-f0-9]{64}$/.test(m.sha256)||!Number.isSafeInteger(m.bytes)||m.bytes<=0)throw Error("metadata");
 document.querySelector("#apk-size").textContent=(m.bytes/1024/1024).toFixed(1)+" MB";
 }).catch(()=>{document.querySelector("#apk-size").textContent="APK 安装包";});

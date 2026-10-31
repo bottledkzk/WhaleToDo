@@ -1,6 +1,6 @@
 # WhaleToDo API 参考（v1）
 
-本地基址 `http://127.0.0.1:8080/api/v1`；部署后 `https://api.whaletodo.top:8443/api/v1`（当前仅 `/ai/*` 已上线，账户路径返回 503）。
+本地基址 `http://127.0.0.1:8080/api/v1`；部署后 `https://api.whaletodo.top:8443/api/v1`（账户与AI均已部署，2026-10-31状态见0.5.4交付）。
 客户端基址**必须可配置**，发布构建不允许明文 HTTP、不允许跳过证书校验。
 
 ## 统一约定
@@ -98,3 +98,10 @@
 ## 9. 尚未实现
 
 `/ai/*` 由 Bottledkzk 的独立网关（8081）提供，不在本服务内；商品/价格/签到奖励数值仍为占位，待产品定稿。
+
+
+## 0.5.4日记与账户文档
+
+日记可传diary_style=literary/rigorous/concise/detailed，缺省concise，仅mode=diary允许；非法值或跨模式在预占前拒绝，同ID换风格冲突。恢复查询原ID，不重新调用
+
+账户文档区分VIP日程备份与资料。登录／打开设置不读取或上传日程，只有主动备份／覆盖／兼容预览确认才执行。昵称motto日记随资料同步，会话及本地图片URI不上传；字段以account/cloud路由Schema为准，不用旧sync/push替代备份协议

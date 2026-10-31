@@ -1,140 +1,35 @@
-# WhaleToDo Server（Weiding 主责）
+# WhaleToDo Server
 
-后端骨架：账户、签到积分、订单/支付、同步。技术栈按评审结论：**TypeScript + Fastify + Prisma + PostgreSQL**
-（数据库 schema 与迁移由 Bottledkzk 统一维护，本目录只提交**迁移建议**与业务实现）。
+当前服务端为Node24 / TypeScript / Fastify / Prisma / PostgreSQL16。账户认证、签到基础与网络接入由Weiding主责；AI、数据库、主动账户文档同步及当前MOCK支付链路由Bottledkzk主责或承接，详见[实际分工](../doc/All/分工与协作方案.md)
 
-## 当前状态（2026-10-23）
+## 当前交付
 
-| 部分 | 状态 |
-| --- | --- |
-| 统一错误码（9 个） | ✅ 已实现 + 测试 |
-| 密码哈希（scrypt，Argon2id 待替换） | ✅ 已实现 + 测试 |
-| 不透明令牌（只存 SHA-256 摘要、15min/30d） | ✅ 已实现 + 测试 |
-| 积分账本（award/reserve/settle/release/adjust + 幂等） | ✅ 已实现 + 测试（14 项） |
-| **账户接口**：`register / login / refresh / logout` | ✅ 已实现 + 测试（含刷新重放整串撤销） |
-| **个人资料**：`/me`、`/me/entitlements` | ✅ 已实现 + 测试 |
-| 健康检查 `/health/live`、`/health/ready`、`/meta` | ✅ 已实现 + 测试 |
-| 内存仓储（本地开发/测试）；Prisma 仓储 | ✅ 内存仓储已完成 / ⏳ Prisma 下一步（迁移归属见下） |
-| Prisma schema 建议稿 | ⏳ 在后续 PR 提交（schema/迁移由 Bottledkzk 统一维护） |
-| PostgreSQL 集成测试 | ⏳ 服务器仅回环 5432，PG 16 + 受限账号就绪后补 |
-| 签到 `/rewards`、`/wallet`、`/orders`、`/sync` | ⏳ 后续 PR（不在本 PR 范围） |
+2026-10-31账户API与AI网关均已部署；公开客户端0.5.4-preview.1。注册／重置使用邮箱验证，密码实际采用异步scrypt与随机盐；不透明访问令牌和刷新令牌只存摘要，轮换／撤销受服务端检查。Prisma/pg持久化仓储、签到钱包、MOCK订单、同步及AI均非仅内存骨架
 
-**测试现状：56 项全通过**（security 12 + ledger 14 + http 21 + review-fixes 9），
-另 `npm run typecheck`（`tsc --noEmit`）零诊断；`npm test` 与 `npm run typecheck` 都已在
-`.github/workflows/server.yml` 的后端 CI 中执行。
+账户API与AI网关分进程，数据库仅回环。当前十条前向迁移，历史checksum不重写；AI更新无需自动迁移或重启账户API。具体测试和设备范围见[发行验收](../doc/Bottledkzk/2026-10-31-0.5.4交付与验收.md)
 
-## 本地启动（3 条命令）
+## 本地环境
 
 ```bash
 cd server
-cp .env.example .env       # 无真实秘密，可直接用默认值
-npm ci                     # 锁定依赖（fastify / typescript / @types/node）
-npm start                  # = node --env-file-if-exists=.env src/main.ts
-```
-
-- **`.env` 会被真正加载**：`npm start` 用 Node 的 `--env-file-if-exists`，
-  同时 `src/main.ts` 也会调用 `process.loadEnvFile` 作为兜底（已存在的环境变量优先）。
-  启动日志里的 `dotenv_loaded` 会告诉你是否读到了文件。
-- 运行时要求 **Node 24 LTS**（直接执行 TypeScript 依赖 Node 23+ 的类型剥离能力，`engines` 已写死 `>=24`）。
-- 其他命令：`npm test`（56 项）、`npm run typecheck`（`tsc --noEmit`，必须零诊断）、`npm run dev`（watch）。
-- 内存仓储用于本地联调，**重启即清空**；接 Prisma 后换成数据库。
-
-## 接口样例（本地实跑，2026-10-23）
-
-| # | 请求 | 状态 | 响应要点 |
-| --- | --- | --- | --- |
-| 1 | `GET /health/live` | 200 | `{"request_id":"…","data":{"status":"ok"}}` |
-| 2 | `POST /auth/register` `{"username":"demo_43046","password":"…"}` | 201 | `data.user{id,username,display_name}` |
-| 3 | `POST /auth/login` 同上 | 200 | `access_token`、`refresh_token`、`token_type:"Bearer"`、`expires_in:899`、`refresh_expires_in:2591999` |
-| 4 | `GET /me` + `Authorization: Bearer` | 200 | `data.user{id,username,display_name,created_at}` |
-| 5 | `GET /me/entitlements` | 200 | `vip{active:false,expires_at:null}`、`balance{available,reserved}` |
-| 6 | `POST /auth/refresh` | 200 | 新 `access_token` + 轮换后的 `refresh_token` |
-| 7 | 用**旧** refresh 再请求 | 401 | `UNAUTHENTICATED / 刷新令牌已失效，请重新登录`（整串撤销） |
-| 8 | 撤销后用新 access 访问 `/me` | 401 | `UNAUTHENTICATED / 访问令牌无效、已撤销或已过期` |
-| 9 | 无令牌访问 `/me` | 401 | `UNAUTHENTICATED / 缺少访问令牌` |
-
-约定：所有响应含 `request_id`；错误体为 `{request_id, error:{code,message,details?}}`；
-注册支持 `Idempotency-Key`（同键同体返回原结果、同键异体返回 `CONFLICT`）。
-
-## 客户端基址（可配置）
-
-公网 `api.whaletodo.top:8443` 目前由 Nginx 返回 503（后端未部署），因此本阶段客户端基址**必须可配置**：
-
-| 场景 | 基址 |
-| --- | --- |
-| 本机联调（模拟器访问宿主机） | `http://10.0.2.2:8080/api/v1` |
-| 本机联调（真机同局域网） | `http://<本机内网IP>:8080/api/v1` |
-| 部署后（待公网 TLS 验证） | `https://api.whaletodo.top:8443/api/v1` |
-
-发布构建**不允许**跳过证书校验，也不允许把访问令牌发往 `http://`（见部署说明第 3 条）。
-
-
-## 为什么现在就能跑测试
-
-Node 24 原生支持**直接运行 TypeScript**（类型剥离），且 `node --test` 支持 `.ts`。
-所以纯逻辑层不依赖任何 npm 包：
-
-```bash
-cd server
-npm test                       # 56 项，全过；npm run typecheck 零诊断
-```
-
-需要第三方依赖（fastify / prisma / argon2）的部分，要等网络可用后：
-
-```bash
-npm install        # 本机当前到 registry 只有 8~21 KB/s，建议换网或挂代理
+npm ci --ignore-scripts
+npx prisma generate --schema prisma/schema.prisma
 npm run typecheck
+npm test
 ```
 
-## 设计要点（与《接口与数据契约草案》和评审结论对齐）
+按`.env.example`配置开发环境后运行`npm start`。未配置数据库的内存仓储仅用于明确的本地测试，不能代表生产持久化；生产模式缺少必需配置会拒绝启动。不要在1GB生产机器临时npm ci构建，发布包在开发环境冻结，并在服务器复用锁定依赖
 
-1. **错误码**：`UNAUTHENTICATED / FORBIDDEN / VALIDATION_ERROR / INSUFFICIENT_POINTS / RATE_LIMITED /
-   CONFLICT / UPSTREAM_UNAVAILABLE / REQUEST_PENDING / INTERNAL`，响应体 `{request_id, error:{code,message,details?}}`。
-2. **密码**：当前用 `scrypt(N=2^15,r=8,p=1)` + 16B 随机盐，编码里带参数便于升级；
-   契约要求 Argon2id，等 `argon2` 包可用后替换 `hashPassword/verifyPassword` 实现，接口不变。
-3. **令牌**：256bit 随机不透明串，**库里只存 SHA-256 摘要**；access 15 分钟、refresh 30 天；
-   刷新时旧 refresh 立即作废、重放触发整串撤销（由会话表实现，下一步接 Prisma）。
-4. **账本**：`event_id` 才是幂等键（唯一），`request_id` 只做关联（普通索引）；
-   AI 流程 = 鉴权+限额 → **事务预占** → 模型调用 → 成功结算 / 明确失败释放；结果未知保留状态可查询。
-   `available` 与 `reserved` 分开且均不得为负；批量记账失败整体抛出，调用方须包在数据库事务里。
-5. **时区**：签到业务日由服务端按 `BUSINESS_TIMEZONE`（默认 `Asia/Shanghai`）生成，配置化、不硬编码；
-   客户端展示时区跟随手机系统，两者互不影响。
-6. **模拟支付**：2026-10-30起全账号使用MOCK；显式设置 `PAYMENT_PROVIDER=mock`，生产仍为 `NODE_ENV=production` 和受限PG。登录用户只确认本人订单，权益由订单快照发放；生产不注册 `/payments/mock/webhook`。`disabled` 保留为停用/回退配置，真实支付仍未接入。
+AI服务通过systemd LoadCredential读取模型Key和专用数据库凭据，不在APK、网页或日志保存。客户端只使用自有HTTPS基址，不接受任意上游URL或用户导入Key。生产不应复制本地内存默认配置直接启动
 
-## 目录
+## API与一致性
 
-```text
-server/
-├── src/
-│   ├── lib/security.ts      # 错误码 / 密码 / 令牌
-│   └── domain/ledger.ts     # 积分账本（纯函数）
-├── test/
-│   ├── security.test.ts     # 12 项
-│   └── ledger.test.ts       # 14 项
-├── package.json
-└── tsconfig.json
-```
+[API参考](docs/api-reference.md)覆盖认证、验证码、签到、钱包、商品订单、同步和AI。私有操作验权并检查对象归属，写入使用幂等键或原请求ID。日程云备份须VIP及明确操作；昵称motto日记资料同步与日程文档分开
 
-## 下一步
+AI预占后调用，成功按真实用量结算，明确失败释放；未知结果保留原ID查询。当前累计token计费避免每次请求独立向上取整。MOCK收银台创建真实持久订单并一次发放虚拟积分／VIP，所有账号均无真实资金支付
 
-1. `src/http/app.ts`：Fastify 实例 + 统一错误处理 + 请求 ID + `Idempotency-Key` 校验。
-2. `src/routes/auth.ts`：`register / login / refresh / logout`；`src/routes/me.ts`：`/me`、`/me/entitlements`。
-3. `prisma/schema.prisma`（建议稿）：`users`、`auth_sessions`、`daily_claims`、`point_wallets`、`point_ledger`，
-   其中账本唯一键为 `(user_id, event_id)`。
-4. 集成测试：需要 PostgreSQL（本机待装或用服务器），覆盖错误密码、令牌过期、刷新重放、撤销、A/B 越权。
+## 检查与数据库
 
+`npm run test:database`只连接独立验证库，需VERIFY_DATABASE_URL/VERIFY_APP_URL/VERIFY_AI_URL与对应受限角色。集成测试有清理动作，禁止指向共享库或生产库。CI见`.github/workflows/server.yml`，本轮315通过／1跳过为PR61冻结head的离线回归，不替代真机或生产验收
 
-## Bottledkzk：数据库与独立AI网关（2026-10-23）
-
-账户业务主责不变；本地 `npm start` 仍是Weiding的内存账户联调入口，**不是公网部署入口**。新增独立 `npm run ai:start` 需systemd凭据和PG；PG迁移/权限、API契约和部署验证见 `../doc/Bottledkzk/2026-10-23-数据库与AI网关交接.md`。模型Key只在服务器。
-
-本分支 `npm test` 65项，`npm run typecheck`；`npm run test:database`只允许独立 `whaletodo_verify` 数据库和三种VERIFY_*_URL，11项集成测试会清空该验证库的合成用户，禁止指向正式库。`npm run db:validate`校验映射，`npm run db:deploy`只供受控迁移角色。共享CHECK/策略/索引/函数以SQL迁移为准。
-
-
-## 0.4 Agent与计量候选（2026-10-24）
-
-新增edit模型门禁、模式提示词、分享风格、软整理、usage/k与实际Token积分结算；75项单元/接口、14项独立PG集成通过。第五个迁移目前仅在验证库应用，正式部署需交叉评审。默认AI_EDIT_ENABLED=false；账户/VIP/签到与网络仍由Weiding接入。契约、权限矩阵、未知请求查询、模板组件及图片导出边界见 `../doc/Bottledkzk/2026-10-24-AI助手设计与接入.md`。
-
-## 数据库发布与运维
-
-数据库契约/角色/迁移/SQL注入防护/备份恢复基线见[团队标准](../doc/All/数据库设计迁移与安全标准.md)与[管理入口](../env/postgresql/README.md)。`db:security`与`db:history`纳入CI；正式库使用有备份门禁的`db:plan`/`db:apply`，不要对共享库运行破坏性集成测试。新增订单/邮件六表仅提供持久层契约，不代表其业务API已经部署。
+数据库管理与安全见[共享标准](../doc/All/数据库设计迁移与安全标准.md)和[运维入口](../env/postgresql/README.md)。角色最小权限、RLS、参数化SQL、前向迁移、备份与恢复分别核验，不启用未经授权的持续清理
