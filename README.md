@@ -52,7 +52,7 @@ WhaleToDo/
 
 ## 开发与验证
 
-环境与运行方法见 [script/README.md](script/README.md)，固定版本见 [env/toolchain.json](env/toolchain.json)。真实SDK、IDE、镜像和个人日志位于仓库外，不直接提交生成APK或缓存。下载网站源码在 [web](web/README.md)，账户API尚未部署；源码可在团队自己的环境继续运行和部署。
+环境与运行方法见 [script/README.md](script/README.md)，固定版本见 [env/toolchain.json](env/toolchain.json)。真实SDK、IDE、镜像和个人日志位于仓库外，不直接提交生成APK或缓存。下载网站源码在 [web](web/README.md)，生产账户 API 已部署，状态与验收范围见 [0.5.3 发布回执](doc/Bottledkzk/2026-10-30-0.5.3公开发布回执.md)；源码可在团队自己的环境继续运行和部署。
 
 最新外观调整见 [0.4.1图标与列表](doc/Bottledkzk/2026-10-25-图标与列表细节调整.md)，AI接口见 [0.4.0 AI助手与权限接入](doc/Bottledkzk/2026-10-24-AI助手设计与接入.md)，前一轮见 [0.3.0待办整合与手动安排](doc/Bottledkzk/2026-10-23-待办整合与手动安排.md)，前一轮记录见 [今日页面交互优化](doc/Bottledkzk/2026-10-23-今日页面交互优化.md)。现有星期 Working 与时区设置已实现；独立日周月／学期视图和长期／多阶段模型已取消。
 
