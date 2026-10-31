@@ -1,6 +1,7 @@
 package io.whaletodo.app
 
 import io.whaletodo.app.data.*
+import io.whaletodo.core.*
 import java.time.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -78,5 +79,47 @@ class AdviceScheduleTest {
         assertEquals(30,limited.preview.result.blocks.single().window.start.atZone(zone).minute)
         assertThrows(IllegalArgumentException::class.java){arrangeAdvice(snapshot,"2030年2月30日安排报告","报告",ms(8))}
         assertThrows(IllegalArgumentException::class.java){arrangeAdvice(snapshot,"周末安排报告","报告",ms(8))}
+    }
+
+    @Test fun negativeSchedulingVerbsExcludeTasksEvenWhenTheModelMentionsThem() {
+        val snapshot=source(listOf(TaskRow("a","报告",30),TaskRow("b","会议",30)))
+        for(negative in listOf("不安排报告","不排报告","不要排报告","不要把报告排进去","报告不安排")) {
+            assertEquals(setOf("b"),arrangeAdvice(snapshot,"$negative，只安排会议","报告和会议",ms(8)).taskIds)
+        }
+    }
+
+    @Test fun continuousWorkWithoutRestRequiresClarificationInsteadOfDroppingTheLimit() {
+        val snapshot=source(listOf(TaskRow("a","报告",90)))
+        val error=assertThrows(IllegalArgumentException::class.java) { arrangeAdvice(snapshot,"连续工作60分钟，安排报告","报告",ms(8)) }
+        assertTrue(error.message!!.contains("休息"))
+        assertThrows(IllegalArgumentException::class.java) { executableAdvicePlan(snapshot,setOf("a"),60,0,ms(8)) }
+    }
+
+    @Test fun prefixlessClockRangeAndShortHyphenDateAreExplicitConstraints() {
+        val snapshot=source(listOf(TaskRow("a","报告",30)))
+        for(q in listOf("明天14:00到15:00安排报告","01-02 14:00到15:00安排报告")) {
+            val plan=arrangeAdvice(snapshot,q,"报告",ms(8))
+            assertEquals(date.plusDays(1),plan.firstDate)
+            assertTrue(plan.preview.result.blocks.all{it.window.start.atZone(zone).hour>=14&&it.window.end.atZone(zone).hour<=15})
+        }
+        assertThrows(IllegalArgumentException::class.java) { arrangeAdvice(snapshot,"明天14:99到15:00安排报告","报告",ms(8)) }
+    }
+
+    @Test fun thisWeekMeansTodayThroughSundayAndDateIntervalsAreExplicitlyRejected() {
+        val snapshot=source(listOf(TaskRow("a","报告",30)))
+        val week=arrangeAdvice(snapshot,"本周安排报告","报告",ms(8))
+        assertEquals(date,week.firstDate);assertEquals(8-date.dayOfWeek.value,week.days)
+        val next=arrangeAdvice(snapshot,"下周安排报告","报告",ms(8))
+        assertEquals(DayOfWeek.MONDAY,next.firstDate.dayOfWeek);assertEquals(7,next.days)
+        val error=assertThrows(IllegalArgumentException::class.java) { arrangeAdvice(snapshot,"1月2日到1月5日安排报告","报告",ms(8)) }
+        assertTrue(error.message!!.contains("日期区间"))
+    }
+
+    @Test fun displayedBreaksCannotIncludeAnUnselectedWorkBlock() {
+        val snapshot=source(listOf(TaskRow("a","报告",30),TaskRow("b","会议",30),TaskRow("c","其他工作",20)))
+        fun block(id:String,start:Long,end:Long)=Block(id,Window(Instant.ofEpochMilli(start),Instant.ofEpochMilli(end)))
+        val result=ScheduleResult(listOf(block("a",ms(9),ms(9,30)),block("c",ms(9,35),ms(9,55)),block("b",ms(10),ms(10,30))),emptyList())
+        val text=AdviceArrangement(PlanPreview(snapshot,result),setOf("a","b"),60,10,ms(8)).display()
+        assertFalse(text.contains("休息（"))
     }
 }

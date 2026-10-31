@@ -16,3 +16,8 @@ test('unfinished task copy cannot claim personal progress through indirect past-
  assert.ok(!text.join('').includes('已一步步'));assert.ok(!text.join('').includes('辛苦了'));
  assert.equal(text[2],'接下来逐项准备答辩');assert.equal(new Set(text).size,3);
 });
+test('a completed fact cannot authorize completion claims about a different unfinished task',()=>{
+ const copies=truthfulShareCopies(['今天完成了报告','今天完成了会议','已经收获满满'],'✓ 会议\n○ 报告');
+ assert.ok(!copies[0]!.includes('完成了报告'));assert.equal(copies[1],'今天完成了会议');
+ assert.ok(!copies[2]!.includes('已经'));assert.equal(new Set(copies).size,3);
+});

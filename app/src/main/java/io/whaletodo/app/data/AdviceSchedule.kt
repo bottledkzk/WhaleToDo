@@ -17,9 +17,11 @@ internal fun AdviceArrangement.display(): String = buildString {
     var previous: Block?=null
     for(b in preview.result.blocks.filter{it.taskId in taskIds}) {
         previous?.let { p ->
-            val gap=Duration.between(p.window.end,b.window.start).toMinutes()
-            if(rest>0&&gap in rest.toLong()..30L&&p.window.end.atZone(zone).toLocalDate()==b.window.start.atZone(zone).toLocalDate())
-                append("${format.format(p.window.end)}–${format.format(b.window.start)} 休息（${gap}分钟）\n")
+            if(rest>0&&p.window.end<b.window.start&&p.window.end.atZone(zone).toLocalDate()==b.window.start.atZone(zone).toLocalDate()) {
+                val free=Scheduler.subtract(listOf(Window(p.window.end,b.window.start)),preview.result.blocks.map{it.window})
+                for(gap in free.filter{it.minutes>=rest})
+                    append("${format.format(gap.start)}–${format.format(gap.end)} 休息（${gap.minutes}分钟）\n")
+            }
         }
         append("${format.format(b.window.start)}–${format.format(b.window.end)} ${source.tasks.first{it.id==b.taskId}.title}（${b.window.minutes}分钟${if(b.locked)"，固定" else ""}）\n")
         previous=b
@@ -34,8 +36,8 @@ internal fun arrangeAdvice(source: DeskSnapshot, question: String, answer: Strin
         val short = task.title.substringAfterLast('·').trim()
         val names=listOf(task.title)+listOfNotNull(short.takeIf{it.length>=2&&unfinished.count{other->other.title.substringAfterLast('·').trim()==it}==1})
         val excluded=names.any { name ->
-            Regex("(?:不要|别|不必|不用|无需|排除|除了)[^，。；\\n]{0,60}"+Regex.escape(name)).containsMatchIn(question)||
-                Regex(Regex.escape(name)+"[^，。；\\n]{0,8}(?:不要|不必|不用|无需)(?:安排|调整|移动)").containsMatchIn(question)
+            Regex("(?:不安排|不排|不要|别|不必|不用|无需|排除|除了)[^，。；\\n]{0,60}"+Regex.escape(name)).containsMatchIn(question)||
+                Regex(Regex.escape(name)+"[^，。；\\n]{0,8}(?:不|不要|不必|不用|无需)(?:安排|排|调整|移动)").containsMatchIn(question)
         }
         val explicit=names.any{question.contains(it)}
         !excluded&&(explicit||!Regex("只(?:安排|调整|优化|处理)").containsMatchIn(question)&&names.any{answer.contains(it)})
@@ -43,19 +45,23 @@ internal fun arrangeAdvice(source: DeskSnapshot, question: String, answer: Strin
     require(selected.isNotEmpty()) { "请在建议中明确要安排的事项" }
     require(selected.size <= 40) { "请缩小本次安排范围" }
     require(selected.all { it.minutes > 0 }) { "请先补充相关事项的预计工时" }
-    val pause = Regex("(?:连续(?:工作)?|每工作)\\s*(\\d{1,3})\\s*分钟[^。；\\n]{0,16}?休息\\s*(\\d{1,3})\\s*分钟").find(question)
-    val maxWork = pause?.groupValues?.get(1)?.toInt() ?: 480
-    val rest = pause?.groupValues?.get(2)?.toInt() ?: 0
+    val work = Regex("(?:连续(?:工作)?|每工作)\\s*(\\d{1,3})\\s*分钟").find(question)
+    val pause = Regex("休息\\s*(\\d{1,3})\\s*分钟").find(question)
+    require(!question.contains("连续")||work!=null) { "请用分钟明确连续工作时长" }
+    require(work==null||pause!=null) { "请补充每次休息多少分钟，再生成安排" }
+    require(!question.contains("休息")||pause!=null) { "请用分钟明确休息时长" }
+    val maxWork = work?.groupValues?.get(1)?.toInt() ?: 480
+    val rest = pause?.groupValues?.get(1)?.toInt() ?: 0
     require(maxWork in 15..480 && rest in 0..120 && (pause==null||rest>0)) { "请使用15–480分钟的连续工作时长和1–120分钟的休息" }
-    require(pause!=null||!question.contains("连续")||!question.contains("休息")) { "请用分钟明确连续工作与休息时长" }
     val datePattern=Regex("(\\d{4})(?:年|[-/])(\\d{1,2})(?:月|[-/])(\\d{1,2})日?")
     val dates=runCatching {
         val full=datePattern.findAll(question).map { LocalDate.of(it.groupValues[1].toInt(),it.groupValues[2].toInt(),it.groupValues[3].toInt()) }.toList()
-        val short=Regex("(?<!\\d)(\\d{1,2})(?:月|/)(\\d{1,2})日?(?!\\d)").findAll(datePattern.replace(question,""))
+        val short=Regex("(?<![\\d:/-])(\\d{1,2})(?:月|/|-)(\\d{1,2})日?(?![\\d:])").findAll(datePattern.replace(question,""))
             .map{LocalDate.of(source.date.year,it.groupValues[1].toInt(),it.groupValues[2].toInt())}.toList()
         (full+short).distinct()
     }.getOrElse { throw IllegalArgumentException("日期无效，请核对年月日") }
     val relative=Regex("今天|明天|后天|下周|本周").findAll(question).map{it.value}.distinct().toList()
+    require(dates.size<=1) { "暂不支持日期区间，请指定一天、本周或下周" }
     require(dates.size+relative.size<=1&&!Regex("大后天|明年|下个月|下月|周末|月底|明早|明晚|(?:周|星期)[一二三四五六日天]").containsMatchIn(question)) { "请明确本次安排的单个日期或周范围" }
     val firstDate=dates.firstOrNull()?:when(relative.firstOrNull()) {
         "明天"->source.date.plusDays(1);"后天"->source.date.plusDays(2)
@@ -66,6 +72,8 @@ internal fun arrangeAdvice(source: DeskSnapshot, question: String, answer: Strin
         relative.firstOrNull()=="本周"->8-source.date.dayOfWeek.value;else->7 }
     require(!firstDate.isBefore(source.date)) { "请选择今天或未来日期" }
     val hours=Regex("(?:可用(?:时间)?|空闲(?:时间)?|工作时间|默认|安排时间)(?:是|为)?\\s*(\\d{1,2})(?::([0-5]\\d))?点?\\s*(?:到|至|[-–])\\s*(\\d{1,2})(?::([0-5]\\d))?点?").find(question)
+        ?:Regex("(?<![\\d:/-])(\\d{1,2})(?::([0-5]\\d)|点)\\s*(?:到|至|[-–])\\s*(\\d{1,2})(?::([0-5]\\d)|点)(?!\\d)").find(question)
+    require(hours!=null||!Regex("\\d{1,2}[:点]\\d{0,2}\\s*(?:到|至|[-–])").containsMatchIn(question)) { "请核对时间区间，使用HH:mm到HH:mm" }
     val period=Regex("(?:今天|明天|后天)\\s*(上午|下午|晚上|中午|早上)").find(question)?.groupValues?.get(1)
     val requestedWindow=if(hours!=null) {
         val start=hours.groupValues[1].toInt()*60+(hours.groupValues[2].toIntOrNull()?:0)
@@ -79,6 +87,7 @@ internal fun arrangeAdvice(source: DeskSnapshot, question: String, answer: Strin
 internal fun executableAdvicePlan(source: DeskSnapshot, ids: Set<String>, maxWork: Int, rest: Int, now: Long,
     firstDate: LocalDate = source.date, days: Int = 7, requestedWindow: MinuteRange? = null): ScheduleResult {
     require(ids.isNotEmpty() && ids.size <= 40 && maxWork in 15..480 && rest in 0..120 && days in 1..7 && firstDate >= source.date)
+    require(rest>0||maxWork==480) { "请补充休息时长，连续工作上限不能被忽略" }
     val tasks = source.tasks.filter { it.id in ids }
     require(tasks.size == ids.size && tasks.all { !it.done && it.minutes > 0 }) { "安排事项已变化，请重新生成建议" }
     require(rest == 0 || tasks.none { !it.splittable && it.category !in setOf("rest", "exercise") && it.minutes > maxWork }) {
