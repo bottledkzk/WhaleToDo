@@ -11,7 +11,11 @@
 
 修改源码、签名或附件必须形成新版本和新校验值；相同源码的构建过程可重复执行，APK 二进制是否逐字节相同需单独验证，不作可重现构建承诺。`release.json` 记录源码提交、签名、SDK、大小、SHA256 和功能边界。
 
-0.5.3-preview.1候选包含账户/AI桥接、Room6账户分区、PNG导出和验证码/空POST修复。构建不读取生产秘密或探测服务，manifest的production_deployed和email_delivery_integrated为null，状态文字要求查看独立回执；online_acceptance_passed仍为false。网站包按候选元数据渲染版本、code和链接，源网页继续引用已存在的公开版本；候选尚未发布时不切官网或替换旧Release附件。实际生产发布与健康路由见[2026-10-28交接](../doc/Bottledkzk/2026-10-28-生产账户与发行状态交接.md)。
+0.5.3-preview.1 已公开，源码冻结 `0e7468239079de72c7e753c37d98a4d1b724228e`，code10、Room6、同一预览证书，包含账户/AI、手动 VIP 日程同步和六档 MOCK 收银台。六个 Release 附件、官网新旧 APK、版本元数据均已读回校验，见[发布回执](../doc/Bottledkzk/2026-10-30-0.5.3公开发布回执.md)。构建本身不读取生产秘密，默认生产/邮件状态仍为 null；发行者仅在独立回执完成后，在新的最终产物目录补充已验证生产状态。新版签名包真机全流程尚未补测，因此 online_acceptance_passed 保持 false，不篡改为全量通过。
+
+先公开四份已校验附件（APK、SHA256SUMS.txt、release.json、RELEASE-NOTES.md），核对 GitHub 非 draft 及 tag 指向冻结提交，再在新目录执行 `python script/package-website.py <最终产物目录> --public-release-tag v0.5.3-preview.1`，追加网站 ZIP/校验附件并读回。这样网站主入口与备用入口同版本，候选阶段默认仍保留旧公开入口。同目录重跑须拒绝覆盖；部署时另保留旧版本 downloads 目录，原子切换失败时恢复原链接。
+
+本次复用了未公开的旧草稿并先私下完整归档；更新草稿目标时应同时显式给出 tag_name 与 target_commitish，确认 tag 未变成 untagged 后按 Release ID 处理附件。已经公开的版本、tag 和附件不覆写。full 为十迁移，gateway 仍为八迁移且禁止启动账户 API。
 
 依据：[Android 应用签名](https://developer.android.com/studio/publish/app-signing)、[GitHub Release 管理](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 
