@@ -49,7 +49,7 @@ let repo: MemoryRepository;
 beforeEach(async () => {
   if (app) await app.close();
   repo = new MemoryRepository(createMemoryStore(), () => Date.now());
-  for (const p of PRODUCTS) repo.store.products.set(p.productId, p);
+  for (const p of PRODUCTS) repo.store.products.set(p.productId, { ...p });
   app = buildApp({ config: loadConfig(MOCK_ENV), repo: fromSync(repo) });
 });
 
@@ -77,6 +77,30 @@ async function createOrder(token: string, productId = 'vip_30d', idemKey?: strin
     payload: { product_id: productId },
   });
 }
+
+test('online cashier is owner-bound read-only HTML; only explicit authenticated payment credits the order',async()=>{
+ const a=await registerAndLogin('cashier_owner'),b=await registerAndLogin('cashier_other');
+ const created=await createOrder(a);const id=created.json().data.order.id;
+ const request=(token?:string)=>inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:token?{authorization:`Bearer ${token}`}:{}});
+ assert.equal((await request()).statusCode,401);assert.equal((await request(b)).statusCode,403);
+ const page=await request(a);assert.equal(page.statusCode,200);assert.match(page.headers['content-type'] as string,/text\/html/u);
+ assert.equal(page.headers['cache-control'],'no-store');assert.match(page.headers['content-security-policy'] as string,/default-src 'none'/u);
+ assert.match(page.body,/确认模拟支付 ¥9\.90/u);assert.match(page.body,/whaletodo-pay:\/\/confirm/u);assert.match(page.body,/无真实扣款/u);
+ assert.ok(!page.body.includes(a));assert.ok(!page.body.includes('<script'));
+ await request(a);assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).json().data.order.status,'PENDING');
+ const paid=await inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${a}`},payload:{}});assert.equal(paid.statusCode,200);
+ const success=await request(a);assert.match(success.body,/支付成功/u);assert.ok(!success.body.includes('<form'));
+});
+
+test('cashier escapes snapshot content and cannot expose production orders',async()=>{
+ const token=await registerAndLogin('cashier_escape');
+ repo.store.products.set('unsafe',{productId:'unsafe',title:'<img src=x onerror=alert(1)>',priceMinor:100,currency:'CNY',vipDays:0,points:1,active:true});
+ const created=await createOrder(token,'unsafe');const id=created.json().data.order.id;
+ const page=await inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${token}`}});
+ assert.match(page.body,/&lt;img/u);assert.ok(!page.body.includes('<img'));
+ const row=repo.store.orders.get(id)!;repo.store.orders.set(id,{...row,environment:'production'});
+ assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${token}`}})).statusCode,403);
+});
 
 async function pay(token: string, orderId: string, eventId: string, amountMinor: number, currency = 'CNY') {
   return inject({
@@ -120,7 +144,6 @@ describe('商品与订单（内存路径）', () => {
     try {
       assert.equal((await disabled.inject({method:'GET',url:'/api/v1/products'})).json().data.mock_checkout,false);
       assert.equal((await disabled.inject({method:'POST',url:'/api/v1/orders/00000000-0000-0000-0000-000000000000/mock-pay',payload:{}})).statusCode,404);
-      assert.throws(()=>loadConfig({...MOCK_ENV,NODE_ENV:'production'}));
     }finally{await disabled.close();}
   });
 
@@ -323,4 +346,56 @@ describe('商品与订单（内存路径）', () => {
       .sort((a, b) => a - b);
     assert.equal(expires[1]! - expires[0]!, 30 * 86_400_000);
   });
+});
+
+describe('all-account mock on production runtime',()=>{
+ test('ordinary accounts explicitly confirm owned orders; production webhook stays absent',async()=>{
+  const prod=buildApp({config:loadConfig({NODE_ENV:'production',PAYMENT_PROVIDER:'mock',IDEMPOTENCY_SECRET:'synthetic-persistent-secret-at-least-32'}),repo:fromSync(repo)});
+  try {
+   const a=await registerAndLogin('prod_mock_a',prod),b=await registerAndLogin('prod_mock_b',prod);
+   const id=(await prod.inject({method:'POST',url:'/api/v1/orders',headers:{authorization:`Bearer ${a}`,'idempotency-key':'prod-mock-create'},payload:{product_id:'points_300'}})).json().data.order.id;
+   assert.equal((await prod.inject({method:'GET',url:'/api/v1/products'})).json().data.mock_checkout,true);
+   assert.equal((await prod.inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${b}`},payload:{}})).statusCode,403);
+   const confirm=()=>prod.inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${a}`},payload:{}});
+   for(const r of await Promise.all([confirm(),confirm(),confirm()]))assert.equal(r.statusCode,200,r.body);
+   const wallet=await prod.inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${a}`}});assert.equal(wallet.json().data.available,300);
+   assert.equal((await prod.inject({method:'POST',url:'/api/v1/payments/mock/webhook',headers:{authorization:`Bearer ${a}`},payload:{}})).statusCode,404);
+  } finally {await prod.close();}
+ });
+ test('legacy demo webhook cannot take the checkout event namespace',async()=>{
+  const token=await registerAndLogin('mock_event_namespace');const id=(await createOrder(token)).json().data.order.id;
+  assert.equal((await pay(token,id,`checkout:${id}`,990)).statusCode,400);
+ });
+});
+
+
+test('mock new-order and cashier rate limits are per account and idempotent recovery remains available',async()=>{
+ const a=await registerAndLogin('mock_rate_a'),b=await registerAndLogin('mock_rate_b');
+ const first=await createOrder(a,'vip_30d','stable-rate-key');assert.equal(first.statusCode,201);
+ const id=first.json().data.order.id;
+ for(let i=1;i<30;i++)assert.equal((await createOrder(a)).statusCode,201);
+ assert.equal((await createOrder(a)).statusCode,429);
+ assert.equal((await createOrder(a,'vip_30d','stable-rate-key')).statusCode,200);
+ assert.equal((await createOrder(b)).statusCode,201);
+ const page=()=>inject({method:'GET',url:`/api/v1/orders/${id}/cashier`,headers:{authorization:`Bearer ${a}`}});
+ for(let i=0;i<120;i++)assert.equal((await page()).statusCode,200);
+ assert.equal((await page()).statusCode,429);
+ assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).statusCode,200);
+});
+
+
+test('pending payment confirmation is limited at 30 per minute while paid replay still recovers',async()=>{
+ const token=await registerAndLogin('confirm_rate');
+ const user=[...repo.store.users.values()].find(u=>u.username==='confirm_rate')!;
+ // Existing PENDING backlog must be independently bounded from new-order admission.
+ const orders=[];
+ for(let i=0;i<31;i++)orders.push(await repo.createOrder({userId:user.id,productId:'points_300',environment:'mock'}));
+ const pay=(id:string)=>inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${token}`},payload:{}});
+ for(const order of orders.slice(0,30))assert.equal((await pay(order.id)).statusCode,200);
+ assert.equal((await pay(orders[30]!.id)).statusCode,429);
+ assert.equal(repo.store.orders.get(orders[30]!.id)!.status,'PENDING');
+ const events=repo.store.paymentEvents.size;
+ assert.equal((await pay(orders[0]!.id)).statusCode,200);
+ assert.equal(repo.store.paymentEvents.size,events);
+ assert.equal((await inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${token}`}})).json().data.available,9000);
 });

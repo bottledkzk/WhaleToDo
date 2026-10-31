@@ -10,6 +10,7 @@ Group=whaletodo-api
 WorkingDirectory=/opt/whaletodo/api-current/server
 ExecStart=/opt/whaletodo-runtime/node-v24.15.0-linux-x64/bin/node --max-old-space-size=128 src/ops/api-main.ts
 Environment=NODE_ENV=production
+Environment=PAYMENT_PROVIDER=mock
 Environment=BUSINESS_TIMEZONE=Asia/Shanghai
 LoadCredential=database.url:/etc/whaletodo/whaletodo_app.url
 LoadCredential=idempotency.secret:/etc/whaletodo/idempotency.secret

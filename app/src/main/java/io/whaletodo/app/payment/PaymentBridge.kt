@@ -36,6 +36,8 @@ interface PaymentBridge {
  suspend fun inspect(owner:String):PaymentCheckout
  suspend fun prepare(owner:String,productId:String):PaymentOrder
  suspend fun confirm(owner:String):PaymentOrder
+ suspend fun cashier(owner:String,orderId:String):String=throw ProfileUnavailable()
+ suspend fun confirmCashier(owner:String,orderId:String):PaymentOrder=throw ProfileUnavailable()
 }
 object PaymentBridgeHub {
  var bridge:PaymentBridge=object:PaymentBridge {

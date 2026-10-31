@@ -111,15 +111,15 @@ test('DEMO_* 与 DATABASE_URL 同时存在时 fail-fast', () => {
   assert.doesNotThrow(() => assertDemoSeedUsesMemory(false, false));
 });
 
-test('demo 商品 seed 后列表返回 3 项且字段正确', async () => {
+test('demo 商品 seed 后列表返回六个档位且字段正确', async () => {
   const repo = new MemoryRepository(createMemoryStore());
-  assert.equal(repo.seedDemoProducts(), 3);
+  assert.equal(repo.seedDemoProducts(), 6);
   const app = appFor(repo);
   try {
     const res = await app.inject({ method: 'GET', url: '/api/v1/products' });
     assert.equal(res.statusCode, 200, res.body);
     const products = res.json().data.products as Array<Record<string, unknown>>;
-    assert.equal(products.length, 3);
+    assert.equal(products.length, 6);
     const vip = products.find((p) => p.product_id === 'vip_7d');
     assert.deepEqual(vip, {
       product_id: 'vip_7d',
@@ -134,15 +134,15 @@ test('demo 商品 seed 后列表返回 3 项且字段正确', async () => {
   }
 });
 
-test('商品 seed 幂等：重复调用仍是 3 项', async () => {
+test('商品 seed 幂等：重复调用仍是六个档位', async () => {
   const repo = new MemoryRepository(createMemoryStore());
   repo.seedDemoProducts();
   repo.seedDemoProducts();
   const products = await repo.listProducts();
-  assert.equal(products.length, 3);
+  assert.equal(products.length, 6);
   assert.deepEqual(
     products.map((p) => p.productId).sort(),
-    ['points_100', 'vip_30d', 'vip_7d'],
+    ['points_100', 'points_20', 'points_500', 'vip_30d', 'vip_7d', 'vip_90d'],
   );
 });
 

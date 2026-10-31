@@ -18,6 +18,7 @@ import {
   environmentForProvider, ORDER_ID_RE, paymentPayloadHash, PRODUCT_ID_RE,
 } from '../domain/orders.ts';
 import type { ServerConfig } from '../config.ts';
+import {cashierHtml} from '../domain/cashier.ts';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -80,6 +81,9 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   // 单进程内存实现，多实例部署时需换共享存储（见 handoff 说明）。
   const registerLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
   const loginLimiter = new FixedWindowLimiter(config.rateLimitMaxAttempts, config.rateLimitWindowMs);
+  const mockOrderLimiter = new FixedWindowLimiter(30, 60_000);
+  const mockCashierLimiter = new FixedWindowLimiter(120, 60_000);
+  const mockConfirmLimiter = new FixedWindowLimiter(30, 60_000);
   // 不记录请求体；对鉴权头/幂等键/模拟支付令牌脱敏；关闭默认两行日志，改由 onResponse 输出一条。
   const loggerOptions = {
     level: config.logLevel,
@@ -549,7 +553,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     const products = await repo.listProducts();
     return ok(req.requestId, {
       payment_provider: config.paymentProvider,
-      mock_checkout: config.paymentProvider === 'mock' && ['test', 'demo'].includes(config.nodeEnv),
+      mock_checkout: config.paymentProvider === 'mock',
       products: products.map((p) => ({
         product_id: p.productId,
         title: p.title,
@@ -586,6 +590,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       }
     }
 
+    if(environment==='mock') {
+      const limit=mockOrderLimiter.hit(req.userId!);
+      if(!limit.allowed)throw new ApiError('RATE_LIMITED','下单过于频繁，请稍后重试',{retry_after_ms:limit.retryAfterMs});
+    }
     let order: RepoOrder;
     try {
       order = await repo.createOrder({
@@ -638,10 +646,21 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   if (config.paymentProvider === 'mock') {
-    // A user explicitly confirms a demo order. Amount and entitlements never come from the client.
+    app.get('/api/v1/orders/:id/cashier', async (req, reply) => {
+      await requireAuth(req);
+      const id=String((req.params as {id?:string}).id??'');
+      if(!ORDER_ID_RE.test(id)||!repo.getOrder)throw new ApiError('FORBIDDEN','订单不存在');
+      const order=await repo.getOrder(req.userId!,id);
+      if(!order||order.environment!=='mock')throw new ApiError('FORBIDDEN','订单不存在');
+      const limit=mockCashierLimiter.hit(req.userId!);
+      if(!limit.allowed)throw new ApiError('RATE_LIMITED','收银台请求过于频繁，请稍后重试',{retry_after_ms:limit.retryAfterMs});
+      return reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff')
+        .header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; form-action whaletodo-pay:; base-uri 'none'; frame-ancestors 'none'")
+        .type('text/html; charset=utf-8').send(cashierHtml(order));
+    });
+    // Explicit authenticated confirmation. Amount and entitlements only come from the order snapshot.
     app.post('/api/v1/orders/:id/mock-pay', async (req) => {
       await requireAuth(req);
-      if (!['test', 'demo'].includes(config.nodeEnv)) throw new ApiError('FORBIDDEN', '模拟支付仅用于演示环境');
       if (!repo.getOrder || !repo.applyPayment) throw new ApiError('INTERNAL', '订单仓储不可用');
       const id = String((req.params as { id?: string }).id ?? '');
       if (!ORDER_ID_RE.test(id)) throw new ApiError('FORBIDDEN', '订单不存在');
@@ -649,6 +668,10 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       if (!order) throw new ApiError('FORBIDDEN', '订单不存在');
       if (order.environment !== 'mock') throw new ApiError('FORBIDDEN', '订单不是模拟订单');
       if (Object.keys((req.body ?? {}) as object).length) throw new ApiError('VALIDATION_ERROR', '模拟确认不接受金额或权益参数');
+      if(order.status==='PENDING') {
+        const limit=mockConfirmLimiter.hit(req.userId!);
+        if(!limit.allowed)throw new ApiError('RATE_LIMITED','确认过于频繁，请稍后重试',{retry_after_ms:limit.retryAfterMs});
+      }
       const event = { order_id: id, amount_minor: order.amountMinor, currency: order.currency, status: 'succeeded' };
       const result = await repo.applyPayment({
         userId: req.userId!, provider: 'mock', eventId: `checkout:${id}`, orderId: id,
@@ -661,7 +684,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
       return ok(req.requestId, { order: orderJson(paid), simulated: true });
     });
 
-    app.post('/api/v1/payments/mock/webhook', async (req) => {
+    if (['test', 'demo'].includes(config.nodeEnv)) app.post('/api/v1/payments/mock/webhook', async (req) => {
       await requireAuth(req);
       if (!repo.applyPayment) throw new ApiError('INTERNAL', '当前仓储未实现支付回调');
 
@@ -670,6 +693,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
         amount_minor?: number; currency?: string;
       };
       const eventId = String(body.event_id ?? '').trim();
+      if (eventId.startsWith('checkout:')) throw new ApiError('VALIDATION_ERROR', '该事件前缀由订单确认保留');
       const orderId = String(body.order_id ?? '').trim();
       const status = String(body.status ?? '');
       const amountMinor = Number(body.amount_minor);

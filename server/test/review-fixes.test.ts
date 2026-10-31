@@ -132,10 +132,10 @@ describe('[P2] .env 真的会被加载', () => {
     delete process.env.WHALETODO_CFG_TZ;
   });
 
-  test('production + mock 支付必须拒绝启动', () => {
+  test('未提供持久幂等密钥的 production + mock 仍拒绝启动', () => {
     assert.throws(
       () => loadConfig({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'mock', MOCK_WEBHOOK_TOKEN: 'x' } as NodeJS.ProcessEnv),
-      /只允许在 NODE_ENV=test 或 demo/,
+      /IDEMPOTENCY_SECRET/,
     );
   });
 });

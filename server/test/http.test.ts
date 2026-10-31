@@ -272,11 +272,9 @@ describe('刷新与撤销', () => {
 });
 
 describe('配置校验', () => {
-  test('生产环境启用 mock 支付 → 直接拒绝启动', () => {
-    assert.throws(
-      () => loadConfig({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'mock', MOCK_WEBHOOK_TOKEN: 'x' } as NodeJS.ProcessEnv),
-      /只允许在 NODE_ENV=test 或 demo/,
-    );
+  test('production 可显式启用全账号 mock，但仍要求持久幂等密钥', () => {
+    assert.equal(loadConfig({ NODE_ENV: 'production', PAYMENT_PROVIDER: 'mock', IDEMPOTENCY_SECRET: 'synthetic-persistent-secret-at-least-32' } as NodeJS.ProcessEnv).paymentProvider,'mock');
+    assert.throws(()=>loadConfig({NODE_ENV:'production',PAYMENT_PROVIDER:'mock'} as NodeJS.ProcessEnv),/IDEMPOTENCY_SECRET/);
   });
 
   test('mock 支付缺少内部令牌 → 拒绝', () => {
