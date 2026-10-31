@@ -110,4 +110,13 @@ class ServerPaymentBridgeTest {
   assertThrows(ProfileException::class.java){runBlocking{f.bridge().confirmCashier("A",order.id)}}
   assertEquals(0,f.api.confirmed);assertEquals(0,f.walletCalls)
  }}
+ @Test fun paidOrderConfirmIsRecoveryOnly()=runBlocking {Fixture().use{f->
+  val order=f.bridge().prepare("A","points_100")
+  // The original server payment completed but its response never reached this process.
+  f.api.value=f.api.value.copy(status="PAID")
+  val recovered=f.bridge().confirmCashier("A",order.id)
+  assertEquals("PAID",recovered.status);assertEquals(0,f.api.confirmed);assertEquals(1,f.api.created)
+  assertNull(f.store.read("A"));assertEquals(100,f.session.access.value.availablePoints);assertTrue(f.session.access.value.vip)
+  assertEquals("One entitlements read and one wallet read",2,f.walletCalls)
+ }}
 }

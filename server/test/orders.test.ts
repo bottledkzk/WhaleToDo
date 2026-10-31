@@ -382,3 +382,20 @@ test('mock new-order and cashier rate limits are per account and idempotent reco
  assert.equal((await page()).statusCode,429);
  assert.equal((await inject({method:'GET',url:`/api/v1/orders/${id}`,headers:{authorization:`Bearer ${a}`}})).statusCode,200);
 });
+
+
+test('pending payment confirmation is limited at 30 per minute while paid replay still recovers',async()=>{
+ const token=await registerAndLogin('confirm_rate');
+ const user=[...repo.store.users.values()].find(u=>u.username==='confirm_rate')!;
+ // Existing PENDING backlog must be independently bounded from new-order admission.
+ const orders=[];
+ for(let i=0;i<31;i++)orders.push(await repo.createOrder({userId:user.id,productId:'points_300',environment:'mock'}));
+ const pay=(id:string)=>inject({method:'POST',url:`/api/v1/orders/${id}/mock-pay`,headers:{authorization:`Bearer ${token}`},payload:{}});
+ for(const order of orders.slice(0,30))assert.equal((await pay(order.id)).statusCode,200);
+ assert.equal((await pay(orders[30]!.id)).statusCode,429);
+ assert.equal(repo.store.orders.get(orders[30]!.id)!.status,'PENDING');
+ const events=repo.store.paymentEvents.size;
+ assert.equal((await pay(orders[0]!.id)).statusCode,200);
+ assert.equal(repo.store.paymentEvents.size,events);
+ assert.equal((await inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${token}`}})).json().data.available,9000);
+});
