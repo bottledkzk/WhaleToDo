@@ -122,4 +122,14 @@ class AdviceScheduleTest {
         val text=AdviceArrangement(PlanPreview(snapshot,result),setOf("a","b"),60,10,ms(8)).display()
         assertFalse(text.contains("休息（"))
     }
+
+    @Test fun abbreviatedDayRangesAreRejectedInsteadOfBecomingOneDayOrTheDefaultWeek() {
+        val snapshot=source(listOf(TaskRow("a","报告",30)))
+        for(q in listOf("1月3日到5日安排报告","2日到5日安排报告","1月3日至5日安排报告","1月3-5日安排报告","2号到5号安排报告")) {
+            val error=assertThrows(IllegalArgumentException::class.java) { arrangeAdvice(snapshot,q,"报告",ms(8)) }
+            assertTrue(error.message!!.contains("日期区间"))
+        }
+        assertEquals(1,arrangeAdvice(snapshot,"1月3日安排报告","报告",ms(8)).days)
+        assertNotNull(arrangeAdvice(snapshot,"明天14:00到15:00安排报告","报告",ms(8)).requestedWindow)
+    }
 }

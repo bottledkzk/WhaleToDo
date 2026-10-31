@@ -53,6 +53,8 @@ internal fun arrangeAdvice(source: DeskSnapshot, question: String, answer: Strin
     val maxWork = work?.groupValues?.get(1)?.toInt() ?: 480
     val rest = pause?.groupValues?.get(1)?.toInt() ?: 0
     require(maxWork in 15..480 && rest in 0..120 && (pause==null||rest>0)) { "请使用15–480分钟的连续工作时长和1–120分钟的休息" }
+    val dayRange=Regex("(?:\\d{1,2}\\s*月\\s*\\d{1,2}\\s*(?:日|号)?|\\d{1,2}\\s*(?:日|号))\\s*(?:到|至|[-–~～])\\s*(?:\\d{1,2}\\s*月\\s*)?\\d{1,2}\\s*(?:日|号)")
+    require(!dayRange.containsMatchIn(question)) { "暂不支持日期区间，请指定一天、本周或下周" }
     val datePattern=Regex("(\\d{4})(?:年|[-/])(\\d{1,2})(?:月|[-/])(\\d{1,2})日?")
     val dates=runCatching {
         val full=datePattern.findAll(question).map { LocalDate.of(it.groupValues[1].toInt(),it.groupValues[2].toInt(),it.groupValues[3].toInt()) }.toList()
