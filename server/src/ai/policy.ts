@@ -1,6 +1,6 @@
 import {diaryStylePrompt,diaryProse,type DiaryStyle} from './diary-prose.ts';
 import { createHash } from 'node:crypto';
-export const PROMPT_VERSION='agent-20261031-v9';
+export const PROMPT_VERSION='agent-20261031-v10';
 export const MODES=['chat','plan','review','diary','share_copy','edit'] as const;
 export type Mode=typeof MODES[number];
 export interface EditChange {type:'rename_task'|'set_category'|'move_block'|'schedule_task';target_id:string;title?:string;category?:string;start_ms?:number;end_ms?:number}
