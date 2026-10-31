@@ -152,26 +152,44 @@ class SyncPullEngine(
         val type = change.objectType
         if (type !in OBJECT_TYPES) throw SyncPullProtocolException("UNKNOWN_OBJECT_TYPE")
         val payload = if (change.deleted) null else parsePayload(change)
-        val identity = if (type == "availability") {
-            resolveAvailabilityIdentity(ownerId, change.objectId, payload)
-        } else {
-            null
+        var availabilityDate: String? = null
+        val localObjectId = when (type) {
+            "availability" -> {
+                val availability = resolveAvailabilityIdentity(ownerId, change.objectId, payload)
+                availabilityDate = availability.date
+                if (availability.date != null && change.objectId != availability.localObjectId) {
+                    dao.upsertMapping(
+                        SyncIdMappingRow(
+                            ownerId = ownerId,
+                            objectType = "availability",
+                            guestObjectId = change.objectId,
+                            accountObjectId = availability.localObjectId,
+                            naturalKey = availability.date,
+                            createdAt = now,
+                        ),
+                    )
+                }
+                availability.localObjectId
+            }
+            "settings" -> {
+                val local = resolveSettingsIdentity(ownerId, change.objectId)
+                if (change.objectId != local) {
+                    dao.upsertMapping(
+                        SyncIdMappingRow(
+                            ownerId = ownerId,
+                            objectType = "settings",
+                            guestObjectId = change.objectId,
+                            accountObjectId = local,
+                            naturalKey = SETTINGS_NATURAL_KEY,
+                            createdAt = now,
+                        ),
+                    )
+                }
+                local
+            }
+            else -> change.objectId
         }
-        val localObjectId = identity?.localObjectId ?: change.objectId
-        // Persist the remote→local translation for conflicts, skipped versions and deletes.
-        if (identity != null && identity.date != null && change.objectId != localObjectId) {
-            dao.upsertMapping(
-                SyncIdMappingRow(
-                    ownerId = ownerId,
-                    objectType = "availability",
-                    guestObjectId = change.objectId,
-                    accountObjectId = localObjectId,
-                    naturalKey = identity.date,
-                    createdAt = now,
-                ),
-            )
-        }
-        val known = localKnownVersion(ownerId, change, payload, localObjectId, identity)
+        val known = localKnownVersion(ownerId, change, payload, localObjectId, availabilityDate)
         if (change.version <= known) return ApplyResult.SKIPPED
 
         // A remote availability object_id may differ from the canonical local identity.
@@ -237,7 +255,7 @@ class SyncPullEngine(
         change: SyncPullChange,
         payload: JSONObject?,
         localObjectId: String,
-        identity: AvailabilityIdentity?,
+        availabilityDate: String?,
     ): Int {
         val contentVersion = when (change.objectType) {
             "task" -> content.task(ownerId, localObjectId)?.serverVersion
@@ -245,7 +263,7 @@ class SyncPullEngine(
             "checkin" -> content.checkIn(ownerId, localObjectId)?.serverVersion
             "settings" -> content.settings(ownerId)?.serverVersion
             "availability" -> {
-                val local = identity?.date?.let { content.workTime(ownerId, it) }
+                val local = availabilityDate?.let { content.workTime(ownerId, it) }
                     ?: content.workTimeByClient(ownerId, localObjectId)
                     ?: findWorkTime(ownerId, localObjectId, payload)
                 local?.serverVersion
@@ -289,6 +307,20 @@ class SyncPullEngine(
             ?: date?.let { canonicalId("availability:$ownerId:$it") }
             ?: remoteObjectId
         return AvailabilityIdentity(localObjectId, date)
+    }
+
+    /**
+     * Settings are a single local row. Translate any remote object_id (canonical or a
+     * legacy remote key) to that local identity before version/head/conflict/tombstone work,
+     * so a dirty local settings outbox is never overwritten or deleted by a pull.
+     */
+    private suspend fun resolveSettingsIdentity(ownerId: String, remoteObjectId: String): String {
+        val canonical = canonicalId("settings:$ownerId")
+        val dirty = dao.settingsHead(ownerId)
+        val local = content.settings(ownerId)?.clientId?.takeIf { it.isNotBlank() }
+        val mapped = dao.mapping(ownerId, "settings", remoteObjectId)?.accountObjectId
+            ?.takeIf { it.isNotBlank() }
+        return dirty?.objectId ?: local ?: mapped ?: canonical
     }
 
     private suspend fun applyContent(
@@ -363,7 +395,7 @@ class SyncPullEngine(
                         startHour = startHour,
                         endHour = endHour,
                         ownerId = ownerId,
-                        clientId = canonicalId("settings:$ownerId"),
+                        clientId = objectId,
                         serverVersion = version,
                         updatedAt = now,
                         timeZone = strictZone(payload.requiredString("time_zone")),
@@ -478,6 +510,7 @@ class SyncPullEngine(
         const val DEFAULT_LIMIT = 100
         const val MAX_LIMIT = 200
         val OBJECT_TYPES = setOf("task", "block", "checkin", "availability", "settings")
+        const val SETTINGS_NATURAL_KEY = "settings"
         val TASK_CATEGORIES = setOf(
             "none", "study", "exercise", "entertainment", "work", "social", "travel", "rest",
         )

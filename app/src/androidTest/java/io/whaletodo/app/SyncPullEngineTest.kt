@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.whaletodo.app.account.AccountSession
 import io.whaletodo.app.data.DailyWorkTimeRow
 import io.whaletodo.app.data.DeskDatabase
+import io.whaletodo.app.data.SettingRow
 import io.whaletodo.app.data.SyncOutboxRow
 import io.whaletodo.app.data.TaskRow
 import io.whaletodo.app.sync.SyncPullEngine
@@ -601,6 +602,169 @@ class SyncPullEngineTest {
         assertEquals(1, db.dao().task(owner, taskId)?.serverVersion)
         assertEquals("只应用一次", db.dao().task(owner, taskId)?.title)
     }
+
+    @Test
+    fun settingsDirtyCanonicalOutboxSurvivesRemoteUpdateAndDelete() = runBlocking {
+        val canonical = canonicalSettingsId(owner)
+        val remote = "44444444-4444-4444-8444-444444444444"
+        db.dao().save(SettingRow(ownerId = owner, clientId = canonical, startHour = 9, endHour = 18, serverVersion = 1))
+        db.syncDao().insertOrUpdateOutbox(settingsOutbox(canonical, "pending", 1))
+        val api = FakeApi { cursor, _ ->
+            when (cursor) {
+                0L -> page(listOf(settingsChange(remote, 2, 10, 20)), 1, false)
+                1L -> page(listOf(settingsChange(remote, 3, 10, 20, deleted = true)), 2, false)
+                else -> page(listOf(settingsChange(remote, 2, 10, 20)), 3, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+
+        val update = engine.pullOnce(owner, "device-1")
+        assertEquals(1, update.conflicts)
+        assertEquals(9, db.dao().settings(owner)?.startHour)
+        assertEquals("pending", db.syncDao().outbox("op-settings")?.state)
+        assertEquals(2, db.syncDao().conflict(owner, "settings", canonical)?.remoteKnownVersion)
+        assertEquals(canonical, db.syncDao().mapping(owner, "settings", remote)?.accountObjectId)
+        assertNull(db.syncDao().tombstone(owner, "settings", canonical))
+
+        val delete = engine.pullOnce(owner, "device-1")
+        assertEquals(1, delete.conflicts)
+        assertEquals(9, db.dao().settings(owner)?.startHour)
+        assertEquals(1, db.syncDao().conflict(owner, "settings", canonical)?.remoteDeleted)
+        assertEquals("pending", db.syncDao().outbox("op-settings")?.state)
+        assertNull(db.syncDao().tombstone(owner, "settings", canonical))
+
+        val replay = engine.pullOnce(owner, "device-1")
+        assertEquals(0, replay.applied)
+        assertEquals(0, replay.conflicts)
+        assertEquals(9, db.dao().settings(owner)?.startHour)
+        assertEquals(3, db.syncDao().conflict(owner, "settings", canonical)?.remoteKnownVersion)
+    }
+
+    @Test
+    fun settingsCleanPullAppliesVersionsAndReplayIsIdempotent() = runBlocking {
+        val canonical = canonicalSettingsId(owner)
+        val remote = "66666666-6666-4666-8666-666666666666"
+        val api = FakeApi { cursor, _ ->
+            when (cursor) {
+                0L -> page(listOf(settingsChange(remote, 1, 8, 20)), 1, false)
+                1L -> page(listOf(settingsChange(remote, 2, 10, 21)), 2, false)
+                else -> page(listOf(settingsChange(remote, 2, 10, 21)), 3, false)
+            }
+        }
+        val engine = SyncPullEngine(db, session, api)
+
+        assertEquals(1, engine.pullOnce(owner, "device-1").applied)
+        assertEquals(8, db.dao().settings(owner)?.startHour)
+        assertEquals(canonical, db.dao().settings(owner)?.clientId)
+        assertEquals(1, db.dao().settings(owner)?.serverVersion)
+        assertEquals(canonical, db.syncDao().mapping(owner, "settings", remote)?.accountObjectId)
+        assertEquals("settings", db.syncDao().mapping(owner, "settings", remote)?.naturalKey)
+
+        assertEquals(1, engine.pullOnce(owner, "device-1").applied)
+        assertEquals(10, db.dao().settings(owner)?.startHour)
+        assertEquals(21, db.dao().settings(owner)?.endHour)
+        assertEquals(2, db.dao().settings(owner)?.serverVersion)
+
+        val replay = engine.pullOnce(owner, "device-1")
+        assertEquals(0, replay.applied)
+        assertEquals(10, db.dao().settings(owner)?.startHour)
+        assertEquals(2, db.dao().settings(owner)?.serverVersion)
+    }
+
+    @Test
+    fun settingsOldCanonicalRemoteIdAppliesWithoutMapping() = runBlocking {
+        val canonical = canonicalSettingsId(owner)
+        val api = FakeApi { _, _ -> page(listOf(settingsChange(canonical, 1, 7, 19)), 1, false) }
+
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals(1, outcome.applied)
+        assertEquals(7, db.dao().settings(owner)?.startHour)
+        assertEquals(19, db.dao().settings(owner)?.endHour)
+        assertEquals(canonical, db.dao().settings(owner)?.clientId)
+        assertNull(db.syncDao().mapping(owner, "settings", canonical))
+    }
+
+    @Test
+    fun settingsBlockedAndSendingOutboxAlsoConflictInsteadOfOverwriting() = runBlocking {
+        val canonical = canonicalSettingsId(owner)
+        val remote = "77777777-7777-4777-8777-777777777777"
+        for ((state, version) in listOf("blocked" to 2, "sending" to 3)) {
+            db.dao().save(SettingRow(ownerId = owner, clientId = canonical, startHour = 9, endHour = 18, serverVersion = 1))
+            db.syncDao().insertOrUpdateOutbox(settingsOutbox(canonical, state, 1))
+            db.syncDao().upsertState(io.whaletodo.app.data.SyncStateRow(owner, 0, deviceId = "device-1"))
+            val api = FakeApi { _, _ -> page(listOf(settingsChange(remote, version, 11, 22)), 1, false) }
+
+            val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+            assertEquals(1, outcome.conflicts)
+            assertEquals(9, db.dao().settings(owner)?.startHour)
+            assertEquals(state, db.syncDao().outbox("op-settings")?.state)
+            assertEquals(version, db.syncDao().conflict(owner, "settings", canonical)?.remoteKnownVersion)
+        }
+    }
+
+    @Test
+    fun settingsLegacyRemoteKeyedDirtyOutboxConflictsWithoutCreatingLocalRow() = runBlocking {
+        val remote = "88888888-8888-4888-8888-888888888888"
+        db.syncDao().insertOrUpdateOutbox(settingsOutbox(remote, "sending", 1))
+        val api = FakeApi { _, _ -> page(listOf(settingsChange(remote, 2, 10, 20)), 1, false) }
+
+        val outcome = SyncPullEngine(db, session, api).pullOnce(owner, "device-1")
+
+        assertEquals(1, outcome.conflicts)
+        assertNull(db.dao().settings(owner))
+        assertEquals("sending", db.syncDao().outbox("op-settings")?.state)
+        assertEquals(2, db.syncDao().conflict(owner, "settings", remote)?.remoteKnownVersion)
+        assertNull(db.syncDao().mapping(owner, "settings", remote))
+    }
+
+    private fun canonicalSettingsId(owner: String): String {
+        val namespace = ByteBuffer.allocate(16)
+            .putLong(NAMESPACE.mostSignificantBits)
+            .putLong(NAMESPACE.leastSignificantBits)
+            .array()
+        val digest = MessageDigest.getInstance("SHA-1")
+            .digest(namespace + "settings:$owner".toByteArray(Charsets.UTF_8))
+        digest[6] = ((digest[6].toInt() and 0x0f) or 0x50).toByte()
+        digest[8] = ((digest[8].toInt() and 0x3f) or 0x80).toByte()
+        val bytes = ByteBuffer.wrap(digest.copyOf(16))
+        return UUID(bytes.long, bytes.long).toString()
+    }
+
+    private fun settingsOutbox(objectId: String, state: String, baseVersion: Int?) = SyncOutboxRow(
+        opId = "op-settings",
+        ownerId = owner,
+        objectType = "settings",
+        objectId = objectId,
+        op = "update",
+        payloadJson = "{}",
+        baseVersion = baseVersion,
+        idempotencyKey = "op-settings",
+        parentOpId = null,
+        isHead = true,
+        batchId = null,
+        state = state,
+        attempts = 0,
+        nextRetryAt = 0,
+        createdAt = 1,
+        lastErrorCode = null,
+    )
+
+    private fun settingsChange(
+        id: String,
+        version: Int,
+        startHour: Int,
+        endHour: Int,
+        deleted: Boolean = false,
+    ) = SyncPullChange(
+        "settings",
+        id,
+        version,
+        deleted,
+        if (deleted) null else
+            """{"payload_version":1,"start_hour":$startHour,"end_hour":$endHour,"time_zone":"Asia/Shanghai"}""",
+    )
 
     private fun availabilityChange(
         id: String,
