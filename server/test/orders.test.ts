@@ -398,4 +398,10 @@ test('pending payment confirmation is limited at 30 per minute while paid replay
  assert.equal((await pay(orders[0]!.id)).statusCode,200);
  assert.equal(repo.store.paymentEvents.size,events);
  assert.equal((await inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${token}`}})).json().data.available,9000);
+ const otherToken=await registerAndLogin('confirm_rate_other');
+ const otherUser=[...repo.store.users.values()].find(u=>u.username==='confirm_rate_other')!;
+ const otherOrder=await repo.createOrder({userId:otherUser.id,productId:'points_300',environment:'mock'});
+ assert.equal((await inject({method:'POST',url:`/api/v1/orders/${otherOrder.id}/mock-pay`,headers:{authorization:`Bearer ${otherToken}`},payload:{}})).statusCode,200);
+ assert.equal((await inject({method:'GET',url:'/api/v1/wallet',headers:{authorization:`Bearer ${otherToken}`}})).json().data.available,300);
+ assert.equal(repo.store.orders.get(orders[30]!.id)!.status,'PENDING');
 });

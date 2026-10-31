@@ -29,9 +29,10 @@ class ReleasePackageTest(unittest.TestCase):
                  'env/systemd/whaletodo-ai.service', 'env/systemd/ai-limits.env.example', 'env/systemd/whaletodo-api.service',
                  'env/nginx/whaletodo-api-proxy.conf', 'env/postgresql/grants.sql', 'server/src/main.ts',
                  'server/src/ai/main.ts', 'server/src/ops/api-main.ts', 'server/src/ops/api-config.ts',
-                 'server/tools/database-guard.ts', 'doc/Bottledkzk/2026-10-27-生产发布与在线验收.md']
+                 'server/tools/database-guard.ts', 'doc/Bottledkzk/2026-10-30-全账号MOCK充值与发布方案.md']
         for path in paths:
             self.write(path, 'synthetic\n')
+        self.write('doc/Bottledkzk/2026-10-30-全账号MOCK充值与发布方案.md', 'synthetic current ten-migration deployment guide\n')
         self.write('server/src/ai/policy.ts', "export const PROMPT_VERSION='synthetic-policy';\n")
         checksums = []
         for name in self.names:
@@ -63,6 +64,8 @@ class ReleasePackageTest(unittest.TestCase):
             self.assertFalse(manifest['deployed'])
             self.assertIn('server/src/ops/api-main.ts', archive.getnames())
             self.assertIn('server/tsconfig.json', archive.getnames())
+            self.assertEqual(archive.extractfile('DEPLOYMENT.md').read(),
+                             b'synthetic current ten-migration deployment guide\n')
             for name, digest in manifest['files'].items():
                 self.assertNotIn('.env', name.replace('.env.example', '.example'))
                 self.assertNotIn('node_modules', name)
@@ -121,6 +124,19 @@ class ReleasePackageTest(unittest.TestCase):
             self.assertIn('生产联调尚待验收', html)
             self.assertIn('downloads/v' + version + '/' + asset, archive.namelist())
         self.assertIn('0.5.2-preview.1', (self.repo / 'web/index.html').read_text(encoding='utf-8'))
+        # A distinct output directory keeps the unpublished candidate immutable.
+        published = self.root / 'published'
+        published.mkdir()
+        for name in [asset, 'release.json', 'SHA256SUMS.txt', 'RELEASE-NOTES.md']:
+            (published / name).write_bytes((artifacts / name).read_bytes())
+        subprocess.run([sys.executable, str(self.repo / 'script/package-website.py'), str(published),
+                        '--public-release-tag', 'v' + version], check=True, stdout=subprocess.DEVNULL)
+        with zipfile.ZipFile(published / ('WhaleToDo-website-v' + version + '.zip')) as archive:
+            self.assertIn('releases/tag/v' + version, archive.read('index.html').decode())
+            self.assertEqual(json.loads(archive.read('site-manifest.json'))['public_release_tag'], 'v' + version)
+        bad_tag = subprocess.run([sys.executable, str(self.repo / 'script/package-website.py'), str(published),
+                                  '--public-release-tag', 'v0.5.2-preview.1'], capture_output=True)
+        self.assertIn(b'PUBLIC_RELEASE_TAG_MISMATCH', bad_tag.stderr)
         meta['certificate_sha256'] = 'd'*64
         (artifacts / 'release.json').write_text(json.dumps(meta), encoding='utf-8')
         bad = subprocess.run([sys.executable, str(self.repo / 'script/package-website.py'), str(artifacts)], capture_output=True)
