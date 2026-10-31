@@ -60,7 +60,7 @@ def prepare(repo, output, profile='gateway'):
             raise ValueError('MIGRATION_CHECKSUM_MISMATCH')
     files['server/prisma/migrations/checksums.json'] = (json.dumps(checksums, indent=2) + '\n').encode()
     files['env/postgresql/ai-usage-grant.sql'] = b'GRANT SELECT(user_id,kind,expires_at) ON whaletodo.entitlements TO whaletodo_ai;\n'
-    files['DEPLOYMENT.md'] = git(repo, 'show', 'HEAD:doc/Bottledkzk/2026-10-27-生产发布与在线验收.md')
+    files['DEPLOYMENT.md'] = git(repo, 'show', 'HEAD:doc/Bottledkzk/2026-10-30-全账号MOCK充值与发布方案.md')
     prompt = re.search(r"PROMPT_VERSION\s*=\s*'([^']+)'", files.get('server/src/ai/policy.ts', b'').decode())
     if not prompt:
         raise ValueError('PROMPT_VERSION_MISSING')

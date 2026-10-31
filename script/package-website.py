@@ -4,6 +4,7 @@ from pathlib import Path
 
 parser=argparse.ArgumentParser()
 parser.add_argument('artifact_directory',type=Path)
+parser.add_argument('--public-release-tag', help='Use this fallback only after verifying the matching GitHub release is public')
 args=parser.parse_args()
 repo=Path(__file__).resolve().parent.parent
 def git(*args):return subprocess.check_output(['git','-C',str(repo),*args])
@@ -16,6 +17,8 @@ if (not re.fullmatch(r'\d+\.\d+\.\d+-preview\.\d+',meta['version']) or meta['tag
     type(meta['version_code']) is not int or meta['version_code']<1):raise SystemExit('INVALID_PREVIEW_MANIFEST')
 pin=git('show','HEAD:release/preview-certificate.sha256').decode().strip()
 if meta.get('certificate_sha256')!=pin:raise SystemExit('PREVIEW_CERTIFICATE_MISMATCH')
+if args.public_release_tag is not None and args.public_release_tag!=meta['tag']:
+    raise SystemExit('PUBLIC_RELEASE_TAG_MISMATCH')
 apk=artifact/meta['asset']
 if hashlib.sha256(apk.read_bytes()).hexdigest()!=meta['sha256']:raise SystemExit('APK_HASH_MISMATCH')
 dest=artifact/('WhaleToDo-website-'+meta['tag']+'.zip')
@@ -35,7 +38,8 @@ for name in ['index.html','app.js']:
     # Keep the verified public fallback tag until the candidate release actually exists.
     public_tag='https://github.com/bottledkzk/WhaleToDo/releases/tag/v'+old_version
     text=files[name].decode('utf-8').replace(public_tag,'__VERIFIED_PUBLIC_RELEASE__').replace(old_version,meta['version'])
-    text=text.replace('__VERIFIED_PUBLIC_RELEASE__',public_tag)
+    fallback='https://github.com/bottledkzk/WhaleToDo/releases/tag/'+args.public_release_tag if args.public_release_tag else public_tag
+    text=text.replace('__VERIFIED_PUBLIC_RELEASE__',fallback)
     if name=='index.html':
         text=re.sub(r' · code \d+', ' · code '+str(meta['version_code']),text)
         if meta.get('online_account_agent')=='client_integrated_production_acceptance_pending':
@@ -47,6 +51,7 @@ for name in [meta['asset'],'SHA256SUMS.txt','release.json','RELEASE-NOTES.md']:
     files['downloads/'+meta['tag']+'/'+name]=(artifact/name).read_bytes()
 manifest={'website_source_commit':git('rev-parse','HEAD').decode().strip(),
           'apk_source_commit':meta['source_commit'],'version':meta['version'],
+          'public_release_tag':args.public_release_tag,
           'deployed':False,'files':{n:hashlib.sha256(b).hexdigest() for n,b in sorted(files.items())}}
 files['site-manifest.json']=(json.dumps(manifest,indent=2)+'\n').encode()
 with zipfile.ZipFile(dest,'w',compression=zipfile.ZIP_DEFLATED) as archive:
