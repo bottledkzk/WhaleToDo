@@ -26,9 +26,14 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     private val onScheduleChanged:suspend ()->Unit={}) {
     private val mutable = MutableStateFlow(AssistantState(models=bridge.models))
     val state: StateFlow<AssistantState> = mutable.asStateFlow()
+    private var preferencesOwner:String?=null
     init { scope.launch { bridge.access.collect { access ->
         val owner = access.userId ?: "guest"
-        if(owner != mutable.value.owner) mutable.value=AssistantState(owner=owner,access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,AgentMode.CHAT),editConsent=repo.dao.options("local-agent:$owner").any{it.key=="edit"&&it.value=="true"})
+        if(owner != mutable.value.owner||preferencesOwner!=owner) {
+            val options=repo.dao.options("local-agent:$owner");preferencesOwner=owner
+            mutable.value=AssistantState(owner=owner,access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,AgentMode.CHAT),
+                editConsent=options.any{it.key=="edit"&&it.value=="true"},includeAgenda=options.find{it.key=="agenda"}?.value?.toBooleanStrictOrNull()?:true)
+        }
         else mutable.update { it.copy(access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,it.mode)) }
         refreshHistory()
     } } }
@@ -43,7 +48,12 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),preview=null,revision=null,advice=null,arrangement=null) } }
     fun style(style: String) { if(ShareStyle.entries.any{it.code==style}) mutable.update {it.copy(shareStyle=style)} }
     fun diaryStyle(style:String) { if(mutable.value.busySince==null&&DiaryStyle.entries.any{it.code==style})mutable.update{it.copy(diaryStyle=style)} }
-    fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null,advice=null,arrangement=null) } }
+    fun agenda(enabled:Boolean) {
+        if(mutable.value.busySince!=null)return
+        val owner=mutable.value.owner
+        mutable.update { it.copy(includeAgenda=enabled,preview=null,advice=null,arrangement=null) }
+        scope.launch {repo.dao.save(UiPreferenceRow("local-agent:$owner","agenda",enabled.toString()))}
+    }
     fun consent(enabled:Boolean) {
         if(mutable.value.busySince!=null)return
         val owner=mutable.value.owner
