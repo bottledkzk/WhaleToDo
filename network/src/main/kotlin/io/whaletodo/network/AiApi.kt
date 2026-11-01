@@ -125,6 +125,7 @@ class AiApi(private val client: ApiClient) {
                             category = obj.string("category"),
                             startMs = obj.long("start_ms"),
                             endMs = obj.long("end_ms"),
+                            fixed = obj.bool("fixed") ?: false,
                         )
                     },
                 )

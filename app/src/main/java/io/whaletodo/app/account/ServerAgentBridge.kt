@@ -316,6 +316,10 @@ class ServerAgentBridge(
             val start=change.startMs;val end=change.endMs
             if(start==null||end==null)null else AgentChange.ScheduleTask(change.targetId,start,end)
         }
+        "create_task" -> {
+            val start=change.startMs;val end=change.endMs;val title=change.title;val category=change.category
+            if(start==null||end==null||title==null||category==null)null else AgentChange.CreateTask(change.targetId,title,category,start,end,change.fixed)
+        }
         else -> null
     }
 

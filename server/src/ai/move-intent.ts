@@ -1,4 +1,5 @@
 import {normalizedAgenda} from './agenda.ts';
+import {runtimeTime} from './runtime-time.ts';
 
 type Move={target_id:string;start_ms:number;end_ms:number;timezone:string;schedule_task?:true};
 const clarification={error:'请明确一个事项、日期和开始时间，例如“把阅读移到明天 10:00”'};
@@ -13,7 +14,7 @@ function day(value:string):number|null{
  const n=Date.parse(value+'T00:00:00Z');return Number.isFinite(n)&&new Date(n).toISOString().slice(0,10)===value?n:null;
 }
 /** Compile an explicitly requested local date/clock; never trust model epoch arithmetic. */
-export function requestedMove(context:string,request:string):Move|{error:string}|null {
+export function requestedMove(context:string,request:string,now?:number):Move|{error:string}|null {
  let feedback=request,referenced:string|undefined,referencedTask:string|undefined;
  try{const v=JSON.parse(request);if(typeof v.feedback==='string'){
   feedback=v.feedback;
@@ -36,7 +37,7 @@ export function requestedMove(context:string,request:string):Move|{error:string}
  }
  const parsed=normalizedAgenda(context) as any;
  const agenda=parsed?.agenda&&typeof parsed.agenda==='object'?parsed.agenda:parsed;
- const today=agenda?.date??agenda?.today,zone=agenda?.timezone;
+ const today=now===undefined?(agenda?.date??agenda?.today):runtimeTime(context,now).today,zone=agenda?.timezone;
  if(typeof today!=='string'||day(today)===null||typeof zone!=='string'||!Array.isArray(agenda.blocks)||!Array.isArray(agenda.tasks))return clarification;
  if(agenda.partial)return {error:'日程资料不完整，请缩小读取范围后重试'};
  const matching=agenda.tasks.filter((t:any)=>typeof t.title==='string'&&t.title.trim()&&(feedback.includes(t.title)||feedback.includes(t.id)));

@@ -27,7 +27,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     val state: StateFlow<AssistantState> = mutable.asStateFlow()
     init { scope.launch { bridge.access.collect { access ->
         val owner = access.userId ?: "guest"
-        if(owner != mutable.value.owner) mutable.value=AssistantState(owner=owner,access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,AgentMode.CHAT))
+        if(owner != mutable.value.owner) mutable.value=AssistantState(owner=owner,access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,AgentMode.CHAT),editConsent=repo.dao.options("local-agent:$owner").any{it.key=="edit"&&it.value=="true"})
         else mutable.update { it.copy(access=access,models=bridge.models,model=AgentPolicy.route(bridge.models,access,it.mode)) }
         refreshHistory()
     } } }
@@ -36,17 +36,22 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         mutable.update { if(it.owner==owner) it.copy(sessions=rows) else it }
     }
     fun newSession() { if(mutable.value.busySince!=null)return
-        mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda,diaryStyle=it.diaryStyle) }
+        mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda,editConsent=it.editConsent,diaryStyle=it.diaryStyle) }
     }
-    fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),editConsent=false,preview=null,revision=null,advice=null,arrangement=null) } }
+    fun mode(mode: AgentMode) { if(mutable.value.busySince==null) mutable.update { it.copy(mode=mode,model=AgentPolicy.route(bridge.models,it.access,mode),preview=null,revision=null,advice=null,arrangement=null) } }
     fun style(style: String) { if(ShareStyle.entries.any{it.code==style}) mutable.update {it.copy(shareStyle=style)} }
     fun diaryStyle(style:String) { if(mutable.value.busySince==null&&DiaryStyle.entries.any{it.code==style})mutable.update{it.copy(diaryStyle=style)} }
     fun agenda(enabled:Boolean) { mutable.update { it.copy(includeAgenda=enabled,preview=null,advice=null,arrangement=null) } }
-    fun consent(enabled:Boolean) { mutable.update { it.copy(editConsent=enabled,preview=null) } }
+    fun consent(enabled:Boolean) {
+        if(mutable.value.busySince!=null)return
+        val owner=mutable.value.owner
+        mutable.update { it.copy(editConsent=enabled,preview=null) }
+        scope.launch { repo.dao.save(UiPreferenceRow("local-agent:$owner","edit",enabled.toString())) }
+    }
     fun dismissGate(){ mutable.update { it.copy(gate=null) } }
-    fun dismissPreview(){mutable.update { it.copy(preview=null,revision=null,editConsent=false,notice="已保留原日程") }}
-    fun requestRevision(){mutable.update { it.copy(revision=it.preview,preview=null,editConsent=false) }}
-    fun dismissRevision(){mutable.update { it.copy(revision=null,editConsent=false,notice="已保留原日程") }}
+    fun dismissPreview(){mutable.update { it.copy(preview=null,revision=null,notice="已保留原日程") }}
+    fun requestRevision(){mutable.update { it.copy(revision=it.preview,preview=null) }}
+    fun dismissRevision(){mutable.update { it.copy(revision=null,notice="已保留原日程") }}
     fun dismissArrangement(){mutable.update { it.copy(arrangement=null,notice="已保留原日程") }}
     fun previewAdvice() {
         val advice=mutable.value.advice?:return
@@ -97,7 +102,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     fun openSession(row: AgentSessionRow) { scope.launch {
         if(mutable.value.busySince!=null||row.ownerId!=mutable.value.owner)return@launch
         val messages=repo.dao.messages(row.id,row.ownerId)
-        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,editConsent=false,advice=null,arrangement=null,
+        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,advice=null,arrangement=null,
             pendingId=messages.lastOrNull{m->m.role=="user"&&m.status=="pending"}?.id,
             mode=AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode,
             model=AgentPolicy.route(bridge.models,it.access,AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode)) else it }
@@ -132,7 +137,7 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         val rows=repo.dao.messages(sent.sessionId,sent.ownerId)
         mutable.update {if(it.owner!=sent.ownerId||it.sessionId!=sent.sessionId)it else it.copy(messages=rows,pendingId=null,
             preview=if(canPreview)EditPreview(sent.id,sent.ownerId,source!!,reply.changes,model!!.code)else null,
-            editConsent=false,revision=null,
+            revision=null,
             advice=if(sent.mode==AgentMode.PLAN.code&&source!=null&&sent.snapshotHash==hash(source)&&!reply.continuation&&compiled?.isFailure!=true)PlanAdvice(sent.id,sent.ownerId,sent.sessionId,source,sent.text,display,compiled?.getOrNull())else null,
             arrangement=null,
             notice=if(reply.changes.isNotEmpty()&&!canPreview)"原提案已失效，可重新生成" else if(reply.continuation)"本次内容较长，可缩小范围后继续" else "")}
@@ -161,7 +166,8 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         scope.launch {
             var sent:AgentMessageRow?=null
             try {
-                val snapshot=repo.snapshot(source.owner)
+                val live=repo.snapshot(source.owner)
+                val snapshot=if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)live.copy(date=LiveTime.reflectionDate(draft,live.date))else live
                 // Feedback uses a new request ID; machine context is not rendered as user chat text.
                 val prompt=if(revision==null)draft.trim() else org.json.JSONObject()
                     .put("instruction","原提案未采纳，请结合本次意见生成新的待确认提案")
@@ -171,9 +177,10 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                         is AgentChange.CategorizeTask->{put("type","set_category");put("target_id",change.taskId);put("category",change.category)}
                         is AgentChange.MoveBlock->{put("type","move_block");put("target_id",change.blockId);put("start_ms",change.start);put("end_ms",change.end)}
                         is AgentChange.ScheduleTask->{put("type","schedule_task");put("target_id",change.taskId);put("start_ms",change.start);put("end_ms",change.end)}
+                        is AgentChange.CreateTask->{put("type","create_task");put("target_id",change.key);put("title",change.title);put("category",change.category);put("start_ms",change.start);put("end_ms",change.end);put("fixed",change.fixed)}
                     }}}))
                     .put("feedback",draft.removePrefix("意见：")).toString()
-                val context=if(!source.includeAgenda)"" else if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)
+                val context=if(!source.includeAgenda)org.json.JSONObject().put("timezone",snapshot.zoneId).put("date",snapshot.date.toString()).toString() else if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)
                     reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else if(source.mode.edits)editableAgenda(snapshot) else agendaText(snapshot)
                 val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,prompt,
                     context,source.editConsent,source.shareStyle,
@@ -201,7 +208,9 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
             if(sent==null){mutable.update{it.copy(busySince=null,pendingId=null)};return@launch}
             if(mutable.value.owner!=source.owner||mutable.value.sessionId!=source.sessionId)return@launch
             mutable.update{it.copy(busySince=SystemClock.elapsedRealtime())}
-            try{val reply=withTimeout(60_000){bridge.query(id)};receive(sent,repo.snapshot(source.owner),reply)}
+            try{val reply=withTimeout(60_000){bridge.query(id)};val live=repo.snapshot(source.owner)
+                val target=if(sent.mode==AgentMode.DIARY.code||sent.mode==AgentMode.REVIEW.code)live.copy(date=LiveTime.reflectionDate(sent.text,Instant.ofEpochMilli(sent.created).atZone(ZoneId.of(live.zoneId)).toLocalDate()))else live
+                receive(sent,target,reply)}
             catch(e:CancellationException){if(e is TimeoutCancellationException)failed(sent,e,true)else throw e}
             catch(e:Exception){failed(sent,e,true)}
             finally{mutable.update{if(it.owner==source.owner&&it.sessionId==source.sessionId)it.copy(busySince=null)else it}}
@@ -273,6 +282,10 @@ internal fun EditPreview.lines():List<String> = changes.map { c ->
             val format=java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.of(source.zoneId))
             "新增安排 $title：${format.format(Instant.ofEpochMilli(c.start))} — ${format.format(Instant.ofEpochMilli(c.end))}"
         }
+        is AgentChange.CreateTask -> {
+            val format=java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.of(source.zoneId))
+            "新增 ${c.title}：${format.format(Instant.ofEpochMilli(c.start))} — ${format.format(Instant.ofEpochMilli(c.end))}${if(c.fixed)" · 固定" else ""}"
+        }
     }
 }
 
@@ -281,7 +294,7 @@ internal fun editableAgenda(s:DeskSnapshot):String {
     val zone=ZoneId.of(s.zoneId)
     val windows=DailyWindows.build(s.date,14,zone,DeskOptions.defaults(s.preferences,s.settings),s.workTimes.associate{LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute)},DeskOptions.weekdays(s.preferences))
     val tasks=s.tasks.sortedBy{it.id}.take(100)
-    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",2)
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",3)
         .put("tasks",org.json.JSONArray(tasks.map{org.json.JSONObject().put("id",it.id).put("title",it.title).put("minutes",it.minutes).put("deadline_ms",it.deadline).put("importance",it.importance).put("done",it.done).put("category",it.category)}))
         .put("blocks",org.json.JSONArray(s.blocks.take(100).map{org.json.JSONObject().put("id",it.id).put("task_id",it.taskId).put("start_ms",it.start).put("end_ms",it.end).put("locked",it.locked).put("done",it.done)}))
         .put("available",org.json.JSONArray(windows.map{org.json.JSONObject().put("start_ms",it.start.toEpochMilli()).put("end_ms",it.end.toEpochMilli())}))

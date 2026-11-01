@@ -33,7 +33,7 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  if(body.mode==='edit'||body.model_code==='deepseek-planner'){
  if(!await store.vip(user))throw new ApiError('FORBIDDEN','请开通VIP以使用安排权限',{reason:'VIP_REQUIRED'});
  if(!config.editEnabled||body.model_code!=='deepseek-planner')throw new ApiError('FORBIDDEN','当前暂不支持日程编辑',{reason:'MODEL_NOT_ALLOWED'});
- if(body.mode==='edit'&&body.edit_consent!==true)throw new ApiError('FORBIDDEN','请开启日常编辑',{reason:'CONSENT_REQUIRED'});
+ if(body.mode==='edit'&&body.edit_consent!==true)throw new ApiError('FORBIDDEN','请开启日程编辑',{reason:'CONSENT_REQUIRED'});
  if(body.mode==='edit'&&!body.context?.trim())throw new ApiError('VALIDATION_ERROR','请开启日程读取');
  }
 

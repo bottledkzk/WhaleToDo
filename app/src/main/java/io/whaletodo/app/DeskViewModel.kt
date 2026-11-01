@@ -165,11 +165,13 @@ class DeskViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun arrange() {
+        refreshClock()
         val owner = currentOwner.value
         run { preview.value = repository.preview(owner) }
     }
 
     fun apply() {
+        refreshClock()
         val owner = currentOwner.value
         run {
             preview.value?.let {

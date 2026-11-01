@@ -82,7 +82,7 @@ object Scheduler {
         require(tasks.map { it.id }.distinct().size == tasks.size) { "Duplicate task IDs" }
         val protected = existing.filter { it.done || it.locked || it.window.start <= now }
         val slots = availability.mapNotNull { w ->
-            val start = maxOf(w.start, now)
+            val start = maxOf(w.start, LiveTime.ceilMinute(now))
             if (w.end > start) Window(start, w.end) else null
         }
         var free = subtract(slots, busy + protected.map { it.window })

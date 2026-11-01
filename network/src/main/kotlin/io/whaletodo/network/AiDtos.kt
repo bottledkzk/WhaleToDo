@@ -49,6 +49,7 @@ data class AiChange(
     val category: String?,
     val startMs: Long?,
     val endMs: Long?,
+    val fixed: Boolean = false,
 )
 
 data class AiProposal(val changes: List<AiChange>)
