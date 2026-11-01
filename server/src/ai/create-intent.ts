@@ -15,7 +15,7 @@ export function requestedCreate(context:string,request:string,now=Date.now()):{c
  if(/(?:不要|别|取消)(?:新增|添加|创建|安排)/u.test(text))return {error:'本次要求保持原日程不变'};
  const parsed=normalizedAgenda(context) as any,agenda=parsed?.agenda??parsed;
  if(!agenda||!Array.isArray(agenda.tasks)||!Array.isArray(agenda.blocks)||agenda.partial)return {error:'请开启日程读取并提供完整日程后再新增'};
- if(agenda.action_version!==3)return {error:'请更新应用后使用新增课程或事项功能'};
+ if(![3,4].includes(agenda.action_version))return {error:'请更新应用后使用新增课程或事项功能'};
  const runtime=runtimeTime(context,now),today=runtime.today;
  const normalized=text.replace(/[零〇一二两三四五六七八九十]{1,3}(?=[点时分])/gu,value=>String(number(value)));
  const clocks=[...normalized.matchAll(/(?<!\d)(?:(上午|下午|晚上|中午)\s*)?([01]?\d|2[0-3])(?::([0-5]\d)|[点时](?:(半)|([0-5]?\d)分?)?)(?![:\d])/gu)];

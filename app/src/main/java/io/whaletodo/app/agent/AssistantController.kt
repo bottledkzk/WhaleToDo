@@ -17,7 +17,8 @@ data class AssistantState(val owner: String = "guest", val access: AgentAccess =
     val models: List<AgentModel> = emptyList(), val shareStyle: String = "minimal", val diaryStyle: String = DiaryStyle.CONCISE.code, val includeAgenda: Boolean = true, val editConsent: Boolean = false,
     val messages: List<AgentMessageRow> = emptyList(), val sessions: List<AgentSessionRow> = emptyList(),
     val pendingId: String? = null, val busySince: Long? = null, val gate: GateReason? = null, val notice: String = "", val preview: EditPreview? = null, val revision: EditPreview? = null,
-    val advice: PlanAdvice? = null, val arrangement: AdvicePreview? = null)
+    val advice: PlanAdvice? = null, val arrangement: AdvicePreview? = null,
+    val attachment:String?=null,val localPictures:Map<String,String> = emptyMap())
 
 class AssistantController(private val repo: DeskRepository, private val scope: CoroutineScope,
     private val bridge: AgentBridge = AgentBridgeHub.bridge,
@@ -33,7 +34,8 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     } } }
     private suspend fun refreshHistory() {
         val owner=mutable.value.owner;val rows=repo.dao.sessions(owner)
-        mutable.update { if(it.owner==owner) it.copy(sessions=rows) else it }
+        val pictures=repo.dao.options("local-agent:$owner").filter{it.key.startsWith("image-message:")}.associate{it.key.removePrefix("image-message:") to it.value}
+        mutable.update { if(it.owner==owner) it.copy(sessions=rows,localPictures=pictures) else it }
     }
     fun newSession() { if(mutable.value.busySince!=null)return
         mutable.update { AssistantState(owner=it.owner,access=it.access,models=bridge.models,mode=it.mode,model=it.model,includeAgenda=it.includeAgenda,editConsent=it.editConsent,diaryStyle=it.diaryStyle) }
@@ -48,6 +50,10 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
         mutable.update { it.copy(editConsent=enabled,preview=null) }
         scope.launch { repo.dao.save(UiPreferenceRow("local-agent:$owner","edit",enabled.toString())) }
     }
+    fun picture(path:String?,owner:String=mutable.value.owner,session:String=mutable.value.sessionId) {
+        mutable.update { if(it.owner==owner&&it.sessionId==session&&it.busySince==null)it.copy(attachment=path)else it }
+    }
+    fun pictureError(){mutable.update{it.copy(notice="无法读取图片，请重新选择")}}
     fun dismissGate(){ mutable.update { it.copy(gate=null) } }
     fun dismissPreview(){mutable.update { it.copy(preview=null,revision=null,notice="已保留原日程") }}
     fun requestRevision(){mutable.update { it.copy(revision=it.preview,preview=null) }}
@@ -102,7 +108,8 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     fun openSession(row: AgentSessionRow) { scope.launch {
         if(mutable.value.busySince!=null||row.ownerId!=mutable.value.owner)return@launch
         val messages=repo.dao.messages(row.id,row.ownerId)
-        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,advice=null,arrangement=null,
+        val pictures=repo.dao.options("local-agent:${row.ownerId}").filter{it.key.startsWith("image-message:")}.associate{it.key.removePrefix("image-message:") to it.value}
+        mutable.update { if(it.owner==row.ownerId)it.copy(sessionId=row.id,title=row.title,messages=messages,preview=null,revision=null,advice=null,arrangement=null,localPictures=pictures,attachment=messages.lastOrNull{m->m.id in pictures}?.let{m->pictures[m.id]},
             pendingId=messages.lastOrNull{m->m.role=="user"&&m.status=="pending"}?.id,
             mode=AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode,
             model=AgentPolicy.route(bridge.models,it.access,AgentMode.entries.find{m->m.code==messages.lastOrNull{it.role=="user"}?.mode}?:it.mode)) else it }
@@ -158,7 +165,8 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
     }
     fun send(draft:String, revision:EditPreview?=null) {
         val source=mutable.value
-        if(source.busySince!=null||source.pendingId!=null||draft.isBlank())return
+        if(source.busySince!=null||source.pendingId!=null||draft.isBlank()&&source.attachment==null)return
+        if(source.attachment!=null&&source.mode !in setOf(AgentMode.CHAT,AgentMode.PLAN,AgentMode.EDIT)){mutable.update{it.copy(notice="请在聊天、计划建议或日程编辑中使用图片")};return}
         if(source.mode.edits&&!source.includeAgenda){mutable.update{it.copy(notice="请开启日程读取后生成提案")};return}
         val gate=AgentPolicy.gate(source.access,source.mode,source.model,source.editConsent)
         if(gate!=null){mutable.update{it.copy(gate=gate)};return}
@@ -169,7 +177,9 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                 val live=repo.snapshot(source.owner)
                 val snapshot=if(source.mode==AgentMode.DIARY||source.mode==AgentMode.REVIEW)live.copy(date=LiveTime.reflectionDate(draft,live.date))else live
                 // Feedback uses a new request ID; machine context is not rendered as user chat text.
-                val prompt=if(revision==null)draft.trim() else org.json.JSONObject()
+                val requested=draft.trim().ifBlank{if(source.mode.edits)"请识别这张课表并生成待确认的日程提案" else "请查看这张图片"}
+                val image=source.attachment?.let{path->val bytes=java.io.File(path).readBytes();require(bytes.size<=AssistantPictures.MAX_BYTES);AssistantImage("image/jpeg",java.util.Base64.getEncoder().encodeToString(bytes))}
+                val prompt=if(revision==null)requested else org.json.JSONObject()
                     .put("instruction","原提案未采纳，请结合本次意见生成新的待确认提案")
                     .put("unaccepted_proposal",org.json.JSONArray(revision.lines()))
                     .put("unaccepted_changes",org.json.JSONArray(revision.changes.map{change->org.json.JSONObject().apply{when(change){
@@ -184,12 +194,13 @@ class AssistantController(private val repo: DeskRepository, private val scope: C
                     reflectionFacts(snapshot,repo.dao.checkIns(source.owner),source.owner,source.mode==AgentMode.REVIEW) else if(source.mode.edits)editableAgenda(snapshot) else agendaText(snapshot)
                 val request=AssistantRequest(UUID.randomUUID().toString(),source.mode.code,source.model.code,prompt,
                     context,source.editConsent,source.shareStyle,
-                    source.messages.filter{it.status=="complete"}.takeLast(12).map{it.role to it.text},source.owner,source.diaryStyle)
-                sent=AgentMessageRow(request.id,source.sessionId,source.owner,"user",source.mode.code,draft.trim(),
+                    source.messages.filter{it.status=="complete"}.takeLast(if(image==null)12 else 4).map{it.role to it.text},source.owner,source.diaryStyle,image)
+                sent=AgentMessageRow(request.id,source.sessionId,source.owner,"user",source.mode.code,requested,
                     System.currentTimeMillis(),status="pending",snapshotHash=hash(snapshot),modelCode=source.model.code,editGranted=source.editConsent)
-                saveMessage(sent,draft)
+                saveMessage(sent,requested)
+                source.attachment?.let {repo.dao.save(UiPreferenceRow("local-agent:${source.owner}","image-message:${request.id}",it))}
                 if(mutable.value.owner!=source.owner)return@launch
-                mutable.update{it.copy(messages=it.messages+sent,title=if(it.title=="新对话")draft.take(28)else it.title)}
+                mutable.update{it.copy(messages=it.messages+sent,title=if(it.title=="新对话")requested.take(28)else it.title,localPictures=if(source.attachment!=null)it.localPictures+(request.id to source.attachment)else it.localPictures)}
                 check(bridge.access.value.userId==source.access.userId) { "账户已切换" }
                 val reply=withTimeout(60_000){bridge.reply(request)}
                 receive(sent,snapshot,reply)
@@ -294,7 +305,7 @@ internal fun editableAgenda(s:DeskSnapshot):String {
     val zone=ZoneId.of(s.zoneId)
     val windows=DailyWindows.build(s.date,14,zone,DeskOptions.defaults(s.preferences,s.settings),s.workTimes.associate{LocalDate.parse(it.date) to MinuteRange(it.startMinute,it.endMinute)},DeskOptions.weekdays(s.preferences))
     val tasks=s.tasks.sortedBy{it.id}.take(100)
-    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",3)
+    return org.json.JSONObject().put("date",s.date.toString()).put("timezone",s.zoneId).put("action_version",4)
         .put("tasks",org.json.JSONArray(tasks.map{org.json.JSONObject().put("id",it.id).put("title",it.title).put("minutes",it.minutes).put("deadline_ms",it.deadline).put("importance",it.importance).put("done",it.done).put("category",it.category)}))
         .put("blocks",org.json.JSONArray(s.blocks.take(100).map{org.json.JSONObject().put("id",it.id).put("task_id",it.taskId).put("start_ms",it.start).put("end_ms",it.end).put("locked",it.locked).put("done",it.done)}))
         .put("available",org.json.JSONArray(windows.map{org.json.JSONObject().put("start_ms",it.start.toEpochMilli()).put("end_ms",it.end.toEpochMilli())}))

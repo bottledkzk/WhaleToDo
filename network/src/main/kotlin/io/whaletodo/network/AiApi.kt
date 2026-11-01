@@ -62,6 +62,7 @@ class AiApi(private val client: ApiClient) {
             put("model_code", request.modelCode)
             put("prompt", request.prompt)
             put("context", request.context)
+            request.image?.let { image -> put("image",buildJsonObject {put("mime_type",image.mimeType);put("data",image.data)}) }
             put("edit_consent", request.editConsent)
             put("share_style", request.shareStyle)
             if (request.mode == "diary") put("diary_style", request.diaryStyle ?: "concise")

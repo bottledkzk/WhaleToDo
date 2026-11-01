@@ -6,6 +6,7 @@ import { ApiError } from '../lib/security.ts';
 import type { AiConfig } from './config.ts';
 import { AiStore,type AiRow } from './store.ts';
 import { callDeepSeek,prepareInput,ProviderFailure,MODES,type AiInput,type ModelReply } from './provider.ts';
+import {validateImage} from './image-input.ts';
 export function requestView(row:AiRow){return {id:row.client_request_id,status:row.status,mode:row.mode,
  text:row.response_text==null?null:publicAssistantText(row.response_text),usage_tokens:row.usage_tokens,usage_k:formatK(row.usage_tokens??0),input_tokens:row.input_tokens,output_tokens:row.output_tokens,points_reserved:row.points,points_charged:row.charged_points,tokens_per_point:row.tokens_per_point,billing_strategy:row.billing_strategy??'per_request',continuation:row.continuation,context_compacted:row.compacted,proposal:row.proposal,error_code:row.error_code,created_at:row.created_at.toISOString()};}
 export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput)=>Promise<ModelReply>=(input)=>callDeepSeek(config,input)){
@@ -26,9 +27,14 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  const uuid={type:'string',format:'uuid'};
  app.post<{Body:AiInput}>('/api/v1/ai/requests',{schema:{body:{type:'object',additionalProperties:false,
  required:['client_request_id','mode','prompt','model_code'],properties:{client_request_id:uuid,mode:{type:'string',enum:MODES},
- model_code:{type:'string',enum:['deepseek-default','deepseek-planner']},prompt:{type:'string',minLength:1,maxLength:16000},context:{type:'string',maxLength:100000},edit_consent:{type:'boolean'},share_style:{type:'string',enum:['github','healing','literary','minimal','ornate','starry','red','fitness']},diary_style:{type:'string',enum:DIARY_STYLES},history:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,required:['role','content'],properties:{role:{type:'string',enum:['user','assistant']},content:{type:'string',maxLength:16000}}}}}}}},async(req,reply)=>{
+ model_code:{type:'string',enum:['deepseek-default','deepseek-planner']},prompt:{type:'string',minLength:1,maxLength:16000},context:{type:'string',maxLength:100000},image:{type:'object',additionalProperties:false,required:['mime_type','data'],properties:{mime_type:{type:'string',enum:['image/jpeg']},data:{type:'string',minLength:16,maxLength:174764}}},edit_consent:{type:'boolean'},share_style:{type:'string',enum:['github','healing','literary','minimal','ornate','starry','red','fitness']},diary_style:{type:'string',enum:DIARY_STYLES},history:{type:'array',maxItems:16,items:{type:'object',additionalProperties:false,required:['role','content'],properties:{role:{type:'string',enum:['user','assistant']},content:{type:'string',maxLength:16000}}}}}}}},async(req,reply)=>{
  const user=await auth(req.headers.authorization);const body=req.body;
  if(!body.prompt.trim())throw new ApiError('VALIDATION_ERROR','请输入内容');
+ if(body.image) {
+  if(!['chat','plan','edit'].includes(body.mode))throw new ApiError('VALIDATION_ERROR','请在聊天、计划建议或日程编辑中使用图片');
+  try {validateImage(body.image);}catch {throw new ApiError('VALIDATION_ERROR','图片格式或大小不符合要求，请重新选择');}
+  if(body.mode==='edit'){let valid=false;try {valid=JSON.parse(body.context??'').action_version===4;}catch{/* invalid agenda */}if(!valid)throw new ApiError('VALIDATION_ERROR','请更新应用并开启日程读取后导入课表');}
+ }
  if(body.diary_style!==undefined&&body.mode!=='diary')throw new ApiError('VALIDATION_ERROR','日记风格仅用于日记');
  if(body.mode==='edit'||body.model_code==='deepseek-planner'){
  if(!await store.vip(user))throw new ApiError('FORBIDDEN','请开通VIP以使用安排权限',{reason:'VIP_REQUIRED'});
@@ -39,7 +45,7 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
 
  // Rebuild a canonical supported-field object. Caller cannot set role, model URL, token limit or wallet.
  let input:AiInput;
- try{input=prepareInput({client_request_id:body.client_request_id,mode:body.mode,prompt:body.prompt,context:body.context??'',model_code:body.model_code,edit_consent:body.edit_consent??false,share_style:body.share_style??'minimal',diary_style:body.diary_style,history:body.history??[]});}
+ try{input=prepareInput({client_request_id:body.client_request_id,mode:body.mode,prompt:body.prompt,context:body.context??'',model_code:body.model_code,edit_consent:body.edit_consent??false,share_style:body.share_style??'minimal',diary_style:body.diary_style,history:body.history??[],...(body.image?{image:body.image}:{})});}
  catch {throw new ApiError('VALIDATION_ERROR','内容过长，请分段或缩小日程范围');}
  const admission=await store.reserve(user,input,config);
  if(!admission.fresh)return reply.code(['reserved','running','unknown'].includes(admission.row.status)?202:200).send({request_id:req.id,data:requestView(admission.row)});
