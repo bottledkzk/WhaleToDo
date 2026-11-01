@@ -5,7 +5,6 @@ import { Pool } from 'pg';
 import { AiStore } from '../src/ai/store.ts';
 import { buildAiApp } from '../src/ai/app.ts';
 import { ProviderFailure,type AiInput } from '../src/ai/provider.ts';
-import { tokenReservation } from '../src/ai/provider.ts';
 import { hashPassword } from '../src/lib/security.ts';
 import type { AiConfig } from '../src/ai/config.ts';
 const url=process.env.VERIFY_DATABASE_URL!;
@@ -15,8 +14,8 @@ const appDb=new Pool({connectionString:process.env.VERIFY_APP_URL!,max:2});
 const store=new AiStore(process.env.VERIFY_AI_URL!);
 const users:string[]=[];const tokens:string[]=[];
 const hash=hashPassword('Synthetic-integration-password');
-const config={model:'deepseek-flash',maxOutput:2048,timeoutMs:1000,userDailyCalls:100,globalDailyCalls:1000,
- userDailyTokens:500000,globalDailyTokens:2000000,businessTimezone:'Asia/Shanghai',tokensPerPoint:10000,editEnabled:true} as AiConfig;
+const config={model:'deepseek-flash',maxOutput:2048,timeoutMs:1000,
+ businessTimezone:'Asia/Shanghai',tokensPerPoint:10000,editEnabled:true} as AiConfig;
 function input():AiInput{return {client_request_id:randomUUID(),mode:'chat',prompt:'合成验证，只需简短学习建议',context:'',model_code:'deepseek-default'};}
 before(async()=>{await owner.query('SELECT 1');});
 beforeEach(async()=>{
@@ -90,17 +89,16 @@ test('anonymous/expired/disabled accounts cannot invoke models; client cannot in
  assert.equal((await app.inject({method:'POST',url:'/api/v1/ai/requests',payload,headers:{authorization:`Bearer ${tokens[1]}`}})).statusCode,401);
  assert.equal(calls,0);await app.close();
 });
-test('daily allowance is enforced atomically and success cannot settle twice',async()=>{
- const row=(await store.reserve(users[0]!,input(),{...config,userDailyCalls:1})).row;
+test('success cannot settle twice and another call is admitted',async()=>{
+ const row=(await store.reserve(users[0]!,input(),config)).row;
  await store.finish(row.id,'succeeded',{text:'Synthetic',tokens:10});await store.finish(row.id,'failed');
- await assert.rejects(store.reserve(users[0]!,input(),{...config,userDailyCalls:1}),/限制/);
  const w=(await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[0]])).rows[0];assert.deepEqual(w,{available:4,reserved:0});
+ assert.equal((await store.reserve(users[0]!,input(),config)).fresh,true);
 });
 
-test('missing signup points fails closed; budgets and restart uncertainty remain conservative',async()=>{
+test('missing points fails closed and restart uncertainty retains the reservation',async()=>{
  await owner.query('UPDATE point_wallets SET available=0 WHERE user_id=$1',[users[0]]);
  await assert.rejects(store.reserve(users[0]!,input(),config),/签到/);
- await assert.rejects(store.reserve(users[1]!,input(),{...config,userDailyTokens:1}),/限制/);
  const row=(await store.reserve(users[1]!,input(),config)).row;await store.running(row.id);await store.recover();
  assert.equal((await store.get(users[1]!,row.client_request_id))?.status,'unknown');
  const w=(await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[1]])).rows[0];assert.deepEqual(w,{available:4,reserved:1});
@@ -143,8 +141,31 @@ test('unusable completed output refunds points but keeps actual provider usage a
   const replay=await app.inject(request);assert.equal(replay.statusCode,200);assert.equal(replay.json().data.status,'failed');assert.equal(calls,1);
   assert.deepEqual((await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[0]])).rows[0],{available:20,reserved:0});
   const usage=await store.usage(users[0]!,config.businessTimezone);assert.equal(usage.total_tokens,350);assert.equal(usage.charged_points,0);
-  const next=input();await assert.rejects(store.reserve(users[0]!,next,{...policy,userDailyTokens:tokenReservation(next,policy.maxOutput)+349}),/限制/);
+  assert.equal((await store.reserve(users[0]!,input(),policy)).fresh,true);
  }finally{await app.close();}
+});
+
+test('completed calls and daily tokens do not impose account or global quotas',async()=>{
+ await owner.query('UPDATE point_wallets SET available=200 WHERE user_id=$1',[users[0]]);
+ for(let i=0;i<60;i++){
+  const row=(await store.reserve(users[0]!,input(),config)).row;
+  await store.finish(row.id,'succeeded',{text:'Synthetic',tokens:4096});
+ }
+ const usage=await store.usage(users[0]!,config.businessTimezone);
+ assert.equal(usage.requests,60);assert.equal(usage.total_tokens,245760);
+ assert.equal((await store.reserve(users[0]!,input(),config)).fresh,true);
+ assert.equal((await store.reserve(users[1]!,input(),config)).fresh,true);
+});
+
+test('more than two in-flight requests and three recent calls are admitted without duplicate reservations',async()=>{
+ await owner.query('UPDATE point_wallets SET available=100 WHERE user_id=$1',[users[0]]);
+ const replies=await Promise.all(Array.from({length:8},()=>store.reserve(users[0]!,input(),config)));
+ assert.equal(replies.length,8);assert.equal(replies.every(r=>r.fresh),true);
+ const pending=(await owner.query("SELECT count(*)::int n FROM ai_requests WHERE status='reserved'")).rows[0].n;
+ assert.equal(pending,8);
+ const duplicate=input();
+ const replay=await Promise.all(Array.from({length:4},()=>store.reserve(users[1]!,duplicate,config)));
+ assert.equal(replay.filter(r=>r.fresh).length,1);assert.equal(new Set(replay.map(r=>r.row.id)).size,1);
 });
 
 test('concurrent cumulative finishes serialize the wallet and preserve one total charge',async()=>{

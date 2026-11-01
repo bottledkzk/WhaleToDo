@@ -24,20 +24,11 @@ export class AiStore {
  async reserve(userId:string,input:AiInput,config:AiConfig):Promise<{row:AiRow;fresh:boolean}> {
  const fingerprint=input.sourceFingerprint??createHash('sha256').update(JSON.stringify(input)).digest('hex');
  return this.transaction(async db=>{
- // Serialize admission checks across both workers and future API processes.
- await db.query('SELECT pg_advisory_xact_lock(28102301)');
+ // Serialize this wallet's idempotent reservation, never the provider call.
+ await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,28102301))',[userId]);
  const old=await db.query<AiRow>('SELECT * FROM ai_requests WHERE user_id=$1 AND client_request_id=$2',[userId,input.client_request_id]);
  if(old.rows[0]){if(old.rows[0].fingerprint!==fingerprint)throw new ApiError('CONFLICT','相同请求编号的内容不同');return {row:old.rows[0],fresh:false};}
- const limits=await db.query(`SELECT count(*)::int AS calls, count(*) FILTER(WHERE user_id=$1)::int AS user_calls,
- COALESCE(sum(CASE WHEN status IN ('failed','succeeded') THEN COALESCE(usage_tokens,0) ELSE budget_tokens END),0)::int AS tokens,
- COALESCE(sum(CASE WHEN status IN ('failed','succeeded') THEN COALESCE(usage_tokens,0) ELSE budget_tokens END) FILTER(WHERE user_id=$1),0)::int AS user_tokens
- FROM ai_requests WHERE created_at >= (date_trunc('day',now() AT TIME ZONE $2) AT TIME ZONE $2)`,[userId,config.businessTimezone]);
- const active=await db.query("SELECT count(*)::int AS n FROM ai_requests WHERE status IN ('reserved','running')");
- const recent=await db.query('SELECT count(*)::int AS n FROM ai_requests WHERE user_id=$1 AND created_at>now()-interval \'1 minute\'',[userId]);
- const q=limits.rows[0];const budget=tokenReservation(input,config.maxOutput);
- if(q.calls>=config.globalDailyCalls||q.user_calls>=config.userDailyCalls||q.tokens+budget>config.globalDailyTokens||
- q.user_tokens+budget>config.userDailyTokens||active.rows[0].n>=2||recent.rows[0].n>=3)
- throw new ApiError('RATE_LIMITED','已达到本次演示的调用或用量限制');
+ const budget=tokenReservation(input,config.maxOutput);
  const rate=config.tokensPerPoint??1000;const points=Math.max(1,Math.ceil(budget/rate));
  const wallet=await db.query('UPDATE point_wallets SET available=available-$2,reserved=reserved+$2,updated_at=now() WHERE user_id=$1 AND available>=$2 RETURNING available,reserved',[userId,points]);
  if(!wallet.rowCount)throw new ApiError('INSUFFICIENT_POINTS',`请先签到领取积分；本次最多预占${points}积分，成功后按实际用量结算`,{required_points:points,tokens_per_point:rate});
