@@ -17,6 +17,10 @@ internal object AgentErrorMapping {
         reason: String?,
         requestId: String,
     ): Exception = when {
+        status == 400 -> AgentServiceException(true, definitelyNotSent = true,
+            userMessage = "图片或内容格式不正确，请重新选择图片或调整输入")
+        status == 413 -> AgentServiceException(true, definitelyNotSent = true,
+            userMessage = "图片或内容过大，请缩小图片后重试")
         status == 401 -> AgentGateException(GateReason.LOGIN, definitelyNotSent = true)
         status == 402 -> AgentGateException(GateReason.POINTS, definitelyNotSent = true)
         status == 403 -> when (reason) {
