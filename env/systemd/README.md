@@ -6,7 +6,7 @@
 
 AI服务使用独立系统用户、回环8081、160MiB内存上限。运行时固定Node24.15.0，下载应核对官方SHASUMS。
 
-`LoadCredential` 读取root专属文件：DeepSeek Key与AI数据库URL；密钥不作为命令行参数、仓库内容或普通.env。`ai-limits.env.example`只有非秘密限额。不要在日志中输出凭据、Authorization、原始请求/上游响应。
+`LoadCredential` 读取root专属文件：DeepSeek Key与AI数据库URL；密钥不作为命令行参数、仓库内容或普通.env。`ai-limits.env.example`保留非秘密的模型、单次请求与计费设置；网关不设置调用次数、每日token或并发数量配额，旧版四个日配额环境变量不再读取。不要在日志中输出凭据、Authorization、原始请求/上游响应。
 
 先完成数据库迁移/权限和后端验证，再设置 `/opt/whaletodo/current` 指向经过验证的release。运行目录不可由服务用户写入。Nginx的AI snippet仅用于TLS虚拟主机，不要在HTTP上代理令牌请求。
 
