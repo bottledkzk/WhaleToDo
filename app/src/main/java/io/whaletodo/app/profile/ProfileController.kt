@@ -56,6 +56,14 @@ class ProfileController(private val repo:DeskRepository,private val scope:Corout
     fun back(){if(mutable.value.dialog!=MyDialog.NONE)dismiss() else navigate(if(mutable.value.page==MyPageRoute.SETTINGS)MyPageRoute.HOME else MyPageRoute.SETTINGS)}
     fun clearNotice(){mutable.update{it.copy(notice="")}}
     fun clearError(){mutable.update{it.copy(error="")}}
+    fun timedReminder(title:String,method:String,afterMinutes:Long?=null,atMillis:Long?=null)=action("请检查提醒内容和时间") {owner->
+        check(mutable.value.owner==owner)
+        val at=repo.timedReminder(owner,title,method,afterMinutes,atMillis)
+        onRemindersChanged()
+        val zone=ZoneId.of(repo.snapshot(owner).zoneId)
+        val clock=java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss").withZone(zone).format(Instant.ofEpochMilli(at))
+        mutable.update{if(it.owner==owner)it.copy(dialog=MyDialog.NONE,notice="将在 $clock 提醒")else it}
+    }
     fun option(key:String,default:String="")=mutable.value.options.find{it.key==key}?.value?:default
     private fun action(error:String="暂时无法完成，请稍后重试",block:suspend (String)->Unit) {
         val owner=mutable.value.owner;if(mutable.value.busy)return

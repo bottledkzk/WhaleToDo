@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.media.AudioAttributes
 import io.whaletodo.app.data.DeskDao
 import io.whaletodo.app.data.DeskDatabase
 import io.whaletodo.core.ReminderOwnerItem
@@ -49,20 +50,22 @@ object ReminderCenter {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID_MESSAGE,
+                ReminderSounds.channelId(context,SoundKind.MESSAGE),
                 "待办提醒（消息）",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = "以普通通知提示事务开始与结束"
+                setSound(ReminderSounds.uri(context,SoundKind.MESSAGE),AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())
             },
         )
         manager.createNotificationChannel(
             NotificationChannel(
-                CHANNEL_ID_ALARM,
+                ReminderSounds.channelId(context,SoundKind.ALARM),
                 "待办提醒（闹钟）",
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
                 description = "以高优先级通知提示事务开始与结束"
+                setSound(ReminderSounds.uri(context,SoundKind.ALARM),AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
             },
         )
         // 旧的单一 HIGH channel 不再使用，删除后由新 channel 接管。
@@ -74,6 +77,7 @@ object ReminderCenter {
         "alarm", "both" -> CHANNEL_ID_ALARM
         else -> CHANNEL_ID_MESSAGE
     }
+    internal fun channelFor(context:Context,method:String?)=ReminderSounds.channelId(context,if(method=="alarm"||method=="both")SoundKind.ALARM else SoundKind.MESSAGE)
 
     fun notificationPermissionRequested(context: Context): Boolean =
         prefs(context).getBoolean(KEY_NOTIFICATION_REQUESTED, false)
@@ -135,6 +139,7 @@ object ReminderCenter {
             val tasks = dao.tasks(active).filterNot { it.done }.associateBy { it.id }
             val blocksByTask = dao.blocks(active).filterNot { it.done }.groupBy { it.taskId }
             val enabled = dao.enabledReminders()
+            AlarmRingingService.reconcile(app,active,enabled.filter{it.ownerId==active&&it.enabled&&it.taskId in tasks}.map{it.taskId}.toSet())
             val selected = ReminderSelector.select(
                 enabled.map { ReminderOwnerItem(it.ownerId, it.taskId) },
                 active,
@@ -198,7 +203,7 @@ object ReminderCenter {
     }
 
     private fun schedule(alarmManager: AlarmManager, atMillis: Long, pending: PendingIntent) {
-        if (Build.VERSION.SDK_INT >= 31 && alarmManager.canScheduleExactAlarms()) {
+        if (Build.VERSION.SDK_INT < 31 || alarmManager.canScheduleExactAlarms()) {
             try {
                 alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMillis, pending)
                 return

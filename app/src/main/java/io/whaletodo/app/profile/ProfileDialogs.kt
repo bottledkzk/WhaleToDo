@@ -199,6 +199,8 @@ import kotlinx.coroutines.delay
     if(timing!=null){Text("提醒时间",style=MaterialTheme.typography.labelLarge);ReminderTiming.entries.forEach{t->Row(Modifier.fillMaxWidth().clickable{onTiming(t.code)},verticalAlignment=Alignment.CenterVertically){RadioButton(timing==t.code,{onTiming(t.code)});Text(t.label)}}}
 }
 @Composable private fun ReminderDefaultsDialog(s:ProfileState,c:ProfileController){
+    var creating by remember{mutableStateOf(false)}
+    if(creating){TimedReminderDialog(s,c){creating=false};return}
     fun option(key:String,default:String)=s.options.find{it.key==key}?.value?:default
     val context=LocalContext.current
     val notificationsAllowed=NotificationManagerCompat.from(context).areNotificationsEnabled()&&
@@ -214,7 +216,10 @@ import kotlinx.coroutines.delay
         if(enabled){ReminderChoices(method,{method=it});Text("覆盖范围",style=MaterialTheme.typography.labelLarge)
             FilterChip(stars==0,{stars=0},{Text("全部事务")})
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){(1..5).forEach{n->FilterChip(stars==n,{stars=n},{Text("≥$n★",fontSize=11.sp)},modifier=Modifier.weight(1f),shape=RoundedCornerShape(10.dp))}}
-        };DialogError(s)
+        }
+        io.whaletodo.app.reminder.ReminderSoundControls()
+        OutlinedButton(onClick={creating=true},enabled=notificationsAllowed&&!s.busy,modifier=Modifier.fillMaxWidth()){Text("设置提醒")}
+        DialogError(s)
     }},confirmButton={TextButton(onClick={c.saveReminderDefaults(enabled,method,stars)},enabled=!s.busy){Text("保存偏好")}},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("取消")}})
 }
 @Composable private fun DiaryDialog(s:ProfileState,c:ProfileController){val d=s.diary?:return

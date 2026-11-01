@@ -42,7 +42,7 @@ internal data class DeviceCompatibility(
                 androidVersion = Build.VERSION.RELEASE,
                 api = Build.VERSION.SDK_INT,
                 notificationsAllowed = notificationPermission && NotificationManagerCompat.from(context).areNotificationsEnabled(),
-                exactAlarmsAllowed = Build.VERSION.SDK_INT >= 31 && runCatching { alarms.canScheduleExactAlarms() }.getOrDefault(false),
+                exactAlarmsAllowed = Build.VERSION.SDK_INT < 31 || runCatching { alarms.canScheduleExactAlarms() }.getOrDefault(false),
                 batteryExempt = power.isIgnoringBatteryOptimizations(context.packageName),
                 cameraAllowed = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED,
             )

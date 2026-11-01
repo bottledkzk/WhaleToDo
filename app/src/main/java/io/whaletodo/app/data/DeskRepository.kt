@@ -264,6 +264,16 @@ class DeskRepository(private val db: DeskDatabase) {
         require(ReminderMethod.entries.any{it.code==row.method}&&ReminderTiming.entries.any{it.code==row.timing})
         dao.save(row)
     }
+    suspend fun timedReminder(owner:String,title:String,method:String,afterMinutes:Long?=null,atMillis:Long?=null,now:Long=System.currentTimeMillis()):Long = db.withTransaction {
+        require(owner.isNotBlank()&&title.trim().length in 1..120&&ReminderMethod.entries.any{it.code==method})
+        require((afterMinutes==null)!=(atMillis==null))
+        val at=if(afterMinutes!=null){require(afterMinutes in 1..525600);Math.addExact(now,Math.multiplyExact(afterMinutes,60_000L))}else requireNotNull(atMillis)
+        require(at>now){"请选择未来的提醒时间"}
+        val task=TaskRow(UUID.randomUUID().toString(),title.trim(),deadline=at,ownerId=owner)
+        save(task,owner)
+        saveReminder(TaskReminderRow(owner,task.id,true,method,"end"))
+        at
+    }
 
     suspend fun preview(owner: String = "guest"): PlanPreview = db.withTransaction {
         val source = snapshot(owner)
