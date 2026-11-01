@@ -19,7 +19,7 @@ import io.whaletodo.core.GateReason
 @Composable fun AccessDialog(reason:GateReason,dismiss:()->Unit,onAccount:()->Unit,
     onVip:()->Unit=onAccount,onPoints:()->Unit=onAccount,onConsent:()->Unit={},onTrial:(()->Unit)?=null) {
     val title=when(reason){GateReason.LOGIN->"登录后继续";GateReason.VIP->"开通 VIP";GateReason.POINTS->"积分不足";
-        GateReason.CONSENT->"开启日常编辑？";GateReason.MODEL->"暂不支持日程编辑";GateReason.CONNECTION->"连接尚未就绪"}
+        GateReason.CONSENT->"开启日程编辑？";GateReason.MODEL->"暂不支持日程编辑";GateReason.CONNECTION->"连接尚未就绪"}
     val text=when(reason){GateReason.LOGIN->"登录后可使用助手和分享";GateReason.VIP->if(onTrial!=null)"此模板需要会员权益，也可使用积分试用" else "此功能需要会员权益";
         GateReason.POINTS->"请先签到领取积分，或查看账户余额";GateReason.CONSENT->"助手只会生成变更提案，采用前仍需你确认";
         GateReason.MODEL->"日程编辑暂不可用，请先使用计划建议";GateReason.CONNECTION->"暂时无法连接，请稍后再试"}

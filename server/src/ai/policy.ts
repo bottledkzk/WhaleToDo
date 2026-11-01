@@ -1,9 +1,9 @@
 import {diaryStylePrompt,diaryProse,type DiaryStyle} from './diary-prose.ts';
 import { createHash } from 'node:crypto';
-export const PROMPT_VERSION='agent-20261031-v12';
+export const PROMPT_VERSION='agent-20261101-v13';
 export const MODES=['chat','plan','review','diary','share_copy','edit'] as const;
 export type Mode=typeof MODES[number];
-export interface EditChange {type:'rename_task'|'set_category'|'move_block'|'schedule_task';target_id:string;title?:string;category?:string;start_ms?:number;end_ms?:number}
+export interface EditChange {type:'rename_task'|'set_category'|'move_block'|'schedule_task'|'create_task';target_id:string;title?:string;category?:string;start_ms?:number;end_ms?:number;fixed?:boolean}
 export interface CompactResult {text:string;omitted:number}
 /** Only complete segments are retained; unsegmented oversized input is rejected before provider billing. */
 export function softCompact(text:string,maxBytes:number):CompactResult {
@@ -38,7 +38,7 @@ export function systemPrompt(mode:Mode,shareStyle:string="minimal",diaryStyle:Di
  review:readOnly+'根据日程与已完成信息复盘，区分事实和推测。进展、障碍、下一步各一段，预计工时不能写成实际耗时，完成状态不能证明完成日期；按所附日期的真实打卡复盘。date是用户当地复盘日期，timezone是用户时区，completed_local是已经换算好的当地完成时刻，必须优先使用；completed_at带偏移量时不得忽略该偏移量改用UTC日期，不把跨UTC午夜的记录写成用户的前一天或其他时段。没有当地时刻时只写所附日期，不推测早晚。约400字。',
  diary:readOnly+diaryStylePrompt(diaryStyle),
  share_copy:readOnly+'生成3条分享短句，每条不超过50字，避免账户、地点、私人备注和未证实的个人经历。30分钟不代表30页，来源没有页数时绝不出现任何数字页数，连比喻中的“三十页之外”也禁止。不得补造页数、心情、灯下或今晚等场景；意象必须明确写为比喻（像、仿佛），不得写成实际经历。只输出JSON对象{"copies":["第一条短句","第二条短句","第三条短句"]}，copies必须恰好3项，每项一个短句且不含换行，不要其他字段、标题或解释。',
- edit:'本模式仅允许提出日程变更：服务端已校验身份、指定编辑能力及本次日常编辑授权，但这不等于用户已经采纳。只为本次明确诉求生成JSON对象：{"summary":"简短说明","changes":[...] }。非空changes表示请求应用弹出Accept / Refuse / 意见确认框，绝不执行写入或自动选择Accept；有意见时重新生成待确认提案，旧提案不可继续采纳。request 若包含 unaccepted_changes，其 target_id 明确绑定本次意见指向的原对象；只在 agenda 中再次核对相同对象后按 feedback 重新提出，不能因为日程还有其他任务就丢掉已经明确的目标。changes最多12项，type只能rename_task(字段target_id,title)、set_category(target_id,category)、move_block(target_id,start_ms,end_ms)、schedule_task(target_id,start_ms,end_ms，给未安排事项新增一个时段)。ID仅使用agenda中已有ID；分类仅none/study/exercise/entertainment/work/social/travel/rest。先逐个核对target的locked/done状态，任何locked=true、done=true或所属task已完成的对象都不能修改，必须changes为空并说明拒绝原因。summary描述尚待确认的建议，不能使用“已将/已经修改/已经移动”等执行完成语气。不得变更locked、done、截止或工时，移动必须保留时长且处于可用时间/截止之前。schedule_task 仅能用于未完成且完全没有安排的已有事项，时长必须等于其预计工时，不创建新事项。requested_move 若提供确定的日期和毫秒，必须原样使用；遇日期歧义必须询问，不能把明天排成今天。不得修改他人数据、账户、设置或权限；不能新增任意工具/调用/确认字段。如没有明确且安全的变更则changes为空并解释原因。'};
+ edit:'本模式仅允许提出日程变更：服务端已校验身份、指定编辑能力及本次日程编辑授权，但这不等于用户已经采纳。只为本次明确诉求生成JSON对象：{"summary":"简短说明","changes":[...] }。非空changes表示请求应用弹出Accept / Refuse / 意见确认框，绝不执行写入或自动选择Accept；有意见时重新生成待确认提案，旧提案不可继续采纳。request 若包含 unaccepted_changes，其 target_id 明确绑定本次意见指向的原对象；只在 agenda 中再次核对相同对象后按 feedback 重新提出，不能因为日程还有其他任务就丢掉已经明确的目标。changes最多12项，type只能rename_task(字段target_id,title)、set_category(target_id,category)、move_block(target_id,start_ms,end_ms)、schedule_task(target_id,start_ms,end_ms，给未安排事项新增一个时段)、create_task(target_id,title,category,start_ms,end_ms,fixed，新建事项和安排)。已有对象ID仅使用agenda中已有ID；create_task只能使用requested_creation中的new:N编号和完整字段；分类仅none/study/exercise/entertainment/work/social/travel/rest。先逐个核对target的locked/done状态，任何locked=true、done=true或所属task已完成的对象都不能修改，必须changes为空并说明拒绝原因。summary描述尚待确认的建议，不能使用“已将/已经修改/已经移动”等执行完成语气。不得变更locked、done、截止或工时，移动必须保留时长且处于可用时间/截止之前。schedule_task 仅能用于未完成且完全没有安排的已有事项，时长必须等于其预计工时。用户明确新增课程或事项时使用create_task，requested_creation提供已按当前日期和时区计算好的待确认安排；每周课程按截止日展开，不能因原日程没有同名事项而拒绝新增。fixed只用于新建固定课程，不能修改任何已有对象的固定状态。requested_move 若提供确定的日期和毫秒，必须原样使用；遇日期歧义必须询问，不能把明天排成今天。不得修改他人数据、账户、设置或权限；不能新增任意工具/调用/确认字段。如没有明确且安全的变更则changes为空并解释原因。'};
  const styles:Record<string,string>={github:'程序员风，像简短提交记录，克制使用代码意象。',healing:'温柔治愈，肯定具体的小进展，不强行积极。',literary:'文学风，有适度意象，不杜撰事实。',minimal:'极简，只留核心事实，不补造感受。',ornate:'华丽但易读，少量修辞，不堆砌。',starry:'星空意象，轻盈安静。',red:'明快有力量，避免口号堆砌。',fitness:'锻炼风，强调行动、恢复与循序渐进，不羞辱身体。'};
  return base+spec[mode]+(mode==='share_copy'?(styles[shareStyle]??styles.minimal):'');
 }
@@ -46,11 +46,12 @@ export function parseProposal(text:string):{summary:string;changes:EditChange[]}
  const obj=JSON.parse(text);if(!obj||typeof obj!=='object'||Object.keys(obj).some(k=>!['summary','changes'].includes(k))||typeof obj.summary!=='string'||obj.summary.length>600||!Array.isArray(obj.changes)||obj.changes.length>12)throw new Error('Invalid proposal');
  for(const c of obj.changes){
  if(!c||typeof c.target_id!=='string'||c.target_id.length<1||c.target_id.length>128)throw new Error('Invalid target');
- const keys=c.type==='rename_task'?['type','target_id','title']:c.type==='set_category'?['type','target_id','category']:['move_block','schedule_task'].includes(c.type)?['type','target_id','start_ms','end_ms']:[];
+ const keys=c.type==='rename_task'?['type','target_id','title']:c.type==='set_category'?['type','target_id','category']:c.type==='create_task'?['type','target_id','title','category','start_ms','end_ms','fixed']:['move_block','schedule_task'].includes(c.type)?['type','target_id','start_ms','end_ms']:[];
  if(!keys.length||Object.keys(c).some(k=>!keys.includes(k))||keys.some(k=>!(k in c)))throw new Error('Unsupported change');
  if(c.type==='rename_task'&&(typeof c.title!=='string'||!c.title.trim()||c.title.length>120))throw new Error('Invalid title');
  if(c.type==='set_category'&&!['none','study','exercise','entertainment','work','social','travel','rest'].includes(c.category))throw new Error('Invalid category');
- if(['move_block','schedule_task'].includes(c.type)&&(!Number.isSafeInteger(c.start_ms)||!Number.isSafeInteger(c.end_ms)||c.start_ms<=0||c.end_ms<=c.start_ms))throw new Error('Invalid window');
+ if(c.type==='create_task'&&(!/^new:[1-9][0-9]?$/u.test(c.target_id)||typeof c.title!=='string'||!c.title.trim()||c.title.length>120||/[\r\n]/u.test(c.title)||!['none','study','exercise','entertainment','work','social','travel','rest'].includes(c.category)||typeof c.fixed!=='boolean'))throw new Error('Invalid new task');
+ if(['move_block','schedule_task','create_task'].includes(c.type)&&(!Number.isSafeInteger(c.start_ms)||!Number.isSafeInteger(c.end_ms)||c.start_ms<=0||c.end_ms<=c.start_ms))throw new Error('Invalid window');
  }
  return obj;
 }

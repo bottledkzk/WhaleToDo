@@ -111,6 +111,12 @@ class DeskRepository(private val db: DeskDatabase) {
             is AgentChange.CategorizeTask -> updated[c.taskId] = updated.getValue(c.taskId).copy(category=c.category, ownerId=owner)
             is AgentChange.MoveBlock -> blocks[c.blockId] = blocks.getValue(c.blockId).copy(start=c.start,end=c.end,ownerId=owner)
             is AgentChange.ScheduleTask -> {val blockId=UUID.nameUUIDFromBytes("$owner:$id:${c.taskId}".toByteArray()).toString();blocks[blockId]=BlockRow(blockId,c.taskId,c.start,c.end,ownerId=owner)}
+            is AgentChange.CreateTask -> {
+                val taskId=UUID.nameUUIDFromBytes("$owner:$id:task:${c.key}".toByteArray()).toString()
+                val blockId=UUID.nameUUIDFromBytes("$owner:$id:block:${c.key}".toByteArray()).toString()
+                updated[taskId]=TaskRow(taskId,c.title.trim(),minutes=((c.end-c.start)/60000L).toInt(),deadline=c.end,category=c.category,ownerId=owner)
+                blocks[blockId]=BlockRow(blockId,taskId,c.start,c.end,locked=c.fixed,ownerId=owner)
+            }
         } }
         updated.values.forEach { dao.save(it) }
         dao.clearBlocks(owner);dao.insertBlocks(blocks.values.map { it.copy(ownerId = owner) })
@@ -291,7 +297,7 @@ class DeskRepository(private val db: DeskDatabase) {
                                 it.end == b.window.end.toEpochMilli()
                         }
                     }
-                    .none { it.window.start < Instant.now().minusSeconds(120) }
+                    .none { it.window.start < Instant.now() }
             ) {
                 "预览已过期，请重新安排"
             }

@@ -1,5 +1,6 @@
 import type {EditChange} from './policy.ts';
 import {requestedMove} from './move-intent.ts';
+import {requestedCreate} from './create-intent.ts';
 
 type TaskFact={id:string;done:boolean;deadline:number;minutes:number};
 type BlockFact={id:string;taskId:string;start:number;end:number;locked:boolean;done:boolean};
@@ -10,7 +11,10 @@ function millis(value:unknown):number{
 }
 /** Advisory guard over the supplied read-only copy. Client snapshot/owner/permission gates remain mandatory. */
 export function proposalProblem(changes:EditChange[],context:string,now=Date.now(),request=''):string|null {
- const intent=requestedMove(context,request);
+ const creation=requestedCreate(context,request,now);
+ if(creation&&'error' in creation)return creation.error;
+ if(creation&&(changes.length!==creation.changes.length||changes.some((c,i)=>{const e=creation.changes[i]!;return c.type!==e.type||c.target_id!==e.target_id||c.title!==e.title||c.category!==e.category||c.start_ms!==e.start_ms||c.end_ms!==e.end_ms||c.fixed!==e.fixed;})))return '新增事项的日期、时间或内容与本次要求不一致';
+ const intent=creation?null:requestedMove(context,request,now);
  if(intent&&'error' in intent)return intent.error;
  if(intent&&(changes.length!==1||changes[0]!.type!==(intent.schedule_task?'schedule_task':'move_block')||changes[0]!.target_id!==intent.target_id||changes[0]!.start_ms!==intent.start_ms||changes[0]!.end_ms!==intent.end_ms))return '提案日期或时间与本次要求不一致，请重新生成';
  const tasks:TaskFact[]=[],blocks:BlockFact[]=[];let windows:{start:number;end:number}[]=[];
@@ -45,7 +49,14 @@ export function proposalProblem(changes:EditChange[],context:string,now=Date.now
  const moved=new Map<string,{start:number;end:number}>();
  const requestedTimes=[...request.matchAll(/(?:移到|移动到|挪到|改为|调整到|安排到)\s*([01]?\d|2[0-3]):([0-5]\d)/gu)];
  for(const change of changes){
-  if(change.type==='move_block'||change.type==='schedule_task'){
+  if(change.type==='create_task'){
+   if(!creation)return '请明确新事项名称、日期和起止时间';
+   const start=change.start_ms!,end=change.end_ms!;
+   if(!/^new:[1-9][0-9]?$/u.test(change.target_id)||!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<=now||end<=start||end-start>1440*60000||(end-start)%60000!==0||end-now>90*86400000)return '新事项需要未来90天内的有效完整时段';
+   if(!change.fixed&&windows.length&&!windows.some(w=>w.start<=start&&w.end>=end))return '新事项不在可用时间内';
+   if(moved.has(change.target_id))return '提案包含重复的新事项';
+   moved.set(change.target_id,{start,end});
+  }else if(change.type==='move_block'||change.type==='schedule_task'){
    const start=change.start_ms,end=change.end_ms;
    if(typeof start!=='number'||typeof end!=='number'||!Number.isSafeInteger(start)||!Number.isSafeInteger(end))return '提案时间格式无效';
    const scheduling=change.type==='schedule_task';

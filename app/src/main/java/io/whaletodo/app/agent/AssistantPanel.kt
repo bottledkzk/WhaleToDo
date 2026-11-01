@@ -78,11 +78,15 @@ import kotlinx.coroutines.delay
             TextButton(onClick={styleMenu=true}){Text("风格 · ${ShareStyle.entries.find{it.code==s.shareStyle}?.label?:"极简"} ▾")}
             DropdownMenu(styleMenu,{styleMenu=false}) {ShareStyle.entries.forEach{style->DropdownMenuItem(text={Text(style.label)},onClick={controller.style(style.code);styleMenu=false})}}
         }
-        Row(verticalAlignment=Alignment.CenterVertically){
-            Text("日程读取",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
-            Switch(s.includeAgenda,controller::agenda,enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="附带日程开关"})
-            if(s.mode.edits){Text("日常编辑",style=MaterialTheme.typography.labelMedium);Switch(s.editConsent,controller::consent,enabled=s.busySince==null,
-                modifier=Modifier.semantics{contentDescription="日常编辑开关"})}
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalAlignment=Alignment.CenterVertically){
+            Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){
+                Text("日程读取",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
+                Switch(s.includeAgenda,controller::agenda,enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="日程读取开关"})
+            }
+            Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){
+                Text("日程编辑",Modifier.weight(1f),style=MaterialTheme.typography.labelMedium)
+                Switch(s.editConsent,controller::consent,enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="日程编辑开关"})
+            }
         }
         OutlinedTextField(draft,{if(it.length<=16000)draft=it},placeholder={Text(s.mode.hint)},maxLines=4,
             modifier=Modifier.fillMaxWidth().semantics{contentDescription="助手输入"},shape=RoundedCornerShape(20.dp),enabled=s.busySince==null)
@@ -156,7 +160,7 @@ import kotlinx.coroutines.delay
                     modifier=Modifier.semantics{contentDescription="提案意见"})
                 Text("新提案仍需你确认",style=MaterialTheme.typography.bodySmall)
                 Row(verticalAlignment=Alignment.CenterVertically) {
-                    Text("日常编辑",Modifier.weight(1f))
+                    Text("日程编辑",Modifier.weight(1f))
                     Switch(s.editConsent,controller::consent,modifier=Modifier.semantics{contentDescription="意见编辑开关"})
                 }
             }},
