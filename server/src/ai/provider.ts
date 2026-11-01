@@ -8,7 +8,7 @@ import {proposalProblem} from './proposal-guard.ts';
 import {normalizedAgenda} from './agenda.ts';
 import {unorderedDiaryText,diaryFacts} from './diary-facts.ts';
 import {requestedMove} from './move-intent.ts';
-import {truthfulShareCopies} from './share-facts.ts';
+import {truthfulShareCopies,shareRuntimeTime} from './share-facts.ts';
 import {runtimeTime} from './runtime-time.ts';
 import {requestedCreate} from './create-intent.ts';
 import {validateImage,type AiImage} from './image-input.ts';
@@ -33,7 +33,8 @@ export function prepareInput(input:AiInput):AiInput {
 /** Untrusted history never becomes actual assistant/system messages at the provider boundary. */
 export function providerMessages(input:AiInput,now=Date.now()) {
  const agenda=normalizedAgenda(input.context??'');
- return [{role:'system',content:systemPrompt(input.mode,input.share_style,input.diary_style)+'\n服务端即时日期时间='+JSON.stringify(runtimeTime(input.context??'',now))+'。今天、明天、昨天以此时区和日期解析；日记的agenda.date是待回顾日期。未完成事务只安排在现在之后，不把已过时段当空闲。'+(input.image&&input.mode==='edit'?'\n本次图像课表使用下述专用JSON格式，替代文字编辑的changes格式：'+IMAGE_COURSE_PROMPT:'')},
+ const clock=input.mode==='share_copy'?shareRuntimeTime(input.prompt,input.context,now):runtimeTime(input.context??'',now);
+ return [{role:'system',content:systemPrompt(input.mode,input.share_style,input.diary_style)+'\n服务端即时日期时间='+JSON.stringify(clock)+'。今天、明天、昨天以此时区和日期解析；日记的agenda.date是待回顾日期。未完成事务只安排在现在之后，不把已过时段当空闲。'+(input.mode==='share_copy'?'事项标题中的今天、明日等只是名称，不能作为实际日期依据；以明确安排时段为准，有月日时优先写实际月日，不把后天写成明天。':'')+(input.image&&input.mode==='edit'?'\n本次图像课表使用下述专用JSON格式，替代文字编辑的changes格式：'+IMAGE_COURSE_PROMPT:'')},
   {role:'user',content:JSON.stringify({request:input.prompt,agenda:input.mode==='diary'?diaryFacts(agenda):agenda,history:input.history??[],...(input.mode==='edit'?{requested_creation:requestedCreate(input.context??'',input.prompt,now),requested_move:requestedMove(input.context??'',input.prompt,now)}:{})})}];
 }
 export function tokenReservation(input:AiInput,maxOutput:number):number {
@@ -105,7 +106,7 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
    if(continuation||!value||Object.keys(value).length!==1||!Array.isArray(value.copies)||value.copies.length!==3||value.copies.some((s:unknown)=>typeof s!=='string'||!s.trim()||/[\r\n]/u.test(s)||Array.from(s.trim()).length>50))throw Error('Invalid share copies');
    const rawCopies=value.copies.map((s:string)=>publicAssistantText(s.trim()));
    if(new Set(rawCopies).size!==3)throw Error('Duplicate share copies');
-   const copies=truthfulShareCopies(rawCopies,(input.context??'')+'\n'+input.prompt);
+   const copies=truthfulShareCopies(rawCopies,(input.context??'')+'\n'+input.prompt,shareRuntimeTime(input.prompt,input.context));
    if(copies.some((s:string)=>!s.trim()||/[\r\n]/u.test(s)||Array.from(s).length>50)||new Set(copies).size!==3)throw Error('Invalid branded share copies');
    return {text:copies.join('\n'),...usage};
   }catch{return {text:'配文未完整生成，请缩小范围后重试',...usage,usable:false};}
