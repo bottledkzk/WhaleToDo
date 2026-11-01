@@ -10,8 +10,8 @@ function millis(value:unknown):number{
  return 0;
 }
 /** Advisory guard over the supplied read-only copy. Client snapshot/owner/permission gates remain mandatory. */
-export function proposalProblem(changes:EditChange[],context:string,now=Date.now(),request=''):string|null {
- const creation=requestedCreate(context,request,now);
+export function proposalProblem(changes:EditChange[],context:string,now=Date.now(),request='',imageCreation?:{changes:EditChange[]}):string|null {
+ const creation=imageCreation??requestedCreate(context,request,now);
  if(creation&&'error' in creation)return creation.error;
  if(creation&&(changes.length!==creation.changes.length||changes.some((c,i)=>{const e=creation.changes[i]!;return c.type!==e.type||c.target_id!==e.target_id||c.title!==e.title||c.category!==e.category||c.start_ms!==e.start_ms||c.end_ms!==e.end_ms||c.fixed!==e.fixed;})))return '新增事项的日期、时间或内容与本次要求不一致';
  const intent=creation?null:requestedMove(context,request,now);

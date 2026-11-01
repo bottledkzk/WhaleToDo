@@ -12,6 +12,7 @@ import io.whaletodo.core.AgentModel
 import io.whaletodo.core.GateReason
 import io.whaletodo.network.AiApi
 import io.whaletodo.network.AiChange
+import io.whaletodo.network.AiImage
 import io.whaletodo.network.AiHistory
 import io.whaletodo.network.AiRequestView
 import io.whaletodo.network.AiSubmit
@@ -204,6 +205,7 @@ class ServerAgentBridge(
                         editConsent = request.editConsent,
                         shareStyle = request.shareStyle,
                         diaryStyle = request.diaryStyle,
+                        image = request.image?.let { AiImage(it.mimeType,it.data) },
                     ),
                     expectedSession,
                 )

@@ -29,6 +29,7 @@ data class AiUsage(
 )
 
 data class AiHistory(val role: String, val content: String)
+data class AiImage(val mimeType:String,val data:String)
 
 data class AiSubmit(
     val clientRequestId: String,
@@ -40,6 +41,7 @@ data class AiSubmit(
     val editConsent: Boolean,
     val shareStyle: String,
     val diaryStyle: String? = null,
+    val image: AiImage? = null,
 )
 
 data class AiChange(

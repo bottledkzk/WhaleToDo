@@ -68,7 +68,7 @@ data class AgentBlockFact(val id: String, val taskId: String, val start: Long, v
 object AgentChanges {
     fun validate(changes: List<AgentChange>, tasks: List<AgentTaskFact>, blocks: List<AgentBlockFact>,
         now: Long, windows: List<Window>) {
-        require(changes.size in 1..12) { "提案需包含1至12项变更" }
+        require(changes.size in 1..40) { "提案需包含1至40项变更" }
         val keys = changes.map { when(it) {
             is AgentChange.RenameTask -> "title:${it.taskId}"
             is AgentChange.CategorizeTask -> "category:${it.taskId}"

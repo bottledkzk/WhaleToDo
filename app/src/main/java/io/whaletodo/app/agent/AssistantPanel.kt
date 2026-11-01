@@ -1,6 +1,9 @@
 package io.whaletodo.app.agent
 
 import android.os.SystemClock
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,6 +14,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -19,6 +27,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.whaletodo.core.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable internal fun AssistantPanel(controller:AssistantController,onAccount:()->Unit,onVip:()->Unit,onPoints:()->Unit) {
     val s by controller.state.collectAsState()
@@ -28,6 +39,20 @@ import kotlinx.coroutines.delay
     var diaryStyleMenu by remember { mutableStateOf(false) }
     var history by remember {mutableStateOf(false)}
     var historySearch by rememberSaveable {mutableStateOf("")}
+    val context=LocalContext.current
+    val pictureScope=rememberCoroutineScope()
+    var pictureTarget by remember {mutableStateOf<Pair<String,String>?>(null)}
+    var pictureLoading by remember {mutableStateOf(false)}
+    var showPicture by remember {mutableStateOf<String?>(null)}
+    val imagePicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()){uri->
+        val target=pictureTarget;pictureTarget=null
+        if(uri!=null&&target!=null)pictureScope.launch {
+            pictureLoading=true
+            try{val path=withContext(Dispatchers.IO){AssistantPictures.load(context,uri)};controller.picture(path,target.first,target.second)}
+            catch(_:Exception){controller.pictureError()}
+            finally{pictureLoading=false}
+        }
+    }
     val list=rememberLazyListState()
     LaunchedEffect(s.sessionId) { draft="" }
     LaunchedEffect(s.owner) { draft="";history=false;historySearch="" }
@@ -47,7 +72,10 @@ import kotlinx.coroutines.delay
             items(s.messages,key={it.id}){m->
                 Column(Modifier.fillMaxWidth(),horizontalAlignment=if(m.role=="user")Alignment.End else Alignment.Start){
                     Surface(shape=RoundedCornerShape(18.dp),color=if(m.role=="user")MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh){
-                        SelectionContainerCompat(if(m.role=="assistant")AssistantIdentity.display(m.text)else m.text)
+                        Column {
+                            s.localPictures[m.id]?.let{path->AssistantPictureThumb(path,{showPicture=path},Modifier.padding(12.dp))}
+                            SelectionContainerCompat(if(m.role=="assistant")AssistantIdentity.display(m.text)else m.text)
+                        }
                     }
                     if(m.totalTokens>0) Row(Modifier.padding(6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         Text("${TokenDisplay.k(m.totalTokens)} tokens",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -68,6 +96,7 @@ import kotlinx.coroutines.delay
                 DropdownMenu(modeMenu,{modeMenu=false}){AgentMode.entries.forEach {m->DropdownMenuItem(text={Text(m.label)},onClick={controller.mode(m);modeMenu=false})}}}
             Spacer(Modifier.width(8.dp))
             TextButton(onClick=controller::refreshCapabilities,enabled=s.busySince==null){Text("刷新权限")}
+            TextButton(onClick={pictureTarget=s.owner to s.sessionId;imagePicker.launch("image/*")},enabled=s.busySince==null&&!pictureLoading&&s.mode in setOf(AgentMode.CHAT,AgentMode.PLAN,AgentMode.EDIT),modifier=Modifier.semantics{contentDescription="添加助手图片"}){Text("＋ 图片")}
         }
         if(s.mode.edits)Text(if(s.models.any{it.canEdit}&&s.access.vip)"日程编辑可用 · 采纳前会预览" else "日程编辑暂不可用，可刷新权限",style=MaterialTheme.typography.labelSmall)
         if(s.mode==AgentMode.DIARY)Box {
@@ -88,16 +117,29 @@ import kotlinx.coroutines.delay
                 Switch(s.editConsent,controller::consent,enabled=s.busySince==null,modifier=Modifier.semantics{contentDescription="日程编辑开关"})
             }
         }
+        if(pictureLoading)LinearProgressIndicator(Modifier.fillMaxWidth())
+        s.attachment?.let{path->Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
+            AssistantPictureThumb(path,{showPicture=path})
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick={controller.picture(null)},enabled=s.busySince==null){Text("移除图片")}
+        }}
         OutlinedTextField(draft,{if(it.length<=16000)draft=it},placeholder={Text(s.mode.hint)},maxLines=4,
             modifier=Modifier.fillMaxWidth().semantics{contentDescription="助手输入"},shape=RoundedCornerShape(20.dp),enabled=s.busySince==null)
         Row(Modifier.fillMaxWidth().padding(vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
             Text(if(s.access.userId==null)"未登录" else "≈ ${TokenDisplay.k(TokenDisplay.estimate(draft))} · ${s.access.availablePoints} 积分",
                 Modifier.weight(1f),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if(s.pendingId!=null)TextButton(onClick=controller::queryPending,enabled=s.busySince==null){Text("查询结果")}
-            FilledTonalButton(onClick={controller.send(draft)},enabled=draft.isNotBlank()&&s.busySince==null&&s.pendingId==null){Text("发送")}
+            FilledTonalButton(onClick={controller.send(draft)},enabled=(draft.isNotBlank()||s.attachment!=null)&&s.busySince==null&&s.pendingId==null&&!pictureLoading){Text("发送")}
         }
     }
     s.gate?.let {AccessDialog(it,controller::dismissGate,onAccount,onVip,onPoints,onConsent={controller.consent(true)})}
+    showPicture?.let{path->Dialog(onDismissRequest={showPicture=null}){
+        Surface(shape=RoundedCornerShape(18.dp)){Column(Modifier.padding(12.dp),horizontalAlignment=Alignment.CenterHorizontally){
+            val bitmap=remember(path){BitmapFactory.decodeFile(path)}
+            bitmap?.let{Image(it.asImageBitmap(),"助手图片",Modifier.fillMaxWidth().heightIn(max=480.dp),contentScale=ContentScale.Fit)}
+            TextButton(onClick={showPicture=null}){Text("关闭")}
+        }}
+    }}
 
     if (history) {
         AlertDialog(
@@ -168,6 +210,10 @@ import kotlinx.coroutines.delay
             dismissButton={TextButton(onClick=controller::dismissRevision){Text("取消")}}
         )
     }
+}
+@Composable private fun AssistantPictureThumb(path:String,onOpen:()->Unit,modifier:Modifier=Modifier) {
+    val bitmap=remember(path){BitmapFactory.decodeFile(path,BitmapFactory.Options().apply{inSampleSize=4})}
+    bitmap?.let{Image(it.asImageBitmap(),"已选图片",modifier.size(76.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick=onOpen),contentScale=ContentScale.Crop)}
 }
 @Composable private fun SelectionContainerCompat(text: String) {
     androidx.compose.foundation.text.selection.SelectionContainer {
