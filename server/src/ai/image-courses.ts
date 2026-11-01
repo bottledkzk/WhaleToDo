@@ -15,7 +15,7 @@ export function imageCourses(text:string,context:string,request:string,now=Date.
  const date=(ms:number)=>new Date(ms).toISOString().slice(0,10);
  let first=today-(weekday-1)*86400000;
  if(/下周|下一周/u.test(request))first+=7*86400000;
- else if(data.week_start!=null) {
+ else if(!/本周|这周|这一周/u.test(request)&&data.week_start!=null) {
   if(typeof data.week_start!=='string'||!/^\d{4}-\d{2}-\d{2}$/u.test(data.week_start))throw Error('Invalid week');
   const given=Date.parse(data.week_start+'T00:00:00Z');
   if(!Number.isFinite(given)||date(given)!==data.week_start||new Date(given).getUTCDay()!==1)throw Error('Invalid week');
@@ -28,6 +28,7 @@ export function imageCourses(text:string,context:string,request:string,now=Date.
   until=Date.parse(target+'T00:00:00Z');if(!Number.isFinite(until)||date(until)!==target)throw Error('Invalid ending date');
  }
  if(first>today+90*86400000||until>today+90*86400000||until<today||first>until)return {changes:[],summary:'请指定今天之后、90天内要导入的周次'};
+ if(first<today-6*86400000)first+=Math.floor((today-first)/(7*86400000))*7*86400000;
  const changes:EditChange[]=[],seen=new Set<string>();
  for(const course of data.courses) {
   if(!course||Object.keys(course).some(k=>!['title','weekday','start_time','end_time'].includes(k))||typeof course.title!=='string'||!course.title.trim()||course.title.length>120||/[\r\n]/u.test(course.title)||!Number.isInteger(course.weekday)||course.weekday<1||course.weekday>7||!/^([01]\d|2[0-3]):[0-5]\d$/u.test(course.start_time)||!/^([01]\d|2[0-3]):[0-5]\d$/u.test(course.end_time)||course.end_time<=course.start_time)throw Error('Invalid course');

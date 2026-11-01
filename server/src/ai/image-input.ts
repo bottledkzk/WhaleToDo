@@ -5,7 +5,7 @@ export const MAX_IMAGE_BYTES=128*1024;
 export function validateImage(image:AiImage):void {
  if(!image||image.mime_type!=='image/jpeg'||typeof image.data!=='string'||image.data.length>Math.ceil(MAX_IMAGE_BYTES/3)*4||!/^[-A-Za-z0-9+/]+={0,2}$/u.test(image.data))throw Error('Invalid image');
  const bytes=Buffer.from(image.data,'base64');
- if(bytes.length>MAX_IMAGE_BYTES||bytes.toString('base64')!==image.data||bytes[0]!==255||bytes[1]!==216)throw Error('Invalid JPEG');
+ if(bytes.length>MAX_IMAGE_BYTES||bytes.toString('base64')!==image.data||bytes[0]!==255||bytes[1]!==216||bytes.at(-2)!==255||bytes.at(-1)!==217)throw Error('Invalid JPEG');
  let position=2;
  while(position+4<=bytes.length) {
   if(bytes[position++]!==255)throw Error('Invalid JPEG marker');
