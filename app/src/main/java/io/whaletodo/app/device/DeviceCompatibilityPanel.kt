@@ -64,7 +64,6 @@ internal fun DeviceCompatibilityPanel() {
             Text("无法打开系统设置，请在手机设置中搜索 WhaleToDo", color = MaterialTheme.colorScheme.error)
         }
         item {
-            Text("设备信息仅在本页显示，系统和权限状态用于排查问题，不能保证后台提醒一定准时", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { snapshot = DeviceCompatibility.read(context) }) { Text("刷新状态") }
         }
     }

@@ -19,10 +19,15 @@ class AlarmRingingService:Service() {
     private var focus:AudioFocusRequest?=null
     private var key:String?=null
     private val audio by lazy{getSystemService(AudioManager::class.java)}
+    override fun onCreate() {
+        super.onCreate()
+        // Even a cancelled/stale start must satisfy Android's foreground-service deadline.
+        startForeground(ID,notification(Intent(),"startup"))
+    }
     override fun onBind(intent:Intent?)=null
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
         if(intent==null){stopSelf();return START_NOT_STICKY}
-        if(intent.action==STOP){if(intent.getStringExtra(KEY)==key)stopSelf();return START_NOT_STICKY}
+        if(intent.action==STOP){if(key==null||intent.getStringExtra(KEY)==key)stopSelf();return START_NOT_STICKY}
         val owner=intent.getStringExtra(ReminderCenter.EXTRA_OWNER)
         val task=intent.getStringExtra(ReminderCenter.EXTRA_TASK_ID)
         if(owner==null||task==null||owner!=ReminderCenter.activeOwner(this)){stopSelf();return START_NOT_STICKY}

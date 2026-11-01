@@ -1,7 +1,9 @@
 package io.whaletodo.app.reminder
 
 import android.app.NotificationManager
+import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.platform.app.InstrumentationRegistry
@@ -16,6 +18,14 @@ import java.nio.ByteOrder
 
 class ReminderSoundsDeviceTest {
     private fun context():Context=InstrumentationRegistry.getInstrumentation().targetContext.also{check(it.packageName.endsWith(".verification"))}
+    @Test fun staleStopDoesNotLeaveAnIdleRingingService() {
+        val c=context()
+        c.startForegroundService(Intent(c,AlarmRingingService::class.java).setAction("io.whaletodo.STOP_ALARM").putExtra("ring_key","stale-synthetic-key"))
+        Thread.sleep(6500)
+        @Suppress("DEPRECATION")
+        val running=c.getSystemService(ActivityManager::class.java).getRunningServices(100)
+        assertFalse(running.any{it.service.className==AlarmRingingService::class.java.name})
+    }
     @Test fun selectedAudioSurvivesOriginalRemovalAndUsesANewImmutableChannel() {
         val c=context();val p=c.getSharedPreferences("reminder-sounds-device",Context.MODE_PRIVATE)
         val before=p.all;val manager=c.getSystemService(NotificationManager::class.java)
