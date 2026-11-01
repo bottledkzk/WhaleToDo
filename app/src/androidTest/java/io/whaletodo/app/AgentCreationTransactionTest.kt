@@ -45,13 +45,13 @@ class AgentCreationTransactionTest {
             }
             suspend fun waitFor(test:()->Boolean) {withTimeout(5000){while(!test())delay(20)}}
             val first=AssistantController(repo,scope,bridge)
-            waitFor{first.state.value.owner=="account-a"};first.consent(true)
-            withTimeout(5000){while(repo.dao.options("local-agent:account-a").none{it.key=="edit"&&it.value=="true"})delay(20)}
+            waitFor{first.state.value.owner=="account-a"};first.consent(true);first.agenda(false)
+            withTimeout(5000){while(repo.dao.options("local-agent:account-a").count{it.key=="edit"&&it.value=="true"||it.key=="agenda"&&it.value=="false"}!=2)delay(20)}
             first.newSession();first.mode(AgentMode.EDIT);assertTrue(first.state.value.editConsent)
             val restarted=AssistantController(repo,scope,bridge);waitFor{restarted.state.value.owner=="account-a"}
-            assertTrue(restarted.state.value.editConsent)
+            assertTrue(restarted.state.value.editConsent);assertFalse(restarted.state.value.includeAgenda)
             bridge.access.value=AgentAccess(userId="account-b");waitFor{restarted.state.value.owner=="account-b"}
-            assertFalse(restarted.state.value.editConsent)
+            assertFalse(restarted.state.value.editConsent);assertTrue(restarted.state.value.includeAgenda)
         } finally {scope.cancel();db.close()}
     }
     @Test fun yesterdayDiaryContainsOnlyThatDaysCompletedFacts() {
