@@ -12,6 +12,14 @@ import org.junit.Test
 /** 查询/提交错误映射的纯 JVM 回归：429 不得终结 pending。 */
 class AgentErrorMappingTest {
     @Test
+    fun `提交格式错误与图片过大明确拒绝并提供可操作提示`() {
+        val format = AgentErrorMapping.submit(400, null, null, "req") as AgentServiceException
+        val large = AgentErrorMapping.submit(413, null, null, "req") as AgentServiceException
+        listOf(format,large).forEach { assertTrue(it.definitelyRejected);assertTrue(it.definitelyNotSent) }
+        assertEquals("图片或内容格式不正确，请重新选择图片或调整输入",format.userMessage)
+        assertEquals("图片或内容过大，请缩小图片后重试",large.userMessage)
+    }
+    @Test
     fun `查询 429 保持原 ID pending`() {
         val e = AgentErrorMapping.query(429, "RATE_LIMITED", null, "req-1")
         assertEquals("req-1", (e as AgentPendingException).requestId)
