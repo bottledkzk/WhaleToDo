@@ -23,6 +23,6 @@ export function loadAiConfig(env: NodeJS.ProcessEnv=process.env): AiConfig {
  if(!['per_request','cumulative_tokens'].includes(billingStrategy))throw new Error('Invalid AI billing strategy');
  new Intl.DateTimeFormat('en-US',{timeZone:businessTimezone});
  return {databaseUrl,apiKey,host:'127.0.0.1',port:integer(env.AI_PORT,8081,1024,65535),
- model:env.DEEPSEEK_MODEL??'deepseek-flash',billingStrategy:billingStrategy as 'per_request'|'cumulative_tokens',tokensPerPoint:integer(env.AI_TOKENS_PER_POINT,3200,1,1000000),editModel:env.DEEPSEEK_EDIT_MODEL??'deepseek-v4-pro',editEnabled:env.AI_EDIT_ENABLED==='true',maxOutput:integer(env.AI_MAX_OUTPUT,2048,32,4096),
+ model:env.DEEPSEEK_MODEL??'deepseek-flash',billingStrategy:billingStrategy as 'per_request'|'cumulative_tokens',tokensPerPoint:integer(env.AI_TOKENS_PER_POINT,3200,1,1000000),editModel:env.DEEPSEEK_EDIT_MODEL??'deepseek-v4-pro',editEnabled:env.AI_EDIT_ENABLED==='true',maxOutput:integer(env.AI_MAX_OUTPUT,16384,32,32768),
  timeoutMs:integer(env.AI_TIMEOUT_MS,45000,1000,60000),businessTimezone};
 }
