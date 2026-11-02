@@ -52,7 +52,8 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  const row=admission.row;
  try{
  await store.running(row.id);const result=await provider(input);const done=await store.finish(row.id,result.usable===false?'failed':'succeeded',result);
- if(result.usable===false)return reply.code(503).send({request_id:req.id,data:requestView(done)});
+ // A completed model/validation result is a receipt, even when it has no usable proposal.
+ // Keep status=failed so clients show its explanation without treating it as an outage.
  return {request_id:req.id,data:requestView(done)};
  }catch(error){
  const definite=error instanceof ProviderFailure&&error.definite;

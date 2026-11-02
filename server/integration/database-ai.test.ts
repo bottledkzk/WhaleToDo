@@ -136,9 +136,13 @@ test('unusable completed output refunds points but keeps actual provider usage a
  const app=buildAiApp(policy,store,async()=>{calls++;return {text:'提案格式不完整，请补充要求后重试',tokens:350,inputTokens:300,outputTokens:50,changes:[],usable:false};});
  try{
   const body=input(),request={method:'POST' as const,url:'/api/v1/ai/requests',headers:{authorization:`Bearer ${tokens[0]}`},payload:body};
-  const first=await app.inject(request);assert.equal(first.statusCode,503);assert.equal(first.json().data.status,'failed');
+  const first=await app.inject(request);assert.equal(first.statusCode,200);assert.equal(first.json().data.status,'failed');
+  assert.equal(first.json().data.text,'提案格式不完整，请补充要求后重试');
   assert.equal(first.json().data.points_charged,0);assert.equal(first.json().data.error_code,'MODEL_OUTPUT_INVALID');
   const replay=await app.inject(request);assert.equal(replay.statusCode,200);assert.equal(replay.json().data.status,'failed');assert.equal(calls,1);
+  assert.deepEqual(replay.json().data,first.json().data);
+  const queried=await app.inject({method:'GET',url:'/api/v1/ai/requests/'+body.client_request_id,headers:request.headers});
+  assert.equal(queried.statusCode,200);assert.deepEqual(queried.json().data,first.json().data);
   assert.deepEqual((await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[0]])).rows[0],{available:20,reserved:0});
   const usage=await store.usage(users[0]!,config.businessTimezone);assert.equal(usage.total_tokens,350);assert.equal(usage.charged_points,0);
   assert.equal((await store.reserve(users[0]!,input(),policy)).fresh,true);

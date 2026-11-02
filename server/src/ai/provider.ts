@@ -87,7 +87,7 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
    const problem=proposalProblem(proposal.changes,input.context??'',now,input.prompt,proposal);
    if(problem)return {text:problem,...usage,changes:[],usable:false};
    return {text:proposal.summary+'，请核对课程和时段后采纳',...usage,changes:proposal.changes};
-  }catch{return {text:'请提供清晰的课程表，并补充每节课的起止时刻',...usage,changes:[],usable:false};}
+  }catch{return {text:'请明确每节课的起止时刻，或重新选择清晰的课程表图片',...usage,changes:[],usable:false};}
  }
  const now=Date.now(),creation=requestedCreate(input.context??'',input.prompt,now);
  if(creation&&'error' in creation)return {text:creation.error,...usage,changes:[],usable:false};
