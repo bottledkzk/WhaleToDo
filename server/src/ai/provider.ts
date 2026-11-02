@@ -12,7 +12,7 @@ import {truthfulShareCopies,shareRuntimeTime} from './share-facts.ts';
 import {runtimeTime} from './runtime-time.ts';
 import {requestedCreate} from './create-intent.ts';
 import {validateImage,type AiImage} from './image-input.ts';
-import {imageCourses,IMAGE_COURSE_PROMPT} from './image-courses.ts';
+import {imageCourses,IMAGE_COURSE_PROMPT,courseRequest,selectCourseChanges} from './image-courses.ts';
 export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string;diary_style?:DiaryStyle;image?:AiImage}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[];usable?:boolean}
 export class ProviderFailure extends Error {
@@ -23,7 +23,7 @@ export function prepareInput(input:AiInput):AiInput {
  if(input.image)validateImage(input.image);
  const prompt=softCompact(input.prompt,7000);
  let structured=false;try{const value=JSON.parse(input.context??'');structured=Array.isArray(value?.tasks)&&Array.isArray(value?.blocks)||Array.isArray(value?.completed);}catch{/* legacy text */}
- if(structured&&Buffer.byteLength(input.context??'')>24000)throw Error('Agenda too large');
+ if(structured&&Buffer.byteLength(input.context??'')>100000)throw Error('Agenda too large');
  const context=structured?{text:input.context??'',omitted:0}:softCompact(input.context??'',8000);
  const historyParts=(input.history??[]).slice(-8).map(h=>({role:h.role,part:softCompact(h.content,1500)}));
  const history=historyParts.map(h=>({role:h.role,content:h.part.text}));
@@ -49,7 +49,7 @@ async function boundedText(response:Response):Promise<string> {
  if(!response.body) throw new ProviderFailure(false);
  const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
  try {while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;
- if(size>131072){await reader.cancel();throw new ProviderFailure(false);}chunks.push(value);}}
+ if(size>524288){await reader.cancel();throw new ProviderFailure(false);}chunks.push(value);}}
  finally {reader.releaseLock();}
  return Buffer.concat(chunks).toString('utf8');
 }
@@ -81,8 +81,9 @@ export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof 
  if(continuation)return {text:'本次提案未完整生成，请缩小调整范围后重试',...usage,changes:[],usable:false};
  if(input.image){
   try {
-   const now=Date.now(),proposal=imageCourses(text,input.context??'',input.prompt,now);
-   if(!proposal.changes.length)return {text:publicAssistantText(proposal.summary),...usage,changes:[]};
+   const now=Date.now(),request=courseRequest(input.prompt,input.history);
+   const proposal=selectCourseChanges(imageCourses(text,input.context??'',request,now),input.context??'');
+   if(!proposal.changes.length)return {text:publicAssistantText(proposal.summary),...usage,changes:[],usable:false};
    const problem=proposalProblem(proposal.changes,input.context??'',now,input.prompt,proposal);
    if(problem)return {text:problem,...usage,changes:[],usable:false};
    return {text:proposal.summary+'，请核对课程和时段后采纳',...usage,changes:proposal.changes};

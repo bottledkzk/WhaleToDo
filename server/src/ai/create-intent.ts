@@ -32,7 +32,7 @@ export function requestedCreate(context:string,request:string,now=Date.now()):{c
   const first=dates.length>1&&dates[0]!>today?dates[0]!:today;
   if(until<today||until>new Date(Date.parse(today+'T00:00:00Z')+90*86400000).toISOString().slice(0,10))return {error:'请选择未来90天内的课程结束日期'};
   const wanted=('一二三四五六日'.indexOf(weekly[1]==='天'?'日':weekly[1]!)+1)%7;
-  for(let day=Date.parse(first+'T00:00:00Z');new Date(day).toISOString().slice(0,10)<=until;day+=86400000) {if(new Date(day).getUTCDay()===wanted&&!add(new Date(day).toISOString().slice(0,10)))return {error:'所选时刻存在时区歧义，请选择其他时刻'};if(changes.length>12)return {error:'一次可预览最多12次课程，请缩短日期范围'};}
+  for(let day=Date.parse(first+'T00:00:00Z');new Date(day).toISOString().slice(0,10)<=until;day+=86400000) {if(new Date(day).getUTCDay()===wanted&&!add(new Date(day).toISOString().slice(0,10)))return {error:'所选时刻存在时区歧义，请选择其他时刻'};if(changes.length>40)return {error:'一次可预览最多40次课程，请缩短日期范围'};}
  }else {
   const offset=/后天/u.test(text)?2:/明天|明日/u.test(text)?1:0;
   const date=dates[0]??new Date(Date.parse(today+'T00:00:00Z')+offset*86400000).toISOString().slice(0,10);
