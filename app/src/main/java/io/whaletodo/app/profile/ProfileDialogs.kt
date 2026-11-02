@@ -29,6 +29,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.*
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.whaletodo.app.DeskState
 import io.whaletodo.app.data.DeskOptions
 import io.whaletodo.app.ui.WorkTimeDialog
@@ -199,10 +202,18 @@ import kotlinx.coroutines.delay
     if(timing!=null){Text("提醒时间",style=MaterialTheme.typography.labelLarge);ReminderTiming.entries.forEach{t->Row(Modifier.fillMaxWidth().clickable{onTiming(t.code)},verticalAlignment=Alignment.CenterVertically){RadioButton(timing==t.code,{onTiming(t.code)});Text(t.label)}}}
 }
 @Composable private fun ReminderDefaultsDialog(s:ProfileState,c:ProfileController){
+    var creating by remember{mutableStateOf(false)}
+    if(creating){TimedReminderDialog(s,c){creating=false};return}
     fun option(key:String,default:String)=s.options.find{it.key==key}?.value?:default
     val context=LocalContext.current
-    val notificationsAllowed=NotificationManagerCompat.from(context).areNotificationsEnabled()&&
+    fun allowed()=NotificationManagerCompat.from(context).areNotificationsEnabled()&&
         (Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(context,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)
+    var notificationsAllowed by remember(context){mutableStateOf(allowed())}
+    val lifecycle=LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle,context){
+        val observer=LifecycleEventObserver{_,event->if(event==Lifecycle.Event.ON_RESUME)notificationsAllowed=allowed()}
+        lifecycle.addObserver(observer);onDispose{lifecycle.removeObserver(observer)}
+    }
     var enabled by remember{mutableStateOf(option("reminder.enabled","false")=="true")}
     var method by remember{mutableStateOf(option("reminder.method","message"))};var stars by remember{mutableIntStateOf(option("reminder.stars","0").toIntOrNull()?:0)}
     AlertDialog(onDismissRequest=c::dismiss,title={Text("自动提醒")},text={Column(Modifier.heightIn(max=440.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(6.dp)){
@@ -214,7 +225,10 @@ import kotlinx.coroutines.delay
         if(enabled){ReminderChoices(method,{method=it});Text("覆盖范围",style=MaterialTheme.typography.labelLarge)
             FilterChip(stars==0,{stars=0},{Text("全部事务")})
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){(1..5).forEach{n->FilterChip(stars==n,{stars=n},{Text("≥$n★",fontSize=11.sp)},modifier=Modifier.weight(1f),shape=RoundedCornerShape(10.dp))}}
-        };DialogError(s)
+        }
+        io.whaletodo.app.reminder.ReminderSoundControls()
+        OutlinedButton(onClick={creating=true},enabled=notificationsAllowed&&!s.busy,modifier=Modifier.fillMaxWidth()){Text("设置提醒")}
+        DialogError(s)
     }},confirmButton={TextButton(onClick={c.saveReminderDefaults(enabled,method,stars)},enabled=!s.busy){Text("保存偏好")}},dismissButton={TextButton(onClick=c::dismiss,enabled=!s.busy){Text("取消")}})
 }
 @Composable private fun DiaryDialog(s:ProfileState,c:ProfileController){val d=s.diary?:return

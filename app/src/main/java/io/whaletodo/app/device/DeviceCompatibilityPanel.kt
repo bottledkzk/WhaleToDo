@@ -46,7 +46,7 @@ internal fun DeviceCompatibilityPanel() {
         }
         item {
             CompatibilityStatus("提醒精度", if (snapshot.exactAlarmsAllowed) "系统允许精确提醒" else "普通提醒，可能延迟")
-            Text("本版未申请精确闹钟权限；系统未提供对应设置时可查看应用信息", style = MaterialTheme.typography.bodySmall)
+            Text(if(snapshot.exactAlarmsAllowed)"按指定时间提醒" else "在系统中允许闹钟和提醒", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { openSettings(DeviceSettingsTarget.EXACT_ALARMS) }) { Text("提醒精度设置") }
             CompatibilityStatus("后台运行", if (snapshot.batteryExempt) "已豁免系统电池优化" else "受系统电池优化管理")
             OutlinedButton(onClick = { openSettings(DeviceSettingsTarget.BATTERY) }) { Text("电池优化设置") }
@@ -64,7 +64,6 @@ internal fun DeviceCompatibilityPanel() {
             Text("无法打开系统设置，请在手机设置中搜索 WhaleToDo", color = MaterialTheme.colorScheme.error)
         }
         item {
-            Text("设备信息仅在本页显示，系统和权限状态用于排查问题，不能保证后台提醒一定准时", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { snapshot = DeviceCompatibility.read(context) }) { Text("刷新状态") }
         }
     }

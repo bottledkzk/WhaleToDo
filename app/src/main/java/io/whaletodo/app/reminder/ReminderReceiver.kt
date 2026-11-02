@@ -54,6 +54,12 @@ class ReminderReceiver : BroadcastReceiver() {
         val title = intent.getStringExtra(ReminderCenter.EXTRA_TITLE)?.takeIf { it.isNotBlank() } ?: return
         val kind = intent.getStringExtra(ReminderCenter.EXTRA_KIND)
         val method = intent.getStringExtra(ReminderCenter.EXTRA_METHOD)
+        if(method=="alarm"||method=="both") {
+            try {
+                ContextCompat.startForegroundService(context,Intent(intent).setClass(context,AlarmRingingService::class.java))
+                return
+            }catch(_:RuntimeException){/* Ordinary alarms may not qualify for a background foreground-service start. */}
+        }
         val requestCode = intent.getIntExtra(
             ReminderCenter.EXTRA_REQUEST_CODE,
             (title + kind).hashCode(),
@@ -66,7 +72,8 @@ class ReminderReceiver : BroadcastReceiver() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, ReminderCenter.channelFor(method))
+        ReminderCenter.init(context)
+        val notification = NotificationCompat.Builder(context, ReminderCenter.channelFor(context,method))
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
             .setContentText(if (kind == "start") "开始时间到了" else "已到结束时间")

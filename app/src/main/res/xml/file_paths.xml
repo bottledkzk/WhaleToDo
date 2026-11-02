@@ -3,4 +3,5 @@
     <cache-path name="shared" path="shared/"/>
     <cache-path name="avatar_camera" path="avatar-camera/"/>
     <files-path name="avatars" path="avatars/"/>
+    <files-path name="reminder_sounds" path="reminder-sounds/"/>
 </paths>
