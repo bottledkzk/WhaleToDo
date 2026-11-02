@@ -20,8 +20,19 @@ test('timeout/server errors are unknown, never silently retried',async()=>{
  await assert.rejects(callDeepSeek(config,input,reply({},500) as typeof fetch),(e:unknown)=>e instanceof ProviderFailure&&!e.definite);
 });
 test('empty and oversized output are unusable rather than successful',async()=>{
- for(const [text,reason] of [['','stop'],['x'.repeat(70000),'stop']]){
+ for(const [text,reason] of [['','stop'],['x'.repeat(4194305),'stop']]){
  await assert.rejects(callDeepSeek(config,input,reply({choices:[{message:{content:text},finish_reason:reason}],usage:{total_tokens:5}}) as typeof fetch),ProviderFailure);}
+});
+
+test('provider ceiling is 393216, server reservation can lower it, and long text is preserved',async()=>{
+ for(const allowed of [undefined,70000]){
+  const text='长'.repeat(30000);
+  const result=await callDeepSeek({...config,maxOutput:393216},{...input,outputTokenLimit:allowed},(async(_url,init)=>{
+   assert.equal(JSON.parse(String(init?.body)).max_tokens,allowed??393216);
+   return new Response(JSON.stringify({choices:[{message:{content:text},finish_reason:'stop'}],usage:{total_tokens:30010}}));
+  }) as typeof fetch);
+  assert.equal(result.text,text);assert.equal(result.tokens,30010);
+ }
 });
 test('token reservation is conservative across Chinese text and output budget',()=>{
  assert.ok(tokenReservation(input,100)>Buffer.byteLength(input.prompt)+100);

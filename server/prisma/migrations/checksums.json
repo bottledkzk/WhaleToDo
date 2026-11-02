@@ -48,5 +48,10 @@
     "name": "202610300003_payment_tiers",
     "checksum": "b4d83d79148011288e950117991428a028888fb86e1a07f3900a5c50e21f8b00",
     "crlf_checksum": "ef3b61bfb3d7b78a9b3d71ea3161cb98666f82d4d57cc68eca7c74cdc5a1d342"
+  },
+  {
+    "name": "202611020001_ai_response_capacity",
+    "checksum": "76523abd67281e27050776c13974af035574ce6d8f5e26fd99c56c122d38fbe0",
+    "crlf_checksum": "ee9162ce0b1251851041e261923360f245ddbfe409b89091f0243c0c2939f1e8"
   }
 ]

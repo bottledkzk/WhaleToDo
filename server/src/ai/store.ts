@@ -21,20 +21,30 @@ export class AiStore {
  }
  async get(userId:string,clientId:string):Promise<AiRow|null>{
  const r=await this.pool.query<AiRow>('SELECT * FROM ai_requests WHERE user_id=$1 AND client_request_id=$2',[userId,clientId]);return r.rows[0]??null;}
- async reserve(userId:string,input:AiInput,config:AiConfig):Promise<{row:AiRow;fresh:boolean}> {
+ async reserve(userId:string,input:AiInput,config:AiConfig):Promise<{row:AiRow;fresh:boolean;outputTokenLimit?:number}> {
  const fingerprint=input.sourceFingerprint??createHash('sha256').update(JSON.stringify(input)).digest('hex');
  return this.transaction(async db=>{
- // Serialize this wallet's idempotent reservation, never the provider call.
+ // Serialize only short admissions/settlements across processes, never model calls.
+ await db.query('SELECT pg_advisory_xact_lock(28102302)');
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,28102301))',[userId]);
  const old=await db.query<AiRow>('SELECT * FROM ai_requests WHERE user_id=$1 AND client_request_id=$2',[userId,input.client_request_id]);
  if(old.rows[0]){if(old.rows[0].fingerprint!==fingerprint)throw new ApiError('CONFLICT','相同请求编号的内容不同');return {row:old.rows[0],fresh:false};}
- const budget=tokenReservation(input,config.maxOutput);
- const rate=config.tokensPerPoint??1000;const points=Math.max(1,Math.ceil(budget/rate));
+ const totals=await db.query(`SELECT COALESCE(sum(CASE WHEN status IN ('reserved','running','unknown') THEN budget_tokens ELSE COALESCE(usage_tokens,0) END),0)::text AS tokens
+ FROM ai_requests WHERE status IN ('reserved','running','unknown') OR updated_at >= (date_trunc('day',clock_timestamp() AT TIME ZONE $1) AT TIME ZONE $1)`,[config.businessTimezone]);
+ const remaining=(config.globalDailyTokens??10000000)-Number(totals.rows[0].tokens);
+ const base=tokenReservation(input,0),rate=config.tokensPerPoint??1000;
+ if(remaining<base+32)throw new ApiError('RATE_LIMITED','今日 AI 总用量已达上限，请明日再试',{reason:'GLOBAL_DAILY_TOKENS'});
+ const funds=await db.query('SELECT available FROM point_wallets WHERE user_id=$1 FOR UPDATE',[userId]);
+ const available=funds.rows[0]?.available??0;
+ const outputTokenLimit=Math.min(config.maxOutput,393216,Math.floor(available*rate-base),Math.floor(remaining-base));
+ if(outputTokenLimit<32)throw new ApiError('INSUFFICIENT_POINTS','请先签到领取积分；当前积分不足以处理本次内容',{required_points:Math.ceil((base+32)/rate),tokens_per_point:rate});
+ const budget=base+outputTokenLimit;
+ const points=Math.max(1,Math.ceil(budget/rate));
  const wallet=await db.query('UPDATE point_wallets SET available=available-$2,reserved=reserved+$2,updated_at=now() WHERE user_id=$1 AND available>=$2 RETURNING available,reserved',[userId,points]);
  if(!wallet.rowCount)throw new ApiError('INSUFFICIENT_POINTS',`请先签到领取积分；本次最多预占${points}积分，成功后按实际用量结算`,{required_points:points,tokens_per_point:rate});
  const id=randomUUID();const inserted=await db.query<AiRow>(`INSERT INTO ai_requests(id,user_id,client_request_id,fingerprint,mode,model_code,status,points,budget_tokens,tokens_per_point,compacted,billing_strategy)
  VALUES($1,$2,$3,$4,$5,$6,'reserved',$8,$7,$9,$10,$11) RETURNING *`,[id,userId,input.client_request_id,fingerprint,input.mode,input.model_code,budget,points,rate,input.compacted??false,config.billingStrategy??'per_request']);
- await this.ledger(db,userId,id,'reserve',-points,points,wallet.rows[0],config.billingStrategy==='cumulative_tokens'?CUMULATIVE_LEDGER_REASON:'ai-demo');return {row:inserted.rows[0]!,fresh:true};
+ await this.ledger(db,userId,id,'reserve',-points,points,wallet.rows[0],config.billingStrategy==='cumulative_tokens'?CUMULATIVE_LEDGER_REASON:'ai-demo');return {row:inserted.rows[0]!,fresh:true,outputTokenLimit};
  });
  }
  async running(id:string):Promise<void>{await this.pool.query("UPDATE ai_requests SET status='running',updated_at=now() WHERE id=$1 AND status='reserved'",[id]);}
@@ -43,6 +53,7 @@ export class AiStore {
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[randomUUID(),user,`ai:${id}:${type}`,id,type,a,r,w.available,w.reserved,reason]);}
  async finish(id:string,outcome:'succeeded'|'failed'|'unknown',reply?:ModelReply):Promise<AiRow>{
  return this.transaction(async db=>{
+ await db.query('SELECT pg_advisory_xact_lock(28102302)');
  const owner=await db.query<{user_id:string}>('SELECT user_id FROM ai_requests WHERE id=$1',[id]);
  if(!owner.rows[0])throw new Error('Missing AI request');
  // Serialize all finishes for the same wallet before reading the cumulative bucket.
@@ -65,7 +76,7 @@ export class AiStore {
  WHERE user_id=$1 AND reserved>=$2 RETURNING available,reserved`,[row.user_id,row.points,refund]);
  if(!wallet.rowCount)throw new Error('Reservation invariant violated');
  await this.ledger(db,row.user_id,id,outcome==='failed'?'release':'settle',refund,-row.points,wallet.rows[0],cumulative?CUMULATIVE_LEDGER_REASON:'ai-demo');}
- const updated=await db.query<AiRow>(`UPDATE ai_requests SET status=$2,response_text=$3,usage_tokens=$4,error_code=$5,charged_points=$6,input_tokens=$7,output_tokens=$8,continuation=$9,proposal=$10,updated_at=now() WHERE id=$1 RETURNING *`,
+ const updated=await db.query<AiRow>(`UPDATE ai_requests SET status=$2,response_text=$3,usage_tokens=$4,error_code=$5,charged_points=$6,input_tokens=$7,output_tokens=$8,continuation=$9,proposal=$10,updated_at=clock_timestamp() WHERE id=$1 RETURNING *`,
  [id,outcome,reply?.text??null,reply?.tokens??null,outcome==='succeeded'?null:outcome==='failed'?(reply?.usable===false?'MODEL_OUTPUT_INVALID':'UPSTREAM_UNAVAILABLE'):'REQUEST_PENDING',outcome==='unknown'?null:charged,reply?.inputTokens??null,reply?.outputTokens??null,reply?.continuation??false,reply?.changes?{changes:reply.changes}:null]);return updated.rows[0]!;
  });}
 
