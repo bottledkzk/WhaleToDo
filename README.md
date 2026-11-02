@@ -6,9 +6,9 @@ WhaleToDo 是 Android 本地优先的待办与日程应用，包含可解释排�
 
 ## 当前交付
 
-更新于 2026-10-31。公开版本为 [0.5.4-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.4-preview.1)，code11、Room6、minSdk26 / targetSdk36，独立包名 `io.whaletodo.app.preview`。同发行证书覆盖升级保留已有预览数据，原体验包独立保留。[官网下载](https://whaletodo.top:8443/#download)与 GitHub 附件对应同一版本，旧版下载保留
+更新于 2026-11-01（America/Los_Angeles）。公开版本为 [0.5.8-preview.1](https://github.com/bottledkzk/WhaleToDo/releases/tag/v0.5.8-preview.1)，code15、Room6、minSdk26 / targetSdk36，独立包名 `io.whaletodo.app.preview`。同发行证书覆盖升级保留已有预览数据，原体验包独立保留。[官网下载](https://whaletodo.top:8443/#download)与 GitHub 附件对应同一版本，旧版下载保留
 
-账户 API 与 AI 网关已部署。小米14 Pro Android16上的公开0.5.3签名包完成基础全流程，本版完成同签名升级、四种日记风格入口、真实生成→编辑确认保存→账户资料同步的增量补测；不将增量补测表述为所有流程在所有设备重新验证。详见 [0.5.4交付与验收](doc/Bottledkzk/2026-10-31-0.5.4交付与验收.md)
+账户 API 与 AI 网关已部署。小米14 Pro Android16已完成签名候选的基础流程与增量验收，包括图片课表识别与采纳、按周创建课程、日记生成编辑保存与账户同步、分享配文，以及后台响铃、停止和自选铃声。详见 [0.5.8发布与验收](doc/Bottledkzk/2026-11-01-0.5.8发布与验收.md)
 
 - 访客可记录、整理、手动与自动安排、查看待办和预览日历、完成与自评，退出账号后访客记录保留
 - AI 支持聊天、计划建议、复盘、四风格日记、配文和受控日程编辑；复杂建议经本地排程校验，预览后人工 Accept 才写入
