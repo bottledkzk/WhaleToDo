@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 
 GATEWAY_BOUNDARY = '202610300001_account_cloud'
-FULL_BOUNDARY = '202610300003_payment_tiers'
+FULL_BOUNDARY = '202611020001_ai_response_capacity'
 
 
 def git(repo, *args):
@@ -27,7 +27,7 @@ def prepare(repo, output, profile='gateway'):
     commit = git(repo, 'rev-parse', 'HEAD').decode().strip()
     paths = git(repo, 'ls-tree', '-r', '--name-only', 'HEAD').decode().splitlines()
     cutoff = FULL_BOUNDARY if profile == 'full' else GATEWAY_BOUNDARY
-    count = 10 if profile == 'full' else 8
+    count = 11 if profile == 'full' else 8
     files = {}
     fixed = {'server/package.json', 'server/package-lock.json', 'server/tsconfig.json', 'server/prisma/schema.prisma',
              'server/prisma/migrations/migration_lock.toml', 'script/backup-database.sh',
@@ -47,7 +47,7 @@ def prepare(repo, output, profile='gateway'):
     if not required <= files.keys():
         raise ValueError('REQUIRED_RELEASE_FILE_MISSING')
     checksums = json.loads(git(repo, 'show', 'HEAD:server/prisma/migrations/checksums.json'))
-    if (len(checksums) != 10 or any(p.split('/')[-2] > FULL_BOUNDARY
+    if (len(checksums) != 11 or any(p.split('/')[-2] > FULL_BOUNDARY
             for p in paths if p.startswith('server/prisma/migrations/') and p.endswith('/migration.sql'))):
         raise ValueError('FULL_RELEASE_BOUNDARY_CHANGED')
     checksums = [m for m in checksums if m['name'] <= cutoff]
@@ -60,7 +60,7 @@ def prepare(repo, output, profile='gateway'):
             raise ValueError('MIGRATION_CHECKSUM_MISMATCH')
     files['server/prisma/migrations/checksums.json'] = (json.dumps(checksums, indent=2) + '\n').encode()
     files['env/postgresql/ai-usage-grant.sql'] = b'GRANT SELECT(user_id,kind,expires_at) ON whaletodo.entitlements TO whaletodo_ai;\n'
-    files['DEPLOYMENT.md'] = git(repo, 'show', 'HEAD:doc/Bottledkzk/2026-10-30-全账号MOCK充值与发布方案.md')
+    files['DEPLOYMENT.md'] = git(repo, 'show', 'HEAD:doc/Bottledkzk/2026-11-02-AI容量与每日预算.md')
     prompt = re.search(r"PROMPT_VERSION\s*=\s*'([^']+)'", files.get('server/src/ai/policy.ts', b'').decode())
     if not prompt:
         raise ValueError('PROMPT_VERSION_MISSING')
@@ -95,6 +95,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--profile', choices=['gateway', 'full'], default='gateway',
-                        help='full includes ten migrations and the account service; gateway cannot start the account API')
+                        help='full includes eleven migrations and the account service; gateway cannot start the account API')
     args = parser.parse_args()
     print(json.dumps(prepare(Path(__file__).resolve().parent.parent, args.output, args.profile)))

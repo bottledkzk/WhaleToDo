@@ -49,6 +49,7 @@ export function buildAiApp(config:AiConfig,store:AiStore,provider:(input:AiInput
  catch {throw new ApiError('VALIDATION_ERROR','内容过长，请分段或缩小日程范围');}
  const admission=await store.reserve(user,input,config);
  if(!admission.fresh)return reply.code(['reserved','running','unknown'].includes(admission.row.status)?202:200).send({request_id:req.id,data:requestView(admission.row)});
+ input.outputTokenLimit=admission.outputTokenLimit;
  const row=admission.row;
  try{
  await store.running(row.id);const result=await provider(input);const done=await store.finish(row.id,result.usable===false?'failed':'succeeded',result);

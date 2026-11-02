@@ -13,7 +13,7 @@ import {runtimeTime} from './runtime-time.ts';
 import {requestedCreate} from './create-intent.ts';
 import {validateImage,type AiImage} from './image-input.ts';
 import {imageCourses,IMAGE_COURSE_PROMPT,courseRequest,selectCourseChanges} from './image-courses.ts';
-export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string;diary_style?:DiaryStyle;image?:AiImage}
+export interface AiInput {client_request_id:string; mode:Mode; prompt:string; context?:string; model_code:'deepseek-default'|'deepseek-planner'; edit_consent?:boolean; history?:{role:'user'|'assistant';content:string}[]; sourceFingerprint?:string; compacted?:boolean;share_style?:string;diary_style?:DiaryStyle;image?:AiImage;outputTokenLimit?:number}
 export interface ModelReply {text:string; tokens:number;inputTokens?:number;outputTokens?:number;continuation?:boolean;changes?:EditChange[];usable?:boolean}
 export class ProviderFailure extends Error {
  readonly definite:boolean;
@@ -49,23 +49,24 @@ async function boundedText(response:Response):Promise<string> {
  if(!response.body) throw new ProviderFailure(false);
  const reader=response.body.getReader();const chunks:Uint8Array[]=[];let size=0;
  try {while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;
- if(size>524288){await reader.cancel();throw new ProviderFailure(false);}chunks.push(value);}}
+ if(size>8388608){await reader.cancel();throw new ProviderFailure(false);}chunks.push(value);}}
  finally {reader.releaseLock();}
  return Buffer.concat(chunks).toString('utf8');
 }
 export async function callDeepSeek(config:AiConfig,input:AiInput,fetcher:typeof fetch=fetch):Promise<ModelReply> {
  try {
+ const maxOutput=Math.min(config.maxOutput,input.outputTokenLimit??config.maxOutput,393216);
  const response=await fetcher(PROVIDER_URL,{method:'POST',redirect:'error',
  headers:{Authorization:`Bearer ${config.apiKey}`,'Content-Type':'application/json'},
- body:JSON.stringify({model:input.image?'deepseek-flash':input.model_code==='deepseek-planner'?(config.editModel??'deepseek-v4-pro'):config.model,thinking:{type:'disabled'},stream:false,max_tokens:config.maxOutput,
+ body:JSON.stringify({model:input.image?'deepseek-flash':input.model_code==='deepseek-planner'?(config.editModel??'deepseek-v4-pro'):config.model,thinking:{type:'disabled'},stream:false,max_tokens:maxOutput,
  ...(['edit','diary','share_copy'].includes(input.mode)?{response_format:{type:'json_object'}}:{}),
  messages:providerPayload(input)}),
  signal:AbortSignal.timeout(config.timeoutMs)});
  if(!response.ok){await response.body?.cancel();throw new ProviderFailure([400,401,402,403,404,413,422,429].includes(response.status));}
  const result=JSON.parse(await boundedText(response));
  const choice=result.choices?.[0];const text=choice?.message?.content;const tokens=result.usage?.total_tokens;
- if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text)>65536||!['stop','length'].includes(choice.finish_reason)||
- !Number.isSafeInteger(tokens)||tokens<=0||tokens>tokenReservation(input,config.maxOutput)) throw new ProviderFailure(false);
+ if(typeof text!=='string'||!text.trim()||Buffer.byteLength(text)>4194304||!['stop','length'].includes(choice.finish_reason)||
+ !Number.isSafeInteger(tokens)||tokens<=0||tokens>tokenReservation(input,maxOutput)) throw new ProviderFailure(false);
  const continuation=choice.finish_reason==='length';
  const inputTokens=result.usage?.prompt_tokens;const outputTokens=result.usage?.completion_tokens;
  const usage={tokens,inputTokens:Number.isSafeInteger(inputTokens)&&inputTokens>=0?inputTokens:undefined,outputTokens:Number.isSafeInteger(outputTokens)&&outputTokens>=0?outputTokens:undefined,continuation};

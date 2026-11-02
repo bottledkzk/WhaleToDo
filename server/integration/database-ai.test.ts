@@ -4,7 +4,7 @@ import { randomUUID,randomBytes,createHash } from 'node:crypto';
 import { Pool } from 'pg';
 import { AiStore } from '../src/ai/store.ts';
 import { buildAiApp } from '../src/ai/app.ts';
-import { ProviderFailure,type AiInput } from '../src/ai/provider.ts';
+import { ProviderFailure,tokenReservation,type AiInput } from '../src/ai/provider.ts';
 import { hashPassword } from '../src/lib/security.ts';
 import type { AiConfig } from '../src/ai/config.ts';
 const url=process.env.VERIFY_DATABASE_URL!;
@@ -149,7 +149,7 @@ test('unusable completed output refunds points but keeps actual provider usage a
  }finally{await app.close();}
 });
 
-test('completed calls and daily tokens do not impose account or global quotas',async()=>{
+test('completed calls remain unlimited below the global daily token budget',async()=>{
  await owner.query('UPDATE point_wallets SET available=200 WHERE user_id=$1',[users[0]]);
  for(let i=0;i<60;i++){
   const row=(await store.reserve(users[0]!,input(),config)).row;
@@ -159,6 +159,47 @@ test('completed calls and daily tokens do not impose account or global quotas',a
  assert.equal(usage.requests,60);assert.equal(usage.total_tokens,245760);
  assert.equal((await store.reserve(users[0]!,input(),config)).fresh,true);
  assert.equal((await store.reserve(users[1]!,input(),config)).fresh,true);
+});
+
+test('global daily token reservations are atomic across users and replay works at the ceiling',async()=>{
+ const body=input(),base=tokenReservation(body,0),policy={...config,globalDailyTokens:base+2048};
+ const results=await Promise.allSettled(users.slice(0,6).map(user=>store.reserve(user!,body,policy)));
+ const accepted=results.flatMap((r,i)=>r.status==='fulfilled'?[{...r.value,user:users[i]!}]:[]);
+ assert.equal(accepted.length,1);
+ const first=accepted[0]!;
+ assert.equal((await store.reserve(first.user,body,policy)).fresh,false);
+ for(const result of results)if(result.status==='rejected')assert.equal(result.reason.details.reason,'GLOBAL_DAILY_TOKENS');
+ await store.finish(first.row.id,'failed',{text:'请明确时段',tokens:100,usable:false});
+ const next=await store.reserve(users[8]!,body,policy);
+ assert.equal(next.outputTokenLimit,1948);
+ assert.equal((await owner.query('SELECT sum(CASE WHEN status IN (\'reserved\',\'running\',\'unknown\') THEN budget_tokens ELSE usage_tokens END)::int AS n FROM ai_requests')).rows[0].n,policy.globalDailyTokens);
+});
+
+test('unknown reservations carry over midnight; settled usage is counted on its settlement day',async()=>{
+ const body=input(),base=tokenReservation(body,0),policy={...config,globalDailyTokens:base+2048};
+ const first=await store.reserve(users[0]!,body,policy);await store.finish(first.row.id,'unknown');
+ await owner.query("UPDATE ai_requests SET created_at=now()-interval '2 days',updated_at=now()-interval '2 days' WHERE id=$1",[first.row.id]);
+ await assert.rejects(store.reserve(users[1]!,body,policy),/今日 AI 总用量/);
+ // Synthetic resolution on the isolated database: old request finishes today.
+ await owner.query("UPDATE ai_requests SET status='running' WHERE id=$1",[first.row.id]);
+ await store.finish(first.row.id,'succeeded',{text:'完成',tokens:500});
+ const second=await store.reserve(users[1]!,body,policy);assert.equal(second.outputTokenLimit,1548);
+});
+
+test('large ceiling adapts to wallet funds and full reservation is passed to provider without client injection',async()=>{
+ const policy={...config,maxOutput:393216,tokensPerPoint:3200,billingStrategy:'cumulative_tokens' as const};
+ const body=input(),base=tokenReservation(body,0);let seen:number|undefined;
+ const app=buildAiApp(policy,store,async request=>{seen=request.outputTokenLimit;return {text:'简短建议',tokens:100};});
+ try{
+  const req={method:'POST' as const,url:'/api/v1/ai/requests',headers:{authorization:`Bearer ${tokens[0]}`},payload:body};
+  assert.equal((await app.inject({...req,payload:{...body,outputTokenLimit:393216}})).statusCode,400);
+  assert.equal((await app.inject(req)).statusCode,200);assert.equal(seen,5*3200-base);
+  assert.deepEqual((await owner.query('SELECT available,reserved FROM point_wallets WHERE user_id=$1',[users[0]])).rows[0],{available:4,reserved:0});
+  await owner.query('UPDATE point_wallets SET available=200 WHERE user_id=$1',[users[1]]);
+  const admitted=await store.reserve(users[1]!,input(),policy);assert.equal(admitted.outputTokenLimit,393216);
+  const text='长'.repeat(30000);const done=await store.finish(admitted.row.id,'succeeded',{text,tokens:30010});
+  assert.equal(done.response_text,text);assert.equal((await store.get(users[1]!,admitted.row.client_request_id))?.response_text,text);
+ }finally{await app.close();}
 });
 
 test('more than two in-flight requests and three recent calls are admitted without duplicate reservations',async()=>{
